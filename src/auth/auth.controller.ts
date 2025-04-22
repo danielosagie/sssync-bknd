@@ -14,9 +14,10 @@ import { AuthService } from './auth.service';
 import { Response, Request } from 'express';
 import * as crypto from 'crypto'; // Import crypto for HMAC verification
 
+
 // Helper function to build redirect URL
 const buildRedirectUrl = (base: string, platform: string, success: boolean, error?: string) => {
-  const url = new URL(base, 'http://dummy-base'); // Base URL for frontend dashboard/settings
+  const url = new URL(base, 'https://api.sssync.app/'); // Base URL for frontend dashboard/settings
   url.searchParams.set('connection', platform);
   url.searchParams.set('status', success ? 'success' : 'error');
   if (error) {
