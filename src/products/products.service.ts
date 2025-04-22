@@ -129,7 +129,6 @@ export class ProductsService {
           Title: 'Draft Product', // Placeholder Title
           Description: 'Pending details...', // Placeholder Desc
           Price: 0, // Placeholder Price
-          // Sku can be generated later
        })
       .select()
       .single();
