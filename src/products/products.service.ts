@@ -3,189 +3,322 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../common/supabase.service';
 import { ImageRecognitionService, SerpApiLensResponse, VisualMatch } from './image-recognition/image-recognition.service';
 import { AiGenerationService, GeneratedDetails } from './ai-generation/ai-generation.service';
+import { ConfigService } from '@nestjs/config';
+import * as SerpApiClient from 'google-search-results-nodejs';
 
-// Define types for your database tables based on sssync-db.md
-// Example (you might need more specific types)
-interface Product {
-  Id: string; // uuid
-  UserId: string; // uuid
+// Define simple interfaces based on DB schema until DTOs are created
+interface SimpleProduct {
+  Id: string;
+  UserId: string;
   IsArchived: boolean;
   CreatedAt: string;
   UpdatedAt: string;
 }
 
-interface ProductVariant {
+interface SimpleProductVariant {
    Id: string;
    ProductId: string;
    UserId: string;
-   Sku?: string; // Auto-generate later?
-   // ... other fields like Title, Description, Price etc. will come from AI generation
+   Sku: string;
+   Title: string;
+   Description: string | null;
+   Price: number; // Use number for decimal
+   CreatedAt: string;
+   UpdatedAt: string;
+   // Add other fields from sssync-db.md if needed immediately
 }
 
-interface ProductImage {
-    Id: string;
-    ProductVariantId: string;
-    ImageUrl: string;
-    Position: number; // 0 for cover photo?
-}
-
-interface AiGeneratedContentRecord {
+interface SimpleAiGeneratedContent {
     Id: string;
     ProductId: string;
-    ContentType: string; // e.g., 'title', 'description', 'tags', 'full_listing_json'
-    SourceApi: string; // e.g., 'gemini-1.5-flash'
-    Prompt?: string;
-    GeneratedText: string; // Store the generated text/JSON string
-    Metadata?: Record<string, any>; // Store platform, etc.
+    ContentType: string;
+    SourceApi: string;
+    GeneratedText: string;
+    Metadata?: any;
     IsActive: boolean;
     CreatedAt: string;
 }
-
 
 @Injectable()
 export class ProductsService {
   private supabase: SupabaseClient;
   private readonly logger = new Logger(ProductsService.name);
+  private readonly serpApi: SerpApiClient.GoogleSearch;
 
   constructor(
     private readonly supabaseService: SupabaseService,
     private readonly imageRecognitionService: ImageRecognitionService,
     private readonly aiGenerationService: AiGenerationService,
+    private readonly configService: ConfigService,
   ) {
     this.supabase = this.supabaseService.getClient();
-  }
-
-  // Endpoint 1 Logic: Analyze Images
-  async analyzeImages(
-    userId: string,
-    imageUrls: string[],
-    selectedPlatforms: string[], // Although not used by recognition, might be useful context later
-  ): Promise<SerpApiLensResponse | null> {
-    if (!imageUrls || imageUrls.length === 0) {
-      throw new BadRequestException('At least one image URL is required.');
+    const serpApiKey = this.configService.get<string>('SERPAPI_KEY');
+    if (!serpApiKey) {
+        this.logger.warn('SERPAPI_KEY is not configured. Product analysis will be disabled.');
+    } else {
+        this.serpApi = new SerpApiClient.GoogleSearch(serpApiKey);
     }
-    // Assume the first image is the primary one for analysis for now
-    const primaryImageUrl = imageUrls[0];
-    this.logger.log(`Service: Analyzing image ${primaryImageUrl} for user ${userId}`);
-    return this.imageRecognitionService.analyzeImageByUrl(primaryImageUrl);
   }
 
-  // Endpoint 2 Logic: Generate Details
-  async generateDetails(
+  /**
+   * Analyzes images, creates draft product/variant, saves images & analysis result.
+   */
+  async analyzeAndCreateDraft(
     userId: string,
-    imageUrls: string[],
+    imageUrl: string,
+    // Use 'any' or a simple inline type for now instead of CreateDraftProductDto
+    createDto?: { title?: string; description?: string; price?: number; sku?: string },
+  ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
+    this.logger.log(`Starting product analysis and draft creation for user ${userId} with image URL.`);
+
+    let analysisResultJson: SerpApiLensResponse | null = null;
+    let productId: string | null = null;
+    let variantId: string | null = null;
+    let aiContentId: string | null = null;
+
+    let product: SimpleProduct | null = null;
+    let variant: SimpleProductVariant | null = null;
+    let analysis: SimpleAiGeneratedContent | null = null;
+
+    try {
+      // 1. Analyze Image with SerpApi Lens (if configured)
+      if (this.serpApi) {
+         this.logger.debug(`Analyzing image with SerpApi Lens: ${imageUrl}`);
+         analysisResultJson = await new Promise<SerpApiLensResponse>((resolve, reject) => {
+             this.serpApi.json({
+                 engine: "google_lens",
+                 url: imageUrl,
+                 hl: "en", // Optional: language
+                 gl: "us", // Optional: country
+             }, (result) => {
+                 if (result.error) {
+                    this.logger.error(`SerpApi Lens analysis failed: ${result.error}`);
+                    // Resolve with the error structure instead of rejecting immediately,
+                    // so we can still potentially save the product draft.
+                    resolve(result);
+                 } else {
+                    this.logger.log(`SerpApi Lens analysis successful.`);
+                    resolve(result);
+                 }
+             });
+             // Note: The nodejs client library might not have built-in timeout/error handling
+             // on the request itself beyond the callback logic. Consider adding external timeout.
+         });
+      } else {
+          this.logger.warn('SerpApi not configured, skipping analysis.');
+      }
+
+      // 2. Create Product placeholder using Supabase
+      const { data: productData, error: productError } = await this.supabase
+        .from('Products') // Use DB table name
+        .insert({
+          UserId: userId, // Ensure column names match DB
+          IsArchived: false,
+          // Add other default fields if necessary
+        })
+        .select() // Select the created row
+        .single(); // Expect a single row back
+
+      if (productError || !productData) {
+        this.logger.error(`Failed to create product placeholder: ${productError?.message}`, productError);
+        throw new InternalServerErrorException('Failed to initiate product creation.');
+      }
+      product = productData as SimpleProduct; // Assign to outer scope variable
+      productId = product.Id; // Assign ID
+      this.logger.log(`Created Product placeholder with ID: ${productId}`);
+
+      // 3. Create Product Variant using Supabase
+      const title = createDto?.title || analysisResultJson?.visual_matches?.[0]?.title || 'Untitled Product';
+      const description = createDto?.description || analysisResultJson?.visual_matches?.[0]?.snippet || null; // Use null for empty text?
+      const priceStr = createDto?.price?.toString() || analysisResultJson?.visual_matches?.[0]?.price?.value?.replace(/[^0-9.]/g, '');
+      const price = priceStr ? parseFloat(priceStr) : 0.00;
+      const sku = createDto?.sku || `DRAFT-${productId.substring(0, 8)}`;
+
+       const { data: variantData, error: variantError } = await this.supabase
+          .from('ProductVariants') // Use DB table name
+          .insert({
+              ProductId: productId, // Ensure column names match DB
+              UserId: userId,
+              Sku: sku,
+              Title: title,
+              Description: description,
+              Price: price, // Ensure DB column type matches (numeric/decimal)
+              // Add other fields matching DB schema if needed
+          })
+          .select()
+          .single();
+
+        if (variantError || !variantData) {
+             this.logger.error(`Failed to create product variant: ${variantError?.message}`, variantError);
+             // Set flags or throw, cleanup will handle deletion of product
+             throw new InternalServerErrorException('Failed to create product variant.');
+        }
+        variant = variantData as SimpleProductVariant; // Assign to outer scope variable
+        variantId = variant.Id; // Assign ID
+        this.logger.log(`Created ProductVariant with ID: ${variantId} for Product ${productId}`);
+
+        // 4. Store Analysis Results (if analysis was performed and successful) using Supabase
+        if (analysisResultJson && !analysisResultJson.error) {
+          const metadata = {
+              searchUrl: imageUrl,
+              searchEngine: analysisResultJson?.search_parameters?.engine,
+              topMatchTitle: analysisResultJson?.visual_matches?.[0]?.title,
+              topMatchSource: analysisResultJson?.visual_matches?.[0]?.source,
+          };
+
+          const { data: aiData, error: aiError } = await this.supabase
+            .from('AiGeneratedContent') // Use DB table name
+            .insert({
+                ProductId: productId, // Ensure column names match DB
+                ContentType: 'product_analysis',
+                SourceApi: 'serpapi_google_lens',
+                GeneratedText: JSON.stringify(analysisResultJson), // Store JSON string
+                Metadata: metadata, // Ensure DB column type is jsonb
+                IsActive: false,
+            })
+            .select()
+            .single();
+
+          if (aiError || !aiData) {
+             // Log error but don't necessarily fail the whole operation, product/variant exist
+             this.logger.error(`Failed to store AI analysis results: ${aiError?.message}`, aiError);
+          } else {
+             analysis = aiData as SimpleAiGeneratedContent; // Assign to outer scope variable
+             aiContentId = analysis.Id; // Assign ID
+             this.logger.log(`Stored AI analysis results with ID: ${aiContentId}`);
+          }
+        } else if (analysisResultJson?.error) {
+           this.logger.warn(`Skipping storage of AI analysis due to error during analysis for product ${productId}.`);
+        }
+
+        // Ensure we have product and variant before returning
+        if (!product || !variant) {
+             throw new InternalServerErrorException("Failed to retrieve created product or variant details.");
+        }
+        return { product, variant, analysis: analysis ?? undefined };
+
+    } catch (error) {
+      this.logger.error(`Error during product analysis/draft creation for user ${userId}: ${error.message}`, error.stack);
+
+      // --- Cleanup Logic using Supabase ---
+      this.logger.warn(`Attempting cleanup due to error... ProductID: ${productId}, VariantID: ${variantId}, AiContentID: ${aiContentId}`);
+      try {
+           if (aiContentId) { // If AI content was created before error
+               this.logger.log(`Deleting AiGeneratedContent: ${aiContentId}`);
+               await this.supabase.from('AiGeneratedContent').delete().match({ Id: aiContentId })
+                   .then(({ error }) => { if(error) throw error; });
+           }
+           if (variantId) { // If variant was created before error
+              this.logger.log(`Deleting ProductVariant: ${variantId}`);
+              await this.supabase.from('ProductVariants').delete().match({ Id: variantId })
+                  .then(({ error }) => { if(error) throw error; });
+           }
+           // IMPORTANT: Product deletion cascades via FK constraint, but double-check your schema.
+           // If no cascade, or to be safe, delete Product last.
+           if (productId) { // If product was created before error (and variant/ai deleted)
+               this.logger.log(`Deleting Product: ${productId}`);
+               await this.supabase.from('Products').delete().match({ Id: productId })
+                   .then(({ error }) => { if(error) throw error; });
+           }
+      } catch (cleanupError) {
+           this.logger.error(`Error during cleanup process: ${cleanupError.message}`, cleanupError.stack);
+           // Avoid masking original error, but log this failure
+      }
+      // --- End Cleanup ---
+
+      if (error instanceof BadRequestException || error instanceof NotFoundException || error instanceof InternalServerErrorException) {
+          throw error; // Re-throw specific HTTP errors
+      }
+      // Throw a generic error for others
+      throw new InternalServerErrorException('Failed to create product draft due to an unexpected error.');
+    }
+  }
+
+  // Endpoint 2 Logic: Generate Details (Refactored Input)
+  async generateDetailsForDraft( // Renamed for clarity
+    userId: string, // Keep userId for verification/logging if needed
+    productId: string,
+    variantId: string,
+    imageUrls: string[], // Needed again for AI service
     coverImageIndex: number,
     selectedPlatforms: string[],
-    lensResponse?: SerpApiLensResponse | null,
-  ): Promise<{ productId: string; variantId: string; generatedDetails: GeneratedDetails | null }> {
-    if (!imageUrls || imageUrls.length === 0) {
-      throw new BadRequestException('At least one image URL is required.');
-    }
+    selectedMatch?: VisualMatch | null, // Use the specific match selected by user
+  ): Promise<{ generatedDetails: GeneratedDetails | null }> { // Only return generatedDetails now
+
+    // Optional: Fetch Product/Variant to verify ownership/existence if needed
+    // const { data: variantCheck } = await this.supabase.from('ProductVariants').select('Id, UserId').match({ Id: variantId, UserId: userId }).single();
+    // if (!variantCheck) throw new NotFoundException(`Variant not found or access denied.`);
+
     if (coverImageIndex < 0 || coverImageIndex >= imageUrls.length) {
         throw new BadRequestException('Invalid cover image index.');
     }
-     if (!selectedPlatforms || selectedPlatforms.length === 0) {
+    if (!selectedPlatforms || selectedPlatforms.length === 0) {
       throw new BadRequestException('At least one target platform is required.');
     }
 
-    this.logger.log(`Service: Generating details for user ${userId}, platforms: ${selectedPlatforms.join(', ')}`);
+    this.logger.log(`Service: Generating details for product ${productId} / variant ${variantId}, platforms: ${selectedPlatforms.join(', ')}`);
 
-    // 1. Call AI Generation Service with updated arguments
+    // 1. Call AI Generation Service
     const coverImageUrl = imageUrls[coverImageIndex];
     const generatedDetails = await this.aiGenerationService.generateProductDetails(
       imageUrls,
       coverImageUrl,
       selectedPlatforms,
-      lensResponse,
+      selectedMatch ? { visual_matches: [selectedMatch] } : null, // Pass selected match context if available
+                                                                  // The AI service prompt needs slight adjustment to look for visual_matches[0] if present
     );
 
      if (!generatedDetails) {
-         this.logger.warn(`AI Generation returned null for user ${userId}`);
-         // Decide if you still want to create a draft product
-         // For now, let's throw or return an indicator of failure
-          throw new InternalServerErrorException('Failed to generate product details from AI.');
+         // Log already happens in AI service
+         throw new InternalServerErrorException('Failed to generate product details from AI.');
      }
 
-    // 2. Create Draft Product and Variant in DB
-    // This requires transaction handling ideally
-    const { data: product, error: productError } = await this.supabase
-      .from('Products')
-      .insert({ UserId: userId })
-      .select()
-      .single();
+    // 2. Save Generated AI Content to DB
+     const aiContentInserts: Omit<SimpleAiGeneratedContent, 'Id' | 'CreatedAt'>[] = [];
+     let primaryDetails: any = null; // Store details for the first platform to update the variant
 
-    if (productError || !product) {
-      this.logger.error(`Failed to create product entry for user ${userId}: ${productError?.message}`, productError);
-      throw new InternalServerErrorException('Failed to save draft product.');
-    }
-    const productId = product.Id;
+     Object.entries(generatedDetails).forEach(([platform, details], index) => {
+         aiContentInserts.push({
+             ProductId: productId,
+             ContentType: 'groq_maverick_details', // Specific content type
+             SourceApi: 'groq-maverick', // Be specific
+             GeneratedText: JSON.stringify(details),
+             Metadata: { platform: platform.toLowerCase(), selectedMatch: selectedMatch ?? null },
+             IsActive: true, // Active generated content
+         });
+         if (index === 0) { // Use details from the first platform for the main variant record
+             primaryDetails = details;
+         }
+     });
 
-    // Create a default variant linked to the product
-     const { data: variant, error: variantError } = await this.supabase
-      .from('ProductVariants')
-      .insert({
-          ProductId: productId,
-          UserId: userId,
-          Title: 'Draft Product', // Placeholder Title
-          Description: 'Pending details...', // Placeholder Desc
-          Price: 0, // Placeholder Price
-       })
-      .select()
-      .single();
-
-     if (variantError || !variant) {
-       this.logger.error(`Failed to create product variant for product ${productId}: ${variantError?.message}`, variantError);
-       // Consider cleanup: delete the product created above
-       await this.supabase.from('Products').delete().match({ Id: productId });
-       throw new InternalServerErrorException('Failed to save draft product variant.');
-     }
-     const variantId = variant.Id;
-
-    // 3. Save Images to DB, linking to the variant
-    const imageInserts = imageUrls.map((url, index) => ({
-        ProductVariantId: variantId,
-        ImageUrl: url,
-        Position: index === coverImageIndex ? 0 : index + 1, // Convention: 0 is cover
-    }));
-
-    const { error: imageError } = await this.supabase
-        .from('ProductImages')
-        .insert(imageInserts);
-
-    if (imageError) {
-         this.logger.error(`Failed to save product images for variant ${variantId}: ${imageError.message}`, imageError);
-         // Consider cleanup: delete product/variant
-         // For simplicity, logging error but proceeding for now
-    }
-
-    // 4. Save Generated AI Content to DB
-    const aiContentInserts: Omit<AiGeneratedContentRecord, 'Id' | 'CreatedAt'>[] = [];
-    for (const platform of Object.keys(generatedDetails)) {
-        aiContentInserts.push({
-            ProductId: productId, // Link AI content to the Product
-            ContentType: 'full_listing_json', // Store the whole JSON for the platform
-            SourceApi: 'gemini-1.5-flash', // Or dynamically get model name
-            // Prompt: prompt used (might be long, consider storing if needed)
-            GeneratedText: JSON.stringify(generatedDetails[platform]),
-            Metadata: { platform: platform },
-            IsActive: true, // Mark this as the current active generation
-        });
-        // Optionally save individual fields like title/description separately if needed for indexing/search
-    }
-
-     const { error: aiError } = await this.supabase
-        .from('AiGeneratedContent')
-        .insert(aiContentInserts);
-
+     const { error: aiError } = await this.supabase.from('AiGeneratedContent').insert(aiContentInserts);
      if (aiError) {
-         this.logger.error(`Failed to save AI generated content for product ${productId}: ${aiError.message}`, aiError);
-          // Consider cleanup or logging
+         this.logger.error(`Failed to save Groq generated content for product ${productId}: ${aiError.message}`, aiError);
+         // Don't necessarily fail the whole request, but log it
      }
 
-    this.logger.log(`Successfully generated details and created draft product ${productId} / variant ${variantId}`);
+    // 3. (Enhancement) Update ProductVariant with primary generated details
+     if (primaryDetails) {
+         const { error: variantUpdateError } = await this.supabase
+            .from('ProductVariants')
+            .update({
+                Title: primaryDetails.title ?? 'Generated Product',
+                Description: primaryDetails.description ?? 'See details',
+                Price: primaryDetails.price ?? 0,
+                UpdatedAt: new Date().toISOString(), // Explicitly set UpdatedAt
+                // Add other fields matching DB schema
+            })
+            .match({ Id: variantId });
 
-    // Return the IDs and the generated details for the frontend form
-    return { productId, variantId, generatedDetails };
+         if (variantUpdateError) {
+             this.logger.error(`Failed to update variant ${variantId} with generated details: ${variantUpdateError.message}`, variantUpdateError);
+         } else {
+              this.logger.log(`Updated variant ${variantId} with generated details.`);
+         }
+     }
+
+    this.logger.log(`Successfully generated details for product ${productId} / variant ${variantId}`);
+    return { generatedDetails }; // Return only the details for the form
   }
 
    // --- TODO: Add method for saving edited data (Step 4/5 from frontend) ---
@@ -195,3 +328,4 @@ export class ProductsService {
    // async publishListing(userId: string, variantId: string, targetPlatforms: string[]) { ... }
 
 }
+

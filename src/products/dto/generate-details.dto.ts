@@ -3,18 +3,12 @@ import { Type } from 'class-transformer'; // Needed for ValidateNested
 import { SerpApiLensResponse, VisualMatch } from '../image-recognition/image-recognition.service';
 
 // Define a basic DTO for the visual match object (can be expanded)
-class SelectedMatchDto {
-    @IsString()
-    @IsDefined()
-    title: string;
-
-    @IsString()
-    @IsOptional()
-    link?: string;
-
-    @IsString()
-    @IsOptional()
-    source?: string;
+class SelectedMatchDto implements Partial<VisualMatch> {
+    @IsInt() position: number;
+    @IsString() title: string;
+    @IsOptional() @IsString() link?: string;
+    @IsOptional() @IsString() source?: string;
+    // Include other fields if the frontend intends to send them
 }
 
 // DTO for VisualMatch (used within SerpApiLensResponseDto)
@@ -50,9 +44,15 @@ class SerpApiLensResponseDto implements Partial<SerpApiLensResponse> { // Use Pa
 }
 
 export class GenerateDetailsDto {
+  @IsUUID() // ID of the draft product created by /analyze
+  productId: string;
+
+  @IsUUID() // ID of the draft variant created by /analyze
+  variantId: string;
+
+  // Need image URIs again to pass to AI service
   @IsArray()
   @ArrayNotEmpty()
-  @ArrayMinSize(1)
   @IsUrl({}, { each: true })
   imageUris: string[];
 
@@ -65,21 +65,14 @@ export class GenerateDetailsDto {
   @ArrayNotEmpty()
   selectedPlatforms: string[];
 
-  // Make selectedMatch optional and validate its structure if present
+  // Optional: The specific visual match chosen by the user
   @IsOptional()
   @ValidateNested()
-  @Type(() => SelectedMatchDto) // Important for nested validation
+  @Type(() => SelectedMatchDto)
   selectedMatch?: SelectedMatchDto;
 
-  // Accept the optional SerpApi response object
-  @IsOptional()
-  @ValidateNested()
-  @Type(() => SerpApiLensResponseDto)
-  lensResponse?: SerpApiLensResponseDto;
-
-  // Add userId validation if you implement JWT auth later
-  // @IsUUID()
-  // userId: string;
+  // Remove lensResponse - no longer needed here
+  // lensResponse?: any;
 }
 
 // You might want a DTO for the response too

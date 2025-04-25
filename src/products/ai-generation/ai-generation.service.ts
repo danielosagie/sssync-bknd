@@ -39,11 +39,11 @@ export class AiGenerationService {
   // Consult Groq documentation if specific safety filtering is needed.
 
   async generateProductDetails(
-    imageUrls: string[], // Keep all URLs for potential future use or different prompts
-    coverImageUrl: string, // The primary image for the model to analyze
+    imageUrls: string[],
+    coverImageUrl: string,
     targetPlatforms: string[],
-    // Accept the whole SerpApi response, or just the visual_matches part
-    lensResponse?: SerpApiLensResponse | null,
+    // lensResponse now only optionally contains the *selected* match
+    selectedMatchContext?: { visual_matches: VisualMatch[] } | null,
   ): Promise<GeneratedDetails | null> {
 
     if (!this.groq) {
@@ -55,14 +55,16 @@ export class AiGenerationService {
     const model = 'meta-llama/llama-4-maverick-17b-128e-instruct';
 
     // --- Construct the Prompt Text for Groq ---
-    // This text accompanies the image input.
     let promptText = `You are an expert e-commerce listing assistant. Analyze the product in the provided image.`;
 
-    if (lensResponse?.visual_matches && lensResponse.visual_matches.length > 0) {
-        const relevantMatches = JSON.stringify(lensResponse.visual_matches.slice(0, 5), null, 2); // Limit context slightly more
-        promptText += `\n\nConsider these potential visual matches found online for context, pricing, and categorization:\n\`\`\`json\n${relevantMatches}\n\`\`\``;
+    // Check if a *specific* match was provided as context
+    const selectedMatch = selectedMatchContext?.visual_matches?.[0]; // Get the single selected match if exists
+
+    if (selectedMatch) {
+        const relevantMatch = JSON.stringify(selectedMatch, null, 2); // Just the selected one
+        promptText += `\n\nThe user indicated the product is similar to the following match found online. Use this for context, pricing, and categorization:\n\`\`\`json\n${relevantMatch}\n\`\`\``;
     } else {
-        promptText += `\nNo specific visual matches were provided. Base your analysis primarily on the image.`;
+        promptText += `\nNo specific visual match was provided by the user. Base your analysis primarily on the image.`;
     }
 
     promptText += `\n\nGenerate product details suitable for listing on the following e-commerce platforms: ${targetPlatforms.join(', ')}. Provide details including:
