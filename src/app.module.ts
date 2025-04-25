@@ -10,7 +10,7 @@ import { UsersModule } from './users/users.module';
 import { PlatformsModule } from './platforms/platforms.module';
 import { ProductsModule } from './products/products.module';
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
-import { ThrottlerStorageRedisService } from 'nestjs-throttler-storage-redis';
+import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 
 @Module({
   imports: [
