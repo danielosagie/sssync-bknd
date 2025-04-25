@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
-import { ThrottlerModule } from '@nestjs/throttler';
-import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -11,6 +10,7 @@ import { UsersModule } from './users/users.module';
 import { PlatformsModule } from './platforms/platforms.module';
 import { ProductsModule } from './products/products.module';
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
+import { ThrottlerStorageRedisService } from 'nestjs-throttler-storage-redis';
 
 @Module({
   imports: [
@@ -21,26 +21,23 @@ import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (configService: ConfigService) => ({
-        storage: new ThrottlerStorageRedisService(configService.get<string>('REDIS_URL')),
-        throttlers: [
-          {
-            name: 'short',
-            ttl: parseInt(configService.get<string>('THROTTLE_SHORT_TTL', '1000'), 10),
-            limit: parseInt(configService.get<string>('THROTTLE_SHORT_LIMIT', '5'), 10),
-          },
-          {
-            name: 'medium',
-            ttl: parseInt(configService.get<string>('THROTTLE_MEDIUM_TTL', '60000'), 10),
-            limit: parseInt(configService.get<string>('THROTTLE_MEDIUM_LIMIT', '100'), 10),
-          },
-          {
-            name: 'long',
-            ttl: parseInt(configService.get<string>('THROTTLE_LONG_TTL', '3600000'), 10),
-            limit: parseInt(configService.get<string>('THROTTLE_LONG_LIMIT', '500'), 10),
-          },
-        ],
-      }),
+      useFactory: (configService: ConfigService) => {
+        const redisUrl = configService.get<string>('REDIS_URL');
+        if (!redisUrl) {
+          console.warn('REDIS_URL not found, Throttler falling back to in-memory storage!');
+          return [{
+            ttl: configService.get<number>('THROTTLER_TTL', 60000),
+            limit: configService.get<number>('THROTTLER_LIMIT', 10),
+          }];
+        }
+
+        console.log(`Throttler configuring with Redis URL: ${redisUrl.substring(0, redisUrl.indexOf('@') + 1)}...`);
+        return [{
+          ttl: configService.get<number>('THROTTLER_TTL', 60000),
+          limit: configService.get<number>('THROTTLER_LIMIT', 10),
+          storage: new ThrottlerStorageRedisService(redisUrl),
+        }];
+      },
     }),
     CommonModule,
     AuthModule,
@@ -53,7 +50,7 @@ import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
     AppService,
     {
       provide: APP_GUARD,
-      useClass: UserThrottlerGuard,
+      useClass: ThrottlerGuard,
     },
   ],
 })
