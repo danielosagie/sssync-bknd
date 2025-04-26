@@ -10,6 +10,7 @@ CREATE TABLE "SubscriptionTiers" (
     "MarketplaceFeePercent" decimal NOT NULL,
     "OrderFeePercent" decimal NOT NULL,
     "AllowsInterSellerMarketplace" boolean NOT NULL DEFAULT false
+    "AiScans" integer,
 );
 
 CREATE TABLE "Users" (

@@ -3,9 +3,13 @@ import { ProductsService } from './products.service';
 import { ProductsController } from './products.controller';
 import { ImageRecognitionService } from './image-recognition/image-recognition.service';
 import { AiGenerationService } from './ai-generation/ai-generation.service';
+import { ConfigModule } from '@nestjs/config';
 
 @Module({
+  imports: [
+    ConfigModule,
+  ],
+  controllers: [ProductsController],
   providers: [ProductsService, ImageRecognitionService, AiGenerationService],
-  controllers: [ProductsController]
 })
 export class ProductsModule {}

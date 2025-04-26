@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, Global } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
@@ -11,7 +11,10 @@ import { PlatformsModule } from './platforms/platforms.module';
 import { ProductsModule } from './products/products.module';
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
+import { SupabaseService } from './common/supabase.service';
+import { EncryptionService } from './common/encryption.service';
 
+@Global()
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -31,11 +34,17 @@ import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis'
           }];
         }
 
-        console.log(`Throttler configuring with Redis URL: ${redisUrl.substring(0, redisUrl.indexOf('@') + 1)}...`);
+        console.log(`Throttler attempting to configure Redis with URL: ${redisUrl.substring(0, redisUrl.indexOf(':'))}://...`);
+
+        const redisOptions = {
+          url: redisUrl,
+          tls: {},
+        };
+
         return [{
           ttl: configService.get<number>('THROTTLER_TTL', 60000),
           limit: configService.get<number>('THROTTLER_LIMIT', 10),
-          storage: new ThrottlerStorageRedisService(redisUrl),
+          storage: new ThrottlerStorageRedisService(redisOptions),
         }];
       },
     }),
@@ -48,10 +57,16 @@ import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis'
   controllers: [AppController],
   providers: [
     AppService,
+    SupabaseService,
+    EncryptionService,
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
+  ],
+  exports: [
+    SupabaseService,
+    EncryptionService,
   ],
 })
 export class AppModule {}
