@@ -1,11 +1,13 @@
 // src/products/products.controller.ts
-import { Controller, Post, Body, Query, UsePipes, ValidationPipe, Logger, BadRequestException, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { Controller, Post, Body, Query, UsePipes, ValidationPipe, Logger, BadRequestException, HttpCode, HttpStatus, UseGuards, Request } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { AnalyzeImagesDto } from './dto/analyze-images.dto';
 import { GenerateDetailsDto } from './dto/generate-details.dto';
 import { SerpApiLensResponse } from './image-recognition/image-recognition.service';
 import { GeneratedDetails } from './ai-generation/ai-generation.service';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
+import { FeatureUsageGuard, Feature } from '../common/guards/feature-usage.guard';
+import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard';
 
 // Define simple types if DTOs are not ready yet
 interface SimpleProduct { Id: string; UserId: string; /*...*/ }
@@ -22,20 +24,24 @@ export class ProductsController {
      * Endpoint 1 (Revised): Analyzes images, creates draft, saves analysis.
      */
     @Post('analyze')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
     @Throttle({ default: { limit: 10, ttl: 60000 }})
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     @HttpCode(HttpStatus.OK)
     async analyzeAndCreateDraft(
+        @Request() req,
         @Body() analyzeImagesDto: AnalyzeImagesDto,
-        @Query('userId') userId: string,
     ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
+        const userId = (req.user as any)?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
         this.logger.log(`Analyze images request for user: ${userId}`);
-         if (!userId) {
-             throw new BadRequestException('Temporary: userId query parameter is required.');
-         }
-         if (!analyzeImagesDto || !analyzeImagesDto.imageUris || analyzeImagesDto.imageUris.length === 0) {
+        if (!analyzeImagesDto || !analyzeImagesDto.imageUris || analyzeImagesDto.imageUris.length === 0) {
             throw new BadRequestException('At least one image URI is required in the request body.');
-         }
+        }
 
         // Pass the primary image URI to the service for analysis
         // The service currently only takes one imageUrl for SerpApi
@@ -61,15 +67,17 @@ export class ProductsController {
      * Endpoint 2 (Revised): Generates AI details for an existing draft product/variant.
      */
     @Post('generate-details')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
     @Throttle({ default: { limit: 5, ttl: 60000 }})
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
     async generateDetailsForDraft(
+         @Request() req,
          @Body() generateDetailsDto: GenerateDetailsDto,
-         @Query('userId') userId: string,
     ): Promise<{ generatedDetails: GeneratedDetails | null }> {
-         this.logger.log(`Generate details request for user: ${userId}, product: ${generateDetailsDto.productId}, variant: ${generateDetailsDto.variantId}`);
+         const userId = (req.user as any)?.id;
          if (!userId) {
-             throw new BadRequestException('Temporary: userId query parameter is required.');
+             throw new BadRequestException('User ID not found after authentication.');
          }
          if (!generateDetailsDto.productId || !generateDetailsDto.variantId) {
              throw new BadRequestException('productId and variantId are required in the request body.');

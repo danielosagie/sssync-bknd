@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException, HttpException } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../common/supabase.service';
 import { ImageRecognitionService, SerpApiLensResponse, VisualMatch } from './image-recognition/image-recognition.service';
@@ -79,6 +79,7 @@ export class ProductsService {
     let product: SimpleProduct | null = null;
     let variant: SimpleProductVariant | null = null;
     let analysis: SimpleAiGeneratedContent | null = null;
+    let decrementSucceeded = false; // Flag to track decrement success
 
     try {
       // 1. Analyze Image with SerpApi Lens (if configured)
@@ -190,6 +191,29 @@ export class ProductsService {
         } else if (analysisResultJson?.error) {
            this.logger.warn(`Skipping storage of AI analysis due to error during analysis for product ${productId}.`);
         }
+
+        // --- >>> 5. Decrement Usage Count via RPC <<< ---
+        this.logger.debug(`Attempting to decrement AiScans for user ${userId} via RPC.`);
+        const { data: rpcData, error: rpcError } = await this.supabase
+            .rpc('decrement_ai_scans', { target_user_id: userId }); // Pass userId to the function
+
+        if (rpcError) {
+             // Log error but maybe don't fail the whole request? Depends on policy.
+             // If the RPC fails, the user got the feature but the count wasn't decremented.
+             this.logger.error(`Error calling decrement_ai_scans RPC for user ${userId}: ${rpcError.message}`, rpcError);
+             // Decide if you should throw an error here or just log it.
+             // throw new InternalServerErrorException('Failed to update usage count.');
+        } else if (rpcData === true) {
+             // RPC function returned true, meaning decrement was successful
+             decrementSucceeded = true;
+             this.logger.log(`Successfully decremented AiScans for user ${userId}.`);
+        } else {
+             // RPC function returned false (or null/unexpected), meaning decrement failed (likely hit limit between guard check and now)
+             this.logger.warn(`Decrement_ai_scans RPC returned false for user ${userId}. Limit likely hit concurrently.`);
+             // If strict enforcement is needed, you might throw an error here too.
+             // throw new HttpException('Usage limit reached just before finalizing', HttpStatus.TOO_MANY_REQUESTS);
+        }
+        // --- >>> End Decrement Usage Count <<< ---
 
         // Ensure we have product and variant before returning
         if (!product || !variant) {
