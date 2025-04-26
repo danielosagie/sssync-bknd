@@ -25,27 +25,60 @@ import { EncryptionService } from './common/encryption.service';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
+        console.log('[ThrottlerFactory] Starting configuration...');
+
         const redisUrl = configService.get<string>('REDIS_URL');
+
+        console.log(`[ThrottlerFactory] Read REDIS_URL from ConfigService. Value is: ${redisUrl ? '*** (Exists)' : '!!! NOT FOUND / UNDEFINED !!!'}`);
+        if (redisUrl) {
+          try {
+            const urlObject = new URL(redisUrl);
+            console.log(`[ThrottlerFactory] Parsed REDIS_URL - Protocol: ${urlObject.protocol}, Hostname: ${urlObject.hostname}, Port: ${urlObject.port}, Username: ${urlObject.username}`);
+          } catch (e) {
+            console.error(`[ThrottlerFactory] FAILED TO PARSE REDIS_URL: ${redisUrl}`, e);
+          }
+        }
+
         if (!redisUrl) {
-          console.warn('REDIS_URL not found, Throttler falling back to in-memory storage!');
+          console.warn('[ThrottlerFactory] REDIS_URL is missing or invalid. Throttler falling back to IN-MEMORY storage.');
           return [{
             ttl: configService.get<number>('THROTTLER_TTL', 60000),
             limit: configService.get<number>('THROTTLER_LIMIT', 10),
           }];
+        } else {
+          console.log('[ThrottlerFactory] REDIS_URL found. Configuring Throttler with Redis storage...');
+          const redisOptions = {
+            url: redisUrl,
+            tls: {},
+            maxRetriesPerRequest: 5,
+            connectTimeout: 15000,
+            showFriendlyErrorStack: true,
+            enableReadyCheck: true,
+          };
+
+          try {
+            const storage = new ThrottlerStorageRedisService(redisOptions);
+            console.log('[ThrottlerFactory] ThrottlerStorageRedisService instantiated successfully.');
+
+            const client = storage.getClient();
+            client.on('connect', () => console.log('[ThrottlerFactory/ioredis] Client connecting...'));
+            client.on('ready', () => console.log('[ThrottlerFactory/ioredis] Client ready! Connected to Redis.'));
+            client.on('error', (err) => console.error('[ThrottlerFactory/ioredis] Client Error Event:', err));
+            client.on('close', () => console.log('[ThrottlerFactory/ioredis] Client connection closed.'));
+            client.on('reconnecting', () => console.log('[ThrottlerFactory/ioredis] Client reconnecting...'));
+            client.on('end', () => console.log('[ThrottlerFactory/ioredis] Client connection ended.'));
+
+            return [{
+              ttl: configService.get<number>('THROTTLER_TTL', 60000),
+              limit: configService.get<number>('THROTTLER_LIMIT', 10),
+              storage: storage,
+            }];
+          } catch (initError) {
+            console.error('[ThrottlerFactory] CRITICAL ERROR Instantiating ThrottlerStorageRedisService:', initError);
+            console.warn('[ThrottlerFactory] Falling back to IN-MEMORY due to Redis storage init error.');
+            return [{ ttl: 60000, limit: 10 }];
+          }
         }
-
-        console.log(`Throttler attempting to configure Redis with URL: ${redisUrl.substring(0, redisUrl.indexOf(':'))}://...`);
-
-        const redisOptions = {
-          url: redisUrl,
-          tls: {},
-        };
-
-        return [{
-          ttl: configService.get<number>('THROTTLER_TTL', 60000),
-          limit: configService.get<number>('THROTTLER_LIMIT', 10),
-          storage: new ThrottlerStorageRedisService(redisOptions),
-        }];
       },
     }),
     CommonModule,
