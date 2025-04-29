@@ -51,7 +51,14 @@ export class ProductsService {
     private readonly aiGenerationService: AiGenerationService,
     private readonly configService: ConfigService,
   ) {
+    this.logger.log('ProductsService Constructor called.'); // Log entry
     this.supabase = this.supabaseService.getClient();
+    // Log whether supabase client was obtained
+    if (this.supabase) {
+        this.logger.log('ProductsService: Supabase client obtained successfully.');
+    } else {
+        this.logger.error('ProductsService: FAILED to obtain Supabase client from SupabaseService!');
+    }
     const serpApiKey = this.configService.get<string>('SERPAPI_KEY');
     if (!serpApiKey) {
         this.logger.warn('SERPAPI_KEY is not configured. Product analysis will be disabled.');

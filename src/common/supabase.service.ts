@@ -1,32 +1,38 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
 export class SupabaseService implements OnModuleInit {
-  private supabase: SupabaseClient;
+  private readonly logger = new Logger(SupabaseService.name);
+  private _supabase?: SupabaseClient;
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(private configService: ConfigService) {
+    this.logger.log('SupabaseService Constructor called.');
+  }
 
   onModuleInit() {
+    this.logger.log('SupabaseService onModuleInit - Initializing client...');
     const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
     const supabaseAnonKey = this.configService.get<string>('SUPABASE_ANON_KEY');
 
     if (!supabaseUrl || !supabaseAnonKey) {
-      throw new Error('Supabase URL and Anon Key must be provided in environment variables.');
+      this.logger.error('SUPABASE_URL or SUPABASE_ANON_KEY missing in config! Supabase client NOT initialized.');
+      return;
     }
 
-    this.supabase = createClient(supabaseUrl, supabaseAnonKey, {
-      // Optional: Configure Supabase client options here
-      // auth: {
-      //   persistSession: false // Example: Disable session persistence if managing tokens server-side
-      // }
-    });
-
-    console.log('Supabase client initialized.');
+    try {
+      this._supabase = createClient(supabaseUrl, supabaseAnonKey);
+      this.logger.log('Supabase client initialized successfully in onModuleInit.');
+    } catch (error) {
+      this.logger.error(`Failed to initialize Supabase client: ${error.message}`, error.stack);
+    }
   }
 
   getClient(): SupabaseClient {
-    return this.supabase;
+    if (!this._supabase) {
+      this.logger.error('Attempted to get Supabase client before it was initialized!');
+    }
+    return this._supabase!;
   }
 }
