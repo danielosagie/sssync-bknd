@@ -143,8 +143,12 @@ export class AuthService {
     };
     const state = this.generateStateJwt(statePayload);
 
-    const authUrl = new URL(`https://${shop}.myshopify.com/admin/oauth/authorize`);
-    authUrl.hostname = `${shop}.myshopify.com`;
+    let shopDomain = shop;
+    if (!shopDomain.includes('.myshopify.com')) {
+      shopDomain = `${shop}.myshopify.com`;
+    }
+
+    const authUrl = new URL(`https://${shopDomain}/admin/oauth/authorize`);
     authUrl.searchParams.set('client_id', apiKey);
     authUrl.searchParams.set('scope', scopes);
     authUrl.searchParams.set('redirect_uri', redirectUri);

@@ -13,7 +13,7 @@ export class EncryptionService implements OnModuleInit {
     const secret = this.configService.get<string>('CREDENTIALS_ENCRYPTION_SECRET');
 
     // Check if the secret is actually retrieved and not the placeholder
-    if (!secret || secret === 'Mb/GEE0A5LmhcxWj+qgzZoyvNFKRAzAOzrmUSLJp1hw=') { // Check against the original placeholder value too
+    if (!secret) { // Check against the original placeholder value too
       console.error(
         'ERROR: CREDENTIALS_ENCRYPTION_SECRET is not set or is using the default placeholder. Please generate a strong secret key and set it in the .env file.',
       );

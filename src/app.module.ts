@@ -39,36 +39,35 @@ import { EncryptionService } from './common/encryption.service';
           }
         }
 
+        const throttlerConfig = [{
+          ttl: 4,
+          limit: 1,
+        }];
+
         if (!redisUrl) {
           console.warn('[ThrottlerFactory] REDIS_URL is missing or invalid. Throttler falling back to IN-MEMORY storage.');
-          return [{
-            ttl: configService.get<number>('THROTTLER_TTL', 60000),
-            limit: configService.get<number>('THROTTLER_LIMIT', 10),
-          }];
+          return { throttlers: throttlerConfig };
         } else {
           console.log('[ThrottlerFactory] REDIS_URL found. Configuring Throttler with Redis storage...');
-          const redisOptions = {
-            url: redisUrl,
-            tls: {},
-            maxRetriesPerRequest: 5,
-            connectTimeout: 15000,
-            showFriendlyErrorStack: true,
-            enableReadyCheck: true,
-          };
-
           try {
-            const storage = new ThrottlerStorageRedisService(redisOptions);
+            const storage = new ThrottlerStorageRedisService(redisUrl);
             console.log('[ThrottlerFactory] ThrottlerStorageRedisService instantiated successfully.');
 
-            return [{
-              ttl: configService.get<number>('THROTTLER_TTL', 60000),
-              limit: configService.get<number>('THROTTLER_LIMIT', 10),
+            if (storage && typeof (storage as any).client?.on === 'function') {
+               (storage as any).client.on('error', (err) => {
+                   console.error('[Throttler Storage Redis Client Error]', err);
+               });
+               console.log('[ThrottlerFactory] Added error listener to Redis client.');
+            }
+
+            return {
+              throttlers: throttlerConfig,
               storage: storage,
-            }];
+            };
           } catch (initError) {
             console.error('[ThrottlerFactory] CRITICAL ERROR Instantiating ThrottlerStorageRedisService:', initError);
             console.warn('[ThrottlerFactory] Falling back to IN-MEMORY due to Redis storage init error.');
-            return [{ ttl: 60000, limit: 10 }];
+            return { throttlers: throttlerConfig };
           }
         }
       },

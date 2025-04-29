@@ -36,18 +36,24 @@ export const WEBHOOK_QUEUE = 'webhook-processing';
     BullModule.forRootAsync({
         imports: [ConfigModule],
         inject: [ConfigService],
-        useFactory: (configService: ConfigService) => ({
-            connection: {
-                host: configService.get<string>('QUEUE_HOST', 'localhost'), // Use separate Redis? Or Upstash?
-                port: configService.get<number>('QUEUE_PORT', 6379),
-                // password: configService.get<string>('QUEUE_PASSWORD'), // Add if needed
-                // Use Upstash URL directly if desired:
-                // connectionString: configService.get<string>('REDIS_URL'), // Reuse throttler Redis?
-                 ...(configService.get<string>('REDIS_URL') ? { connectionString: configService.get<string>('REDIS_URL') } : {}),
-                 // Add TLS options if using Upstash URL
-                 ...(configService.get<string>('REDIS_URL')?.startsWith('rediss://') || configService.get<string>('QUEUE_HOST') !== 'localhost' ? { tls: {} } : {}),
-            },
-        }),
+        useFactory: (configService: ConfigService) => {
+            const redisUrl = configService.get<string>('REDIS_URL');
+            // --- Add Logging Here ---
+            console.log(`[BullMQ Config] Using REDIS_URL: ${redisUrl}`);
+            // --- End Logging ---
+            return {
+                connection: redisUrl
+                    ? { // Use connectionString if REDIS_URL is provided
+                          connectionString: redisUrl,
+                          // Explicitly add TLS options needed for rediss://
+                          ...(redisUrl.startsWith('rediss://') ? { tls: {} } : {}),
+                      }
+                    : { // Fallback to host/port (Likely hitting this?)
+                          host: configService.get<string>('QUEUE_HOST', 'localhost'),
+                          port: configService.get<number>('QUEUE_PORT', 6379),
+                      },
+            };
+        },
     }),
     BullModule.registerQueue(
         { name: INITIAL_SCAN_QUEUE },
