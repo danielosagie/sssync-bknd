@@ -60,14 +60,6 @@ import { EncryptionService } from './common/encryption.service';
             const storage = new ThrottlerStorageRedisService(redisOptions);
             console.log('[ThrottlerFactory] ThrottlerStorageRedisService instantiated successfully.');
 
-            const client = storage.getClient();
-            client.on('connect', () => console.log('[ThrottlerFactory/ioredis] Client connecting...'));
-            client.on('ready', () => console.log('[ThrottlerFactory/ioredis] Client ready! Connected to Redis.'));
-            client.on('error', (err) => console.error('[ThrottlerFactory/ioredis] Client Error Event:', err));
-            client.on('close', () => console.log('[ThrottlerFactory/ioredis] Client connection closed.'));
-            client.on('reconnecting', () => console.log('[ThrottlerFactory/ioredis] Client reconnecting...'));
-            client.on('end', () => console.log('[ThrottlerFactory/ioredis] Client connection ended.'));
-
             return [{
               ttl: configService.get<number>('THROTTLER_TTL', 60000),
               limit: configService.get<number>('THROTTLER_LIMIT', 10),
