@@ -4,7 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from './supabase.service';
 import { EncryptionService } from './encryption.service';
 
-@Global()
+//@Global()
 @Module({
   imports: [
     JwtModule.registerAsync({

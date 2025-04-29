@@ -81,7 +81,6 @@ import { EncryptionService } from './common/encryption.service';
   controllers: [AppController],
   providers: [
     AppService,
-    SupabaseService,
     EncryptionService,
     {
       provide: APP_GUARD,
