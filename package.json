@@ -1,7 +1,7 @@
 {
   "name": "sssync-bknd",
   "version": "0.0.1",
-  "description": "",
+  "description": "<p align=\"center\">   <a href=\"http://nestjs.com/\" target=\"blank\"><img src=\"https://nestjs.com/img/logo-small.svg\" width=\"120\" alt=\"Nest Logo\" /></a> </p>",
   "author": "",
   "private": true,
   "license": "UNLICENSED",
@@ -28,6 +28,7 @@
     "@nestjs/core": "^11.0.1",
     "@nestjs/jwt": "^11.0.0",
     "@nestjs/platform-express": "^11.0.1",
+    "@ngrok/ngrok": "^1.5.0",
     "@supabase/supabase-js": "^2.49.4",
     "@upstash/redis": "^1.34.8",
     "axios": "^1.8.4",
@@ -88,5 +89,19 @@
     ],
     "coverageDirectory": "../coverage",
     "testEnvironment": "node"
-  }
+  },
+  "main": "index.js",
+  "directories": {
+    "test": "test"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danielosagie/sssync-bknd.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/danielosagie/sssync-bknd/issues"
+  },
+  "homepage": "https://github.com/danielosagie/sssync-bknd#readme"
 }

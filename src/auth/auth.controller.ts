@@ -389,17 +389,43 @@ export class AuthController {
 
 
   private verifyShopifyHmac(query: any, secret: string): boolean {
-     // Implementation should already exist - ensure it correctly handles the query parameters
-     const { hmac, ...params } = query;
-     const sortedQuery = Object.keys(params)
-       .sort()
-       .reduce((acc, key) => `${acc}${key}=${params[key]}`, '');
+    const { hmac, ...params } = query; // Separate HMAC
 
-     const calculatedHmac = crypto
-       .createHmac('sha256', secret)
-       .update(sortedQuery)
-       .digest('hex');
+    // Create key-value pairs and sort them alphabetically by key
+    const messageParts = Object.keys(params)
+      .sort()
+      .map(key => {
+        // IMPORTANT: Replace '&' and '%' in keys and values as per Shopify docs examples
+        // (Though usually only needed if keys/values contain these chars, safer to include)
+        // For simplicity here, we'll assume typical values don't need deep encoding,
+        // but focus on the structure: key=value joined by &
+        // If encoding IS needed: replace(/&/g, '%26').replace(/%/g, '%25') on key and params[key]
+        return `${key}=${params[key]}`;
+      });
 
-     return crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(calculatedHmac));
-   }
+    // Join the sorted pairs with '&'
+    const message = messageParts.join('&');
+    this.logger.debug(`[HMAC Verify] String to hash: ${message}`); // Log the string being hashed
+
+    const calculatedHmac = crypto
+      .createHmac('sha256', secret)
+      .update(message) // Use the '&' joined message
+      .digest('hex');
+
+    this.logger.debug(`[HMAC Verify] Received: ${hmac}, Calculated: ${calculatedHmac}`);
+
+    // Ensure comparison happens only if hmac is a string
+    if (typeof hmac !== 'string' || hmac.length !== calculatedHmac.length) {
+         this.logger.warn(`[HMAC Verify] Received HMAC is invalid or length mismatch.`);
+         return false;
+    }
+
+    try {
+        // Use timingSafeEqual to prevent timing attacks
+        return crypto.timingSafeEqual(Buffer.from(hmac), Buffer.from(calculatedHmac));
+    } catch (e) {
+         this.logger.error(`[HMAC Verify] Error during timingSafeEqual: ${e.message}`);
+         return false; // Treat comparison errors as invalid
+    }
+  }
 }
