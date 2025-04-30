@@ -28,7 +28,6 @@ interface PlatformConnectionInput {
 
 @Injectable()
 export class AuthService {
-  private supabase: SupabaseClient;
   private readonly logger = new Logger(AuthService.name); // Initialize logger
   private readonly jwtSecret: string;
   private readonly stateTokenExpiry: string = '5m'; // Example expiry for state token
@@ -39,7 +38,6 @@ export class AuthService {
     private readonly encryptionService: EncryptionService,
     private readonly jwtService: JwtService, // Inject JwtService
   ) {
-    this.supabase = this.supabaseService.getClient();
     this.jwtSecret = this.configService.get<string>('JWT_SECRET')!;
     if (!this.jwtSecret) {
       throw new Error('JWT_SECRET environment variable is not set');
@@ -86,6 +84,8 @@ export class AuthService {
   private async savePlatformConnection(
     input: PlatformConnectionInput,
   ): Promise<PostgrestSingleResponse<any>> {
+    const supabase = this.supabaseService.getClient();
+
     const encryptedCredentials = this.encryptionService.encrypt(input.Credentials);
 
     const connectionData = {
@@ -101,7 +101,7 @@ export class AuthService {
     };
 
     // Use the exact column names from your sssync-db.md schema
-    const { data, error } = await this.supabase
+    const { data, error } = await supabase
       .from('PlatformConnections') // Ensure this table name is correct
       .upsert(connectionData, { onConflict: 'UserId, PlatformType' }) // Adjust conflict columns if needed
       .select()
@@ -202,15 +202,11 @@ export class AuthService {
 
       this.logger.log(`Successfully obtained Shopify access token for shop: ${shop}`);
 
-      const credentialsToStore = {
-        accessToken: tokenData.access_token,
-      };
-
       await this.savePlatformConnection({
         UserId: statePayload.userId,
         PlatformType: 'shopify',
         DisplayName: shop,
-        Credentials: credentialsToStore,
+        Credentials: { accessToken: tokenData.access_token },
         Status: 'Connected',
         IsEnabled: true,
         PlatformSpecificData: { shop: shop },
@@ -287,15 +283,11 @@ export class AuthService {
       }
       this.logger.log(`Successfully obtained Clover access token for merchant: ${merchantId}`);
 
-      const credentialsToStore = {
-        accessToken: tokenData.access_token,
-      };
-
       await this.savePlatformConnection({
         UserId: statePayload.userId,
         PlatformType: 'clover',
         DisplayName: `Clover (${merchantId})`,
-        Credentials: credentialsToStore,
+        Credentials: { accessToken: tokenData.access_token },
         Status: 'Connected',
         IsEnabled: true,
         PlatformSpecificData: { merchantId: merchantId },
@@ -381,17 +373,15 @@ export class AuthService {
       }
       this.logger.log(`Successfully obtained Square access token for userId: ${statePayload.userId}`);
 
-      const credentialsToStore = {
-        accessToken: tokenData.access_token,
-        refreshToken: tokenData.refresh_token,
-        expiresAt: tokenData.expires_at,
-      };
-
       await this.savePlatformConnection({
         UserId: statePayload.userId,
         PlatformType: 'square',
         DisplayName: `Square (${tokenData.merchant_id || 'Account'})`,
-        Credentials: credentialsToStore,
+        Credentials: {
+          accessToken: tokenData.access_token,
+          refreshToken: tokenData.refresh_token,
+          expiresAt: tokenData.expires_at,
+        },
         Status: 'Connected',
         IsEnabled: true,
         PlatformSpecificData: { merchantId: tokenData.merchant_id },
