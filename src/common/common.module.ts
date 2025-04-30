@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from './supabase.service';
 import { EncryptionService } from './encryption.service';
+import { ActivityLogService } from './activity-log.service';
 
 //@Global()
 @Module({
@@ -15,7 +16,7 @@ import { EncryptionService } from './encryption.service';
       inject: [ConfigService],
     }),
   ],
-  providers: [SupabaseService, EncryptionService],
-  exports: [SupabaseService, EncryptionService, JwtModule],
+  providers: [SupabaseService, EncryptionService, ActivityLogService],
+  exports: [SupabaseService, EncryptionService, JwtModule, ActivityLogService],
 })
 export class CommonModule {}

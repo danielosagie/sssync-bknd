@@ -8,6 +8,7 @@ import { GeneratedDetails } from './ai-generation/ai-generation.service';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { FeatureUsageGuard, Feature } from '../common/guards/feature-usage.guard';
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard';
+import { PublishProductDto } from './dto/publish-product.dto';
 
 // Define simple types if DTOs are not ready yet
 interface SimpleProduct { Id: string; UserId: string; /*...*/ }
@@ -95,6 +96,21 @@ export class ProductsController {
             generateDetailsDto.selectedPlatforms,
             generateDetailsDto.selectedMatch,
          );
+    }
+
+    @Post('publish')
+    @UseGuards(SupabaseAuthGuard)
+    @HttpCode(HttpStatus.ACCEPTED)
+    async saveOrPublishProduct(
+        @Request() req,
+        @Body(ValidationPipe) publishProductDto: PublishProductDto,
+    ): Promise<{ message: string; /* Add results if needed */ }> {
+        const userId = req.user.id;
+        this.logger.log(`Received ${publishProductDto.publishIntent} request for variant ${publishProductDto.variantId} from user ${userId}`);
+
+        await this.productsService.saveOrPublishListing(userId, publishProductDto);
+
+        return { message: `${publishProductDto.publishIntent} request received and processing started.` };
     }
 
     // ... (TODO endpoints) ...

@@ -5,6 +5,10 @@ import { ImageRecognitionService, SerpApiLensResponse, VisualMatch } from './ima
 import { AiGenerationService, GeneratedDetails } from './ai-generation/ai-generation.service';
 import { ConfigService } from '@nestjs/config';
 import * as SerpApiClient from 'google-search-results-nodejs';
+import { PublishProductDto, PublishIntent } from './dto/publish-product.dto';
+import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
+import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
+import { ActivityLogService } from '../common/activity-log.service';
 
 // Define simple interfaces based on DB schema until DTOs are created
 interface SimpleProduct {
@@ -49,6 +53,9 @@ export class ProductsService {
     private readonly imageRecognitionService: ImageRecognitionService,
     private readonly aiGenerationService: AiGenerationService,
     private readonly configService: ConfigService,
+    private readonly adapterRegistry: PlatformAdapterRegistry,
+    private readonly connectionsService: PlatformConnectionsService,
+    private readonly activityLogService: ActivityLogService,
   ) {
     this.logger.log('ProductsService Constructor called.');
 
@@ -370,5 +377,129 @@ export class ProductsService {
    // --- TODO: Add method for publishing to platforms (Step 5 from frontend) ---
    // async publishListing(userId: string, variantId: string, targetPlatforms: string[]) { ... }
 
+  async saveOrPublishListing(userId: string, dto: PublishProductDto): Promise<void> {
+    const supabase = this.getSupabaseClient();
+    const { productId, variantId, publishIntent, platformDetails, media } = dto;
+
+    this.logger.log(`Processing ${publishIntent} for variant ${variantId}, user ${userId}`);
+
+    // 1. Verify user ownership/existence (optional but recommended)
+    const { data: variantCheck, error: checkError } = await supabase
+      .from('ProductVariants')
+      .select('ProductId')
+      .match({ Id: variantId, UserId: userId, ProductId: productId })
+      .maybeSingle();
+
+    if (checkError || !variantCheck) {
+       this.logger.error(`Variant check failed for ${variantId}, user ${userId}: ${checkError?.message}`);
+       throw new NotFoundException('Product variant not found or access denied.');
+    }
+
+    // --- START: Update Canonical Data ---
+    this.logger.debug(`Updating canonical data for variant ${variantId}`);
+    try {
+        // TODO: Extract primary data from dto.platformDetails (e.g., first platform, or a dedicated 'canonical' section if added)
+        // For now, let's just update the UpdatedAt timestamp
+        const updatePayload = {
+            UpdatedAt: new Date().toISOString(),
+            // Title: primaryDetails.title,
+            // Description: primaryDetails.description,
+            // Price: primaryDetails.price,
+            // Potentially update Sku, Barcode, Options based on DTO if needed
+        };
+        const { error: updateError } = await supabase
+            .from('ProductVariants')
+            .update(updatePayload)
+            .match({ Id: variantId });
+        if (updateError) throw updateError;
+
+        // TODO: Update ProductImages based on dto.media (handle order changes, deletions, additions if possible, cover image)
+        // This is complex, requires comparing existing images with dto.media.imageUrls
+        // For now, log that it needs implementation
+        this.logger.warn(`Update of ProductImages based on media payload is not yet implemented for variant ${variantId}.`);
+
+        await this.activityLogService.logActivity(
+           userId,
+           'ProductVariant', // EntityType
+           variantId, // EntityId
+           'UPDATE_CANONICAL_DRAFT', // EventType
+           'Success', // Status
+           `Saved draft updates for variant ${variantId}.`, // Message
+        );
+
+    } catch (error) {
+         this.logger.error(`Failed to save canonical draft data for variant ${variantId}: ${error.message}`, error.stack);
+         await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, 'UPDATE_CANONICAL_DRAFT', 'Error', `Failed to save draft updates: ${error.message}`);
+         throw new InternalServerErrorException('Failed to save draft data.');
+    }
+    this.logger.debug(`Canonical data updated for variant ${variantId}`);
+    // --- END: Update Canonical Data ---
+
+    // --- Exit if only saving draft ---
+    if (publishIntent === PublishIntent.SAVE_SSSYNC_DRAFT) {
+      this.logger.log(`Intent is SAVE_SSSYNC_DRAFT, processing finished for variant ${variantId}.`);
+      return;
+    }
+
+    // --- START: Publish to Platforms ---
+    this.logger.log(`Starting platform publish process for variant ${variantId} (Intent: ${publishIntent})`);
+    const platformKeys = Object.keys(platformDetails);
+
+    for (const platformKey of platformKeys) {
+        this.logger.debug(`Processing platform: ${platformKey} for variant ${variantId}`);
+        let connectionId: string | null = null; // To link activity log
+        try {
+            // a. Get Platform Connection
+            // TODO: Need efficient way to get connection based on userId + platformKey
+            // Assuming a method exists or fetching all and filtering:
+            const connections = await this.connectionsService.getConnectionsForUser(userId);
+            const connection = connections.find(c => c.PlatformType.toLowerCase() === platformKey.toLowerCase() && c.IsEnabled);
+
+            if (!connection) {
+                this.logger.warn(`No active connection found for user ${userId} and platform ${platformKey}. Skipping publish.`);
+                await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, `PUBLISH_${platformKey.toUpperCase()}`, 'Skipped', `No active connection found.`, null, platformKey);
+                continue; // Skip to next platform
+            }
+            connectionId = connection.Id;
+
+            // b. Get Adapter
+            const adapter = this.adapterRegistry.getAdapter(platformKey);
+            if (!adapter) {
+                 this.logger.error(`No adapter registered for platform: ${platformKey}. Skipping.`);
+                 await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, `PUBLISH_${platformKey.toUpperCase()}`, 'Error', `No adapter found.`, connectionId, platformKey);
+                 continue;
+            }
+
+            // c. Get API Client & Mapper
+            const apiClient = adapter.getApiClient(connection); // Adapter handles decryption via connection service
+            const mapper = adapter.getMapper();
+
+            // d. TODO: Implement Platform Push Logic
+            this.logger.warn(`PUSH LOGIC FOR PLATFORM ${platformKey} IS NOT YET IMPLEMENTED.`);
+            //  i. Map edited data (platformDetails[platformKey]) using mapper.mapCanonicalVariantToPlatform(...) -> platformApiPayload
+            // ii. Get existing mapping from PlatformProductMappings table (using variantId + connectionId)
+            //iii. If mapping exists (get platformProductId/variantId):
+            //      - Call apiClient.updateProduct(platformProductId, platformApiPayload, publishIntent)
+            //      - Handle media updates via apiClient
+            // iv. If mapping doesn't exist:
+            //      - Call apiClient.createProduct(platformApiPayload, publishIntent) -> get new platformProductId/variantId
+            //      - Handle media uploads via apiClient
+            //      - Insert new row into PlatformProductMappings
+            //  v. Handle API success/failure response from apiClient methods
+
+            // Placeholder success log
+            await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, `PUBLISH_${platformKey.toUpperCase()}`, 'Success', `Placeholder: Publish successful.`, connectionId, platformKey);
+
+
+        } catch (platformError) {
+            const errorMsg = platformError instanceof Error ? platformError.message : 'Unknown platform error';
+            this.logger.error(`Failed to publish variant ${variantId} to platform ${platformKey}: ${errorMsg}`, platformError.stack);
+            await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, `PUBLISH_${platformKey.toUpperCase()}`, 'Error', `Publish failed: ${errorMsg}`, connectionId, platformKey);
+            // Decide: Continue to next platform or stop? Continuing is usually better UX.
+        }
+    }
+    this.logger.log(`Finished platform publish attempts for variant ${variantId}`);
+    // --- END: Publish to Platforms ---
+  }
 }
 
