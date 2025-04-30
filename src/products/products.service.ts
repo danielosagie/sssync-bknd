@@ -41,7 +41,6 @@ interface SimpleAiGeneratedContent {
 
 @Injectable()
 export class ProductsService {
-  private supabase: SupabaseClient;
   private readonly logger = new Logger(ProductsService.name);
   private readonly serpApi: SerpApiClient.GoogleSearch;
 
@@ -52,19 +51,16 @@ export class ProductsService {
     private readonly configService: ConfigService,
   ) {
     this.logger.log('ProductsService Constructor called.'); // Log entry
-    this.supabase = this.supabaseService.getClient();
-    // Log whether supabase client was obtained
-    if (this.supabase) {
-        this.logger.log('ProductsService: Supabase client obtained successfully.');
-    } else {
-        this.logger.error('ProductsService: FAILED to obtain Supabase client from SupabaseService!');
-    }
     const serpApiKey = this.configService.get<string>('SERPAPI_KEY');
     if (!serpApiKey) {
         this.logger.warn('SERPAPI_KEY is not configured. Product analysis will be disabled.');
     } else {
         this.serpApi = new SerpApiClient.GoogleSearch(serpApiKey);
     }
+  }
+
+  private getSupabaseClient(): SupabaseClient {
+    return this.supabaseService.getClient();
   }
 
   /**
@@ -76,6 +72,7 @@ export class ProductsService {
     // Use 'any' or a simple inline type for now instead of CreateDraftProductDto
     createDto?: { title?: string; description?: string; price?: number; sku?: string },
   ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
+    const supabase = this.getSupabaseClient();
     this.logger.log(`Starting product analysis and draft creation for user ${userId} with image URL.`);
 
     let analysisResultJson: SerpApiLensResponse | null = null;
@@ -117,7 +114,7 @@ export class ProductsService {
       }
 
       // 2. Create Product placeholder using Supabase
-      const { data: productData, error: productError } = await this.supabase
+      const { data: productData, error: productError } = await supabase
         .from('Products') // Use DB table name
         .insert({
           UserId: userId, // Ensure column names match DB
@@ -142,7 +139,7 @@ export class ProductsService {
       const price = priceStr ? parseFloat(priceStr) : 0.00;
       const sku = createDto?.sku || `DRAFT-${productId.substring(0, 8)}`;
 
-       const { data: variantData, error: variantError } = await this.supabase
+       const { data: variantData, error: variantError } = await supabase
           .from('ProductVariants') // Use DB table name
           .insert({
               ProductId: productId, // Ensure column names match DB
@@ -174,7 +171,7 @@ export class ProductsService {
               topMatchSource: analysisResultJson?.visual_matches?.[0]?.source,
           };
 
-          const { data: aiData, error: aiError } = await this.supabase
+          const { data: aiData, error: aiError } = await supabase
             .from('AiGeneratedContent') // Use DB table name
             .insert({
                 ProductId: productId, // Ensure column names match DB
@@ -201,7 +198,7 @@ export class ProductsService {
 
         // --- >>> 5. Decrement Usage Count via RPC <<< ---
         this.logger.debug(`Attempting to decrement AiScans for user ${userId} via RPC.`);
-        const { data: rpcData, error: rpcError } = await this.supabase
+        const { data: rpcData, error: rpcError } = await supabase
             .rpc('decrement_ai_scans', { target_user_id: userId }); // Pass userId to the function
 
         if (rpcError) {
@@ -236,19 +233,19 @@ export class ProductsService {
       try {
            if (aiContentId) { // If AI content was created before error
                this.logger.log(`Deleting AiGeneratedContent: ${aiContentId}`);
-               await this.supabase.from('AiGeneratedContent').delete().match({ Id: aiContentId })
+               await supabase.from('AiGeneratedContent').delete().match({ Id: aiContentId })
                    .then(({ error }) => { if(error) throw error; });
            }
            if (variantId) { // If variant was created before error
               this.logger.log(`Deleting ProductVariant: ${variantId}`);
-              await this.supabase.from('ProductVariants').delete().match({ Id: variantId })
+              await supabase.from('ProductVariants').delete().match({ Id: variantId })
                   .then(({ error }) => { if(error) throw error; });
            }
            // IMPORTANT: Product deletion cascades via FK constraint, but double-check your schema.
            // If no cascade, or to be safe, delete Product last.
            if (productId) { // If product was created before error (and variant/ai deleted)
                this.logger.log(`Deleting Product: ${productId}`);
-               await this.supabase.from('Products').delete().match({ Id: productId })
+               await supabase.from('Products').delete().match({ Id: productId })
                    .then(({ error }) => { if(error) throw error; });
            }
       } catch (cleanupError) {
@@ -322,7 +319,7 @@ export class ProductsService {
          }
      });
 
-     const { error: aiError } = await this.supabase.from('AiGeneratedContent').insert(aiContentInserts);
+     const { error: aiError } = await this.getSupabaseClient().from('AiGeneratedContent').insert(aiContentInserts);
      if (aiError) {
          this.logger.error(`Failed to save Groq generated content for product ${productId}: ${aiError.message}`, aiError);
          // Don't necessarily fail the whole request, but log it
@@ -330,8 +327,7 @@ export class ProductsService {
 
     // 3. (Enhancement) Update ProductVariant with primary generated details
      if (primaryDetails) {
-         const { error: variantUpdateError } = await this.supabase
-            .from('ProductVariants')
+         const { error: variantUpdateError } = await this.getSupabaseClient().from('ProductVariants')
             .update({
                 Title: primaryDetails.title ?? 'Generated Product',
                 Description: primaryDetails.description ?? 'See details',

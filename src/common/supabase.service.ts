@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, InternalServerErrorException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
@@ -26,13 +26,15 @@ export class SupabaseService implements OnModuleInit {
       this.logger.log('Supabase client initialized successfully in onModuleInit.');
     } catch (error) {
       this.logger.error(`Failed to initialize Supabase client: ${error.message}`, error.stack);
+      throw new InternalServerErrorException(`Failed to initialize Supabase client: ${error.message}`);
     }
   }
 
   getClient(): SupabaseClient {
     if (!this._supabase) {
-      this.logger.error('Attempted to get Supabase client before it was initialized!');
+      this.logger.error('Attempted to get Supabase client before it was initialized or initialization failed!');
+      throw new InternalServerErrorException('Supabase client is not available. Initialization might have failed or is pending.');
     }
-    return this._supabase!;
+    return this._supabase;
   }
 }
