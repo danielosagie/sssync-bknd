@@ -4,6 +4,7 @@ import { AuthService } from './auth.service';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SupabaseAuthGuard } from './guards/supabase-auth.guard';
+import { CommonModule } from '../common/common.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { SupabaseAuthGuard } from './guards/supabase-auth.guard';
         secret: configService.get<string>('JWT_SECRET'),
       }),
     }),
+    CommonModule,
   ],
   controllers: [AuthController],
   providers: [
