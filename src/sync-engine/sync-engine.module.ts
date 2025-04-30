@@ -30,7 +30,7 @@ export const WEBHOOK_QUEUE = 'webhook-processing';
     // Import modules providing Canonical Data services (ProductsService, InventoryService etc)
     ShopifyAdapterModule, // Example: Import specific adapter modules
     SquareAdapterModule,  // <<< NEW: Import Square
-    PlatformAdapterRegistry, // <<< NEW: Import Registry
+    // PlatformAdapterRegistry, // <<< REMOVE from imports
 
     // Configure BullMQ Queues
     BullModule.forRootAsync({
@@ -69,11 +69,12 @@ export const WEBHOOK_QUEUE = 'webhook-processing';
     // Processors for the queues
     InitialScanProcessor,
     InitialSyncProcessor,
-    PlatformAdapterRegistry, // <<< NEW: Provide Registry
+    PlatformAdapterRegistry, // <<< ENSURE it's in providers
     // Add WebhookProcessor etc.
   ],
   exports: [
       // Export services if needed by other modules (less common for engine)
+      PlatformAdapterRegistry // <<< ENSURE it's in exports
   ]
 })
 export class SyncEngineModule {} 
