@@ -81,15 +81,12 @@ import { EncryptionService } from './common/encryption.service';
   controllers: [AppController],
   providers: [
     AppService,
-    EncryptionService,
     {
       provide: APP_GUARD,
       useClass: ThrottlerGuard,
     },
   ],
   exports: [
-    SupabaseService,
-    EncryptionService,
   ],
 })
 export class AppModule {}
