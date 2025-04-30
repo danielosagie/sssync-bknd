@@ -42,7 +42,7 @@ interface SimpleAiGeneratedContent {
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
-  private readonly serpApi: SerpApiClient.GoogleSearch;
+  private readonly serpApi: SerpApiClient.GoogleSearch | undefined;
 
   constructor(
     private readonly supabaseService: SupabaseService,
@@ -50,12 +50,28 @@ export class ProductsService {
     private readonly aiGenerationService: AiGenerationService,
     private readonly configService: ConfigService,
   ) {
-    this.logger.log('ProductsService Constructor called.'); // Log entry
-    const serpApiKey = this.configService.get<string>('SERPAPI_KEY');
+    this.logger.log('ProductsService Constructor called.');
+
+    // --- Explicitly log SERPAPI_KEY retrieval ---
+    const serpApiKey = this.configService.get<string>('SERPAPI_API_KEY'); // Check THIS EXACT NAME
+    this.logger.log(`[ProductsService Constructor] Read SERPAPI_API_KEY: ${serpApiKey ? '*** (Exists)' : '!!! NOT FOUND / UNDEFINED !!!'}`);
+    // Optional: Log the key type or first few chars for verification (NEVER log the full key)
+    if (serpApiKey) {
+       this.logger.debug(`[ProductsService Constructor] SERPAPI_API_KEY type: ${typeof serpApiKey}, length: ${serpApiKey.length}`);
+    }
+    // --- End logging ---
+
     if (!serpApiKey) {
-        this.logger.warn('SERPAPI_KEY is not configured. Product analysis will be disabled.');
+        this.logger.warn('SERPAPI_API_KEY is not configured. Product analysis will be disabled.');
+        this.serpApi = undefined; // Ensure serpApi is undefined
     } else {
-        this.serpApi = new SerpApiClient.GoogleSearch(serpApiKey);
+        try {
+            this.serpApi = new SerpApiClient.GoogleSearch(serpApiKey);
+            this.logger.log('ProductsService: SerpApi client initialized successfully.');
+        } catch (error) {
+            this.logger.error(`Failed to initialize SerpApi client: ${error.message}`, error.stack);
+            this.serpApi = undefined; // Ensure serpApi is undefined on init failure
+        }
     }
   }
 
@@ -73,42 +89,42 @@ export class ProductsService {
     createDto?: { title?: string; description?: string; price?: number; sku?: string },
   ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
     const supabase = this.getSupabaseClient();
-    this.logger.log(`Starting product analysis and draft creation for user ${userId} with image URL.`);
+    this.logger.log(`Starting product analysis...`);
 
     let analysisResultJson: SerpApiLensResponse | null = null;
     let productId: string | null = null;
     let variantId: string | null = null;
     let aiContentId: string | null = null;
-
     let product: SimpleProduct | null = null;
     let variant: SimpleProductVariant | null = null;
     let analysis: SimpleAiGeneratedContent | null = null;
-    let decrementSucceeded = false; // Flag to track decrement success
+    let analysisAttempted = false; // Flag to track if we tried to analyze
 
     try {
-      // 1. Analyze Image with SerpApi Lens (if configured)
+      // 1. Analyze Image
       if (this.serpApi) {
+         analysisAttempted = true; // Mark that we are attempting it
          this.logger.debug(`Analyzing image with SerpApi Lens: ${imageUrl}`);
-         analysisResultJson = await new Promise<SerpApiLensResponse>((resolve, reject) => {
+         analysisResultJson = await new Promise<SerpApiLensResponse>((resolve) => { // Removed reject path
              this.serpApi.json({
                  engine: "google_lens",
                  url: imageUrl,
                  hl: "en", // Optional: language
                  gl: "us", // Optional: country
              }, (result) => {
-                 if (result.error) {
-                    this.logger.error(`SerpApi Lens analysis failed: ${result.error}`);
-                    // Resolve with the error structure instead of rejecting immediately,
-                    // so we can still potentially save the product draft.
-                    resolve(result);
-                 } else {
-                    this.logger.log(`SerpApi Lens analysis successful.`);
-                    resolve(result);
-                 }
+                 // Resolve with the result, whether it's data or an error payload from SerpApi
+                 resolve(result);
              });
-             // Note: The nodejs client library might not have built-in timeout/error handling
-             // on the request itself beyond the callback logic. Consider adding external timeout.
          });
+         // Log success or SerpApi's error *after* the promise resolves
+         if (analysisResultJson?.error) {
+             this.logger.error(`SerpApi Lens analysis failed: ${analysisResultJson.error}`);
+             // Don't store this result later, but the attempt was made
+         } else if (analysisResultJson) {
+             this.logger.log(`SerpApi Lens analysis successful (or resolved without data).`);
+         } else {
+             this.logger.warn(`SerpApi Lens promise resolved with unexpected null/undefined result.`);
+         }
       } else {
           this.logger.warn('SerpApi not configured, skipping analysis.');
       }
@@ -162,8 +178,8 @@ export class ProductsService {
         variantId = variant.Id; // Assign ID
         this.logger.log(`Created ProductVariant with ID: ${variantId} for Product ${productId}`);
 
-        // 4. Store Analysis Results (if analysis was performed and successful) using Supabase
-        if (analysisResultJson && !analysisResultJson.error) {
+        // 4. Store Analysis Results (only if analysis was attempted and successful from SerpApi)
+        if (analysisAttempted && analysisResultJson && !analysisResultJson.error) {
           const metadata = {
               searchUrl: imageUrl,
               searchEngine: analysisResultJson?.search_parameters?.engine,
@@ -192,30 +208,30 @@ export class ProductsService {
              aiContentId = analysis.Id; // Assign ID
              this.logger.log(`Stored AI analysis results with ID: ${aiContentId}`);
           }
-        } else if (analysisResultJson?.error) {
+        } else if (analysisAttempted && analysisResultJson?.error) {
            this.logger.warn(`Skipping storage of AI analysis due to error during analysis for product ${productId}.`);
+        } else if (analysisAttempted) {
+            this.logger.warn(`Skipping storage of AI analysis due to missing results for product ${productId}.`);
         }
 
         // --- >>> 5. Decrement Usage Count via RPC <<< ---
-        this.logger.debug(`Attempting to decrement AiScans for user ${userId} via RPC.`);
-        const { data: rpcData, error: rpcError } = await supabase
-            .rpc('decrement_ai_scans', { target_user_id: userId }); // Pass userId to the function
+        // Decrement ONLY IF analysis was attempted (meaning SerpApi is configured)
+        if (analysisAttempted) {
+            this.logger.debug(`Attempting to decrement AiScans for user ${userId} via RPC (Analysis was attempted).`);
+            const { data: rpcData, error: rpcError } = await supabase
+                .rpc('decrement_ai_scans', { target_user_id: userId });
 
-        if (rpcError) {
-             // Log error but maybe don't fail the whole request? Depends on policy.
-             // If the RPC fails, the user got the feature but the count wasn't decremented.
-             this.logger.error(`Error calling decrement_ai_scans RPC for user ${userId}: ${rpcError.message}`, rpcError);
-             // Decide if you should throw an error here or just log it.
-             // throw new InternalServerErrorException('Failed to update usage count.');
-        } else if (rpcData === true) {
-             // RPC function returned true, meaning decrement was successful
-             decrementSucceeded = true;
-             this.logger.log(`Successfully decremented AiScans for user ${userId}.`);
+            if (rpcError) {
+                this.logger.error(`Error calling decrement_ai_scans RPC for user ${userId}: ${rpcError.message}`, rpcError);
+                // Decide: Fail request? Or just log? For now, just log.
+            } else if (rpcData === true) {
+                this.logger.log(`Successfully decremented AiScans for user ${userId}.`);
+            } else {
+                this.logger.warn(`Decrement_ai_scans RPC returned false for user ${userId}. Limit likely hit concurrently or other issue.`);
+                // Decide: Fail request? Or just log? For now, just log.
+            }
         } else {
-             // RPC function returned false (or null/unexpected), meaning decrement failed (likely hit limit between guard check and now)
-             this.logger.warn(`Decrement_ai_scans RPC returned false for user ${userId}. Limit likely hit concurrently.`);
-             // If strict enforcement is needed, you might throw an error here too.
-             // throw new HttpException('Usage limit reached just before finalizing', HttpStatus.TOO_MANY_REQUESTS);
+            this.logger.debug(`Skipping AI Scan decrement for user ${userId} because analysis was not attempted (SerpApi not configured).`);
         }
         // --- >>> End Decrement Usage Count <<< ---
 
