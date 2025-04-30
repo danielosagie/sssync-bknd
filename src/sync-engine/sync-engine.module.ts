@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { BullModule } from '@nestjs/bullmq'; // Import BullModule
+// import { BullModule } from '@nestjs/bullmq'; // <<< COMMENT OUT
 import { ConfigModule, ConfigService } from '@nestjs/config'; // Needed for queue config
 import { PlatformConnectionsModule } from '../platform-connections/platform-connections.module';
 import { CommonModule } from '../common/common.module'; // <<< IMPORT CommonModule
@@ -9,8 +9,8 @@ import { CommonModule } from '../common/common.module'; // <<< IMPORT CommonModu
 import { MappingService } from './mapping.service';
 import { InitialSyncService } from './initial-sync.service';
 import { SyncCoordinatorService } from './sync-coordinator.service';
-import { InitialScanProcessor } from './processors/initial-scan.processor';
-import { InitialSyncProcessor } from './processors/initial-sync.processor';
+// import { InitialScanProcessor } from './processors/initial-scan.processor'; // <<< COMMENT OUT
+// import { InitialSyncProcessor } from './processors/initial-sync.processor'; // <<< COMMENT OUT
 import { WebhookController } from './webhook.controller';
 import { SyncController } from './sync.controller';
 
@@ -31,28 +31,20 @@ import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, WEBHOOK_QUEUE } from './sync-en
     ShopifyAdapterModule, // Example: Import specific adapter modules
     SquareAdapterModule,  // <<< NEW: Import Square
     // PlatformAdapterRegistry, // <<< REMOVED from imports
-    BullModule, // <<< Explicitly import BullModule
+    // BullModule, // <<< COMMENT OUT
 
-    // Configure BullMQ Queues
+    // <<< COMMENT OUT BullMQ Config >>>
+    /*
     BullModule.forRootAsync({
         imports: [ConfigModule],
         inject: [ConfigService],
         useFactory: (configService: ConfigService) => {
             const redisUrl = configService.get<string>('REDIS_URL');
-            // --- Add Logging Here ---
             console.log(`[BullMQ Config] Using REDIS_URL: ${redisUrl}`);
-            // --- End Logging ---
             return {
                 connection: redisUrl
-                    ? { // Use connectionString if REDIS_URL is provided
-                          connectionString: redisUrl,
-                          // Explicitly add TLS options needed for rediss://
-                          ...(redisUrl.startsWith('rediss://') ? { tls: {} } : {}),
-                      }
-                    : { // Fallback to host/port (Likely hitting this?)
-                          host: configService.get<string>('QUEUE_HOST', 'localhost'),
-                          port: configService.get<number>('QUEUE_PORT', 6379),
-                      },
+                    ? { connectionString: redisUrl, ...(redisUrl.startsWith('rediss://') ? { tls: {} } : {}) }
+                    : { host: configService.get<string>('QUEUE_HOST', 'localhost'), port: configService.get<number>('QUEUE_PORT', 6379) },
             };
         },
     }),
@@ -61,15 +53,17 @@ import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, WEBHOOK_QUEUE } from './sync-en
         { name: INITIAL_SYNC_QUEUE },
         { name: WEBHOOK_QUEUE },
     ),
+    */
+    // <<< END COMMENT OUT BullMQ Config >>>
   ],
   controllers: [WebhookController, SyncController],
   providers: [
     MappingService,
-    InitialSyncService,
+    InitialSyncService, // Note: This service will fail if not commented out/modified due to missing @InjectQueue
     SyncCoordinatorService,
     // Processors for the queues
-    InitialScanProcessor,
-    InitialSyncProcessor,
+    // InitialScanProcessor, // <<< COMMENT OUT
+    // InitialSyncProcessor, // <<< COMMENT OUT
     PlatformAdapterRegistry, // <<< ENSURE it's in providers
     // Add WebhookProcessor etc.
   ],
