@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq'; // Import BullModule
 import { ConfigModule, ConfigService } from '@nestjs/config'; // Needed for queue config
 import { PlatformConnectionsModule } from '../platform-connections/platform-connections.module';
+import { CommonModule } from '../common/common.module'; // <<< IMPORT CommonModule
 // Import Canonical Data Services/Modules if they exist
 // import { ProductsModule } from '../products/products.module';
 // import { InventoryModule } from '../inventory/inventory.module';
@@ -19,18 +20,18 @@ import { SquareAdapterModule } from '../platform-adapters/square/square-adapter.
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry'; // <<< NEW: Import Registry
 
 // Queue Names (use constants)
-export const INITIAL_SCAN_QUEUE = 'initial-scan';
-export const INITIAL_SYNC_QUEUE = 'initial-sync';
-export const WEBHOOK_QUEUE = 'webhook-processing';
+import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, WEBHOOK_QUEUE } from './sync-engine.constants'; // <<< IMPORT from new file
 
 @Module({
   imports: [
     ConfigModule, // Ensure ConfigModule is available
     PlatformConnectionsModule, // Needs connection service
+    CommonModule, // <<< ADD CommonModule HERE
     // Import modules providing Canonical Data services (ProductsService, InventoryService etc)
     ShopifyAdapterModule, // Example: Import specific adapter modules
     SquareAdapterModule,  // <<< NEW: Import Square
-    // PlatformAdapterRegistry, // <<< REMOVE from imports
+    // PlatformAdapterRegistry, // <<< REMOVED from imports
+    BullModule, // <<< Explicitly import BullModule
 
     // Configure BullMQ Queues
     BullModule.forRootAsync({

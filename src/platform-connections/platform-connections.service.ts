@@ -24,13 +24,16 @@ export interface PlatformConnection {
 @Injectable()
 export class PlatformConnectionsService {
     private readonly logger = new Logger(PlatformConnectionsService.name);
-    private supabase: SupabaseClient;
 
     constructor(
         private readonly supabaseService: SupabaseService,
         private readonly encryptionService: EncryptionService,
     ) {
-        this.supabase = this.supabaseService.getClient();
+    }
+
+    // Helper function to get the client or throw
+    private getSupabaseClient(): SupabaseClient {
+        return this.supabaseService.getClient();
     }
 
     async createOrUpdateConnection(
@@ -41,6 +44,7 @@ export class PlatformConnectionsService {
         status: PlatformConnection['Status'],
         platformSpecificData?: Record<string, any>,
     ): Promise<PlatformConnection> {
+        const supabase = this.getSupabaseClient(); // Get client here
         let encryptedCredentialsResult: any;
         try {
             // --- FIX ---
@@ -71,7 +75,7 @@ export class PlatformConnectionsService {
         };
 
         this.logger.log(`Upserting connection for user ${userId}, platform ${platformType}`);
-        const { data, error } = await this.supabase
+        const { data, error } = await supabase
             .from('PlatformConnections')
             .upsert(connectionData, { onConflict: 'UserId, PlatformType' })
             .select()
@@ -86,7 +90,8 @@ export class PlatformConnectionsService {
     }
 
     async getConnectionById(connectionId: string, userId: string): Promise<PlatformConnection | null> {
-         const { data, error } = await this.supabase
+         const supabase = this.getSupabaseClient(); // Get client here
+         const { data, error } = await supabase
              .from('PlatformConnections')
              .select('*')
              .eq('Id', connectionId)
@@ -101,8 +106,9 @@ export class PlatformConnectionsService {
     }
 
     async getConnectionsForUser(userId: string): Promise<PlatformConnection[]> {
+        const supabase = this.getSupabaseClient(); // Get client here
         // Select only non-sensitive fields for listing
-        const { data, error } = await this.supabase
+        const { data, error } = await supabase
             .from('PlatformConnections')
             .select('Id, UserId, PlatformType, DisplayName, Status, IsEnabled, LastSyncSuccessAt, CreatedAt, UpdatedAt')
             .eq('UserId', userId)
@@ -124,8 +130,9 @@ export class PlatformConnectionsService {
      }
 
     async deleteConnection(connectionId: string, userId: string): Promise<void> {
+        const supabase = this.getSupabaseClient(); // Get client here
         this.logger.log(`Deleting connection ${connectionId} for user ${userId}`);
-        const { error } = await this.supabase
+        const { error } = await supabase
             .from('PlatformConnections')
             .delete()
             .eq('Id', connectionId)
@@ -182,13 +189,14 @@ export class PlatformConnectionsService {
             IsEnabled?: boolean;
         }
     ): Promise<void> {
+        const supabase = this.getSupabaseClient(); // Get client here
         this.logger.log(`Updating data for connection ${connectionId}`, updates);
         const updatePayload = { ...updates, UpdatedAt: new Date().toISOString() };
 
         // Remove undefined fields to avoid overwriting with null in DB if not intended
         Object.keys(updatePayload).forEach(key => updatePayload[key] === undefined && delete updatePayload[key]);
 
-        const { error } = await this.supabase
+        const { error } = await supabase
             .from('PlatformConnections')
             .update(updatePayload)
             .eq('Id', connectionId)

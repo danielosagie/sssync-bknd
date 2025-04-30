@@ -36,20 +36,25 @@ interface ConfirmedMapping {
 @Injectable()
 export class MappingService {
     private readonly logger = new Logger(MappingService.name);
-    private supabase: SupabaseClient;
 
     constructor(private supabaseService: SupabaseService) {
-        this.supabase = this.supabaseService.getClient();
+        // Remove: this.supabase = this.supabaseService.getClient();
+    }
+
+    // Optional: Add helper if preferred, or call directly
+    private getSupabaseClient(): SupabaseClient {
+        return this.supabaseService.getClient();
     }
 
     /**
      * Generates mapping suggestions by comparing platform data against existing canonical data.
      */
     async generateSuggestions(platformData: { products: PlatformProductData[], variants: PlatformProductData[] /* Adjust based on adapter output */ }, userId: string, platformType: string): Promise<MappingSuggestion[]> {
+        const supabase = this.getSupabaseClient(); // Get client here
         this.logger.log(`Generating mapping suggestions for ${platformType}, user ${userId}`);
 
         // 1. Get all existing canonical variants for the user (SKU, Barcode, ID, Title)
-        const { data: canonicalVariants, error: variantError } = await this.supabase
+        const { data: canonicalVariants, error: variantError } = await supabase
             .from('ProductVariants')
             .select('Id, Sku, Barcode, Title')
             .eq('UserId', userId);
@@ -116,6 +121,7 @@ export class MappingService {
      * Saves the mappings confirmed by the user.
      */
     async saveConfirmedMappings(connection: PlatformConnection, confirmationData: { confirmedMatches: ConfirmedMapping[] }): Promise<void> {
+        const supabase = this.getSupabaseClient(); // Get client here
         this.logger.log(`Saving ${confirmationData.confirmedMatches.length} confirmed mappings for connection ${connection.Id}`);
 
         const mappingsToUpsert = confirmationData.confirmedMatches
@@ -132,7 +138,7 @@ export class MappingService {
             }));
 
         if (mappingsToUpsert.length > 0) {
-            const { error } = await this.supabase
+            const { error } = await supabase
                 .from('PlatformProductMappings')
                 .upsert(mappingsToUpsert, { onConflict: 'PlatformConnectionId, ProductVariantId' }); // Adjust onConflict based on unique constraints
 
@@ -150,7 +156,8 @@ export class MappingService {
       * Finds an existing mapping.
       */
      async findMapping(connectionId: string, platformProductId: string): Promise<any /* PlatformProductMapping */ | null> {
-         const { data, error } = await this.supabase
+         const supabase = this.getSupabaseClient(); // Get client here
+         const { data, error } = await supabase
              .from('PlatformProductMappings')
              .select('*') // Select needed fields
              .eq('PlatformConnectionId', connectionId)
@@ -169,6 +176,7 @@ export class MappingService {
       * This data might be stored temporarily (Redis) or persistently (DB).
       */
      async getConfirmedMappings(connectionId: string): Promise<{ confirmedMatches: ConfirmedMapping[] } | null> {
+         const supabase = this.getSupabaseClient(); // Get client here
          this.logger.log(`Fetching confirmed mappings for connection ${connectionId}`);
          // TODO: Implement retrieval logic.
          // How was the data from saveConfirmedMappings stored?

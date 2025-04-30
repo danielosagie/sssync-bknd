@@ -3,7 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service'; // Adjust path
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry'; // Adjust path
-import { WEBHOOK_QUEUE } from './sync-engine.module'; // Adjust path
+import { WEBHOOK_QUEUE } from './sync-engine.constants'; // Adjust path
 // Import canonical data services (Products, Inventory, Mapping)
 
 @Injectable()

@@ -1,5 +1,6 @@
 import { Controller, Post, Get, Body, Param, UseGuards, Request, Logger, ParseUUIDPipe, ValidationPipe } from '@nestjs/common'; // Added ValidationPipe
-import { InitialSyncService, InitialScanResult, MappingSuggestion, SyncPreview } from './initial-sync.service'; // Check path
+import { InitialSyncService, InitialScanResult, SyncPreview } from './initial-sync.service'; // Check path
+import { MappingSuggestion } from './mapping.service'; // <<< Import from mapping.service
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard'; // Check path
 import { ConfirmMappingsDto } from './dto/confirm-mappings.dto'; // Check path
 

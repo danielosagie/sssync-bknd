@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger, InternalServerErrorException } from '@nestjs/common';
-import { INITIAL_SCAN_QUEUE } from '../sync-engine.module';
+import { INITIAL_SCAN_QUEUE } from '../sync-engine.constants';
 import { PlatformConnectionsService } from '../../platform-connections/platform-connections.service';
 import { MappingService } from '../mapping.service';
 import { PlatformAdapterRegistry } from '../../platform-adapters/adapter.registry';

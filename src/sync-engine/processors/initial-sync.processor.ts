@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { Logger, InternalServerErrorException } from '@nestjs/common';
-import { INITIAL_SYNC_QUEUE } from '../sync-engine.module'; // Adjust path
+import { INITIAL_SYNC_QUEUE } from '../sync-engine.constants'; // Adjust path
 import { PlatformConnectionsService } from '../../platform-connections/platform-connections.service'; // Adjust path
 import { PlatformAdapterRegistry } from '../../platform-adapters/adapter.registry'; // Adjust path
 import { MappingService } from '../mapping.service'; // Adjust path

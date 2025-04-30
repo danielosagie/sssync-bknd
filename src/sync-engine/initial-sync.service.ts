@@ -2,15 +2,16 @@ import { Injectable, Logger, NotFoundException, InternalServerErrorException } f
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service';
-import { MappingService } from './mapping.service';
-import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE } from './sync-engine.module';
+import { MappingService, MappingSuggestion } from './mapping.service';
+import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE } from './sync-engine.constants';
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
 
 // Define interfaces for return types
 export interface InitialScanResult { countProducts: number; countVariants: number; countLocations: number; analysisId?: string; }
-export interface MappingSuggestion { sourceId: string; targetId?: string; confidence: number; /*...*/ }
 export interface SyncPreview { actions: Array<{type: string; description: string}>; /* ... */ }
 export interface JobData { connectionId: string; userId: string; platformType: string; } // Type for job data
+
+console.log('[InitialSyncService] Imported INITIAL_SCAN_QUEUE:', INITIAL_SCAN_QUEUE); // Log constant
 
 @Injectable()
 export class InitialSyncService {
