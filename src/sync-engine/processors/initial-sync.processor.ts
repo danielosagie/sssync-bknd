@@ -9,7 +9,7 @@ import { JobData } from '../initial-sync.service'; // Adjust path
 import { SupabaseService } from '../../common/supabase.service'; // Inject Supabase for transactions if needed
 // Import Canonical Data services (ProductsService, InventoryService etc.)
 
-@Processor(INITIAL_SYNC_QUEUE)
+// @Processor(INITIAL_SYNC_QUEUE) // <<< RE-COMMENT OUT Decorator
 export class InitialSyncProcessor extends WorkerHost {
     private readonly logger = new Logger(InitialSyncProcessor.name);
 
@@ -25,6 +25,7 @@ export class InitialSyncProcessor extends WorkerHost {
         super();
     }
 
+    // Process method will not be called if @Processor is commented out
     async process(job: Job<JobData, any, string>): Promise<any> {
          const { connectionId, userId, platformType } = job.data;
          this.logger.log(`Processing initial SYNC job ${job.id} for connection ${connectionId} (${platformType})...`);

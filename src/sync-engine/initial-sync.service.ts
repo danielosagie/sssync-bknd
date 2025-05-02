@@ -1,9 +1,9 @@
 import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq'; // <<< UNCOMMENT
-import { Queue } from 'bullmq'; // <<< UNCOMMENT
+// import { InjectQueue } from '@nestjs/bullmq'; // <<< RE-COMMENT OUT
+// import { Queue } from 'bullmq'; // <<< RE-COMMENT OUT
 import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service';
 import { MappingService, MappingSuggestion } from './mapping.service';
-import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE } from './sync-engine.constants'; // <<< UNCOMMENT
+// import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE } from './sync-engine.constants'; // <<< RE-COMMENT OUT
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
 
 // Define interfaces for return types
@@ -11,16 +11,16 @@ export interface InitialScanResult { countProducts: number; countVariants: numbe
 export interface SyncPreview { actions: Array<{type: string; description: string}>; /* ... */ }
 export interface JobData { connectionId: string; userId: string; platformType: string; } // Type for job data
 
-// console.log('[InitialSyncService] Imported INITIAL_SCAN_QUEUE:', INITIAL_SCAN_QUEUE); // Can uncomment for debug if needed
+// console.log('[InitialSyncService] Imported INITIAL_SCAN_QUEUE:', INITIAL_SCAN_QUEUE);
 
 @Injectable()
 export class InitialSyncService {
     private readonly logger = new Logger(InitialSyncService.name);
 
     constructor(
-        // Uncomment queue injections
-        @InjectQueue(INITIAL_SCAN_QUEUE) private initialScanQueue: Queue,
-        @InjectQueue(INITIAL_SYNC_QUEUE) private initialSyncQueue: Queue,
+        // Re-comment queue injections
+        // @InjectQueue(INITIAL_SCAN_QUEUE) private initialScanQueue: Queue,
+        // @InjectQueue(INITIAL_SYNC_QUEUE) private initialSyncQueue: Queue,
         private readonly connectionService: PlatformConnectionsService,
         private readonly mappingService: MappingService,
     ) {}
@@ -39,13 +39,13 @@ export class InitialSyncService {
         await this.connectionService.updateConnectionStatus(connectionId, userId, 'scanning');
         const jobData: JobData = { connectionId, userId, platformType: connection.PlatformType! };
 
-        // --- Enable queueing ---
-        // this.logger.warn('BullMQ is disabled. Skipping initialScanQueue.add()');
-        const job = await this.initialScanQueue.add('scan-platform-data', jobData); // Use a descriptive job name
-        this.logger.log(`Job ${job.id} added to queue ${INITIAL_SCAN_QUEUE}`);
-        return job.id!;
-        // return 'disabled-job-id'; // Return dummy ID
-        // --- End Enable ---
+        // --- Re-disable queueing ---
+        this.logger.warn('BullMQ is disabled. Skipping initialScanQueue.add() - Returning dummy ID.');
+        // const job = await this.initialScanQueue.add('scan-platform-data', jobData); // Use a descriptive job name
+        // this.logger.log(`Job ${job.id} added to queue ${INITIAL_SCAN_QUEUE}`);
+        // return job.id!;
+        return 'disabled-job-id'; // Return dummy ID
+        // --- End Re-disable ---
     }
 
     async getScanSummary(connectionId: string, userId: string): Promise<InitialScanResult> {
@@ -84,12 +84,12 @@ export class InitialSyncService {
         this.logger.log(`Queueing initial sync execution job for connection ${connectionId} (${connection.PlatformType})`);
         const jobData: JobData = { connectionId, userId, platformType: connection.PlatformType! };
 
-        // --- Enable queueing ---
-        // this.logger.warn('BullMQ is disabled. Skipping initialSyncQueue.add()');
-        const job = await this.initialSyncQueue.add('execute-initial-sync', jobData); // Use descriptive job name
-        this.logger.log(`Job ${job.id} added to queue ${INITIAL_SYNC_QUEUE}`);
-        return job.id!;
-        // return 'disabled-job-id'; // Return dummy ID
-        // --- End Enable ---
+        // --- Re-disable queueing ---
+        this.logger.warn('BullMQ is disabled. Skipping initialSyncQueue.add() - Returning dummy ID.');
+        // const job = await this.initialSyncQueue.add('execute-initial-sync', jobData); // Use descriptive job name
+        // this.logger.log(`Job ${job.id} added to queue ${INITIAL_SYNC_QUEUE}`);
+        // return job.id!;
+        return 'disabled-job-id'; // Return dummy ID
+        // --- End Re-disable ---
     }
 } 
