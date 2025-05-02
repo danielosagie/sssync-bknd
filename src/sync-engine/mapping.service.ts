@@ -1,45 +1,61 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { SupabaseService } from '../common/supabase.service'; // Adjust path
-import { PlatformConnection } from '../platform-connections/platform-connections.service'; // Adjust path
+import { PlatformConnection, PlatformConnectionsService } from '../platform-connections/platform-connections.service'; // Adjust path
 import { SupabaseClient } from '@supabase/supabase-js';
+import { ProductVariant } from '../canonical-data/entities/product-variant.entity'; // <<< Import Canonical type
+import { ProductsService } from '../canonical-data/products.service'; // <<< Import ProductsService
 
 // Interfaces (define more comprehensively based on needs)
 interface PlatformProductData {
-    id: string;
+    id: string; // Platform GID/ID
     sku?: string | null;
     barcode?: string | null;
     title?: string | null;
-    // ... other raw fields ...
+    // Add other raw fields needed for displaying suggestions
+    price?: string | number | null;
+    imageUrl?: string | null;
 }
 
-interface CanonicalVariantData {
-    Id: string; // sssync ProductVariant Id
-    Sku?: string | null;
-    Barcode?: string | null;
-    Title?: string | null;
-}
+// Re-using canonical type definition
+// interface CanonicalVariantData {
+//     Id: string; // sssync ProductVariant Id
+//     Sku?: string | null;
+//     Barcode?: string | null;
+//     Title?: string | null;
+// }
 
 export interface MappingSuggestion {
     platformProduct: PlatformProductData;
-    suggestedCanonicalVariant?: CanonicalVariantData | null; // Matched sssync variant
+    suggestedCanonicalVariant?: Partial<ProductVariant> | null; // Use Partial<ProductVariant>
     matchType: 'SKU' | 'BARCODE' | 'NONE';
     confidence: number; // 0 to 1
 }
 
-interface ConfirmedMapping {
+export interface ConfirmedMatch {
     platformProductId: string;
+    platformVariantId?: string | null; // Store if available/relevant (e.g., Shopify)
+    platformProductSku?: string | null; // Store for reference
+    platformProductTitle?: string | null; // Store for reference
     sssyncVariantId?: string | null; // Null if creating new
     action: 'link' | 'create' | 'ignore';
-    // Include platformVariantId if needed
+}
+
+// Structure stored in PlatformSpecificData
+interface StoredConfirmationData {
+    confirmedMatches: ConfirmedMatch[];
+    confirmedAt: string; // ISO timestamp
 }
 
 @Injectable()
 export class MappingService {
     private readonly logger = new Logger(MappingService.name);
 
-    constructor(private supabaseService: SupabaseService) {
-        // Remove: this.supabase = this.supabaseService.getClient();
-    }
+    constructor(
+        private supabaseService: SupabaseService,
+        // Inject services needed for suggestions and saving
+        private productsService: ProductsService,
+        private connectionsService: PlatformConnectionsService
+    ) {}
 
     // Optional: Add helper if preferred, or call directly
     private getSupabaseClient(): SupabaseClient {
@@ -49,59 +65,55 @@ export class MappingService {
     /**
      * Generates mapping suggestions by comparing platform data against existing canonical data.
      */
-    async generateSuggestions(platformData: { products: PlatformProductData[], variants: PlatformProductData[] /* Adjust based on adapter output */ }, userId: string, platformType: string): Promise<MappingSuggestion[]> {
-        const supabase = this.getSupabaseClient(); // Get client here
+    async generateSuggestions(platformData: { products: any[], variants: PlatformProductData[] /* Adapt based on adapter output */ }, userId: string, platformType: string): Promise<MappingSuggestion[]> {
+        const supabase = this.getSupabaseClient();
         this.logger.log(`Generating mapping suggestions for ${platformType}, user ${userId}`);
 
-        // 1. Get all existing canonical variants for the user (SKU, Barcode, ID, Title)
-        const { data: canonicalVariants, error: variantError } = await supabase
-            .from('ProductVariants')
-            .select('Id, Sku, Barcode, Title')
-            .eq('UserId', userId);
-
-        if (variantError) {
-            this.logger.error(`Failed to fetch canonical variants for user ${userId}: ${variantError.message}`);
-            // Decide: throw error or return empty suggestions? Returning empty might be safer for flow.
-            return [];
-        }
+        // 1. Get all existing canonical variants for the user
+        const canonicalVariants = await this.productsService.findVariantsByUserId(userId);
 
         const suggestions: MappingSuggestion[] = [];
-        const canonicalVariantsMap = new Map<string, CanonicalVariantData>();
-        const canonicalBarcodesMap = new Map<string, CanonicalVariantData>();
+        const canonicalVariantsMap = new Map<string, Partial<ProductVariant>>();
+        const canonicalBarcodesMap = new Map<string, Partial<ProductVariant>>();
         canonicalVariants?.forEach(v => {
-            if (v.Sku) canonicalVariantsMap.set(v.Sku.trim().toLowerCase(), v as CanonicalVariantData);
-            if (v.Barcode) canonicalBarcodesMap.set(v.Barcode.trim().toLowerCase(), v as CanonicalVariantData);
+            if (v.Sku) canonicalVariantsMap.set(v.Sku.trim().toLowerCase(), v);
+            if (v.Barcode) canonicalBarcodesMap.set(v.Barcode.trim().toLowerCase(), v);
         });
 
-        // Use platform variants if available, otherwise products
-        const itemsToMap = platformData.variants?.length > 0 ? platformData.variants : platformData.products;
+        const itemsToMap: PlatformProductData[] = platformData.variants?.length > 0 ? platformData.variants : platformData.products;
 
-        // 2. Iterate through fetched platform items
+        if (!itemsToMap || itemsToMap.length === 0) {
+             this.logger.warn(`No platform items provided to generate suggestions for ${platformType}, user ${userId}.`);
+             return [];
+        }
+
         for (const item of itemsToMap) {
-            let match: CanonicalVariantData | null = null;
+            let match: Partial<ProductVariant> | null = null;
             let matchType: MappingSuggestion['matchType'] = 'NONE';
             let confidence = 0;
 
-            // 3. Attempt matching (prioritize Barcode, then SKU)
+            if (!item || !item.id) continue;
+
             const itemSku = item.sku?.trim().toLowerCase();
             const itemBarcode = item.barcode?.trim().toLowerCase();
 
+            // Try barcode match first
             if (itemBarcode && canonicalBarcodesMap.has(itemBarcode)) {
                 match = canonicalBarcodesMap.get(itemBarcode)!;
                 matchType = 'BARCODE';
-                confidence = 0.95; // High confidence
-            } else if (itemSku && canonicalVariantsMap.has(itemSku)) {
-                match = canonicalVariantsMap.get(itemSku)!;
-                matchType = 'SKU';
-                confidence = 0.90; // Slightly lower confidence than barcode
-                 // Avoid suggesting the same match twice if barcode also matched
-                 if (match === canonicalBarcodesMap.get(itemBarcode!)) {
-                    // Barcode match already found, skip SKU suggestion unless different item
-                    continue;
-                 }
+                confidence = 0.95;
             }
 
-            // TODO: Add conflict detection (e.g., multiple platform items mapping to same canonical item?)
+            // Try SKU match ONLY if barcode didn't match OR if SKU match is a DIFFERENT variant
+            if (itemSku && canonicalVariantsMap.has(itemSku)) {
+                const skuMatch = canonicalVariantsMap.get(itemSku)!;
+                // If no barcode match OR if the SKU match is different from the barcode match
+                if (matchType !== 'BARCODE' || (match && skuMatch.Id !== match.Id)) {
+                     match = skuMatch;
+                     matchType = 'SKU';
+                     confidence = 0.90;
+                }
+            }
 
             suggestions.push({
                 platformProduct: item,
@@ -111,45 +123,59 @@ export class MappingService {
             });
         }
 
-        // TODO: Store these suggestions temporarily (e.g., Redis cache, or a dedicated DB table?)
-        // keyed by connectionId or a scanJobId so the controller can retrieve them later.
         this.logger.log(`Generated ${suggestions.length} mapping suggestions for ${platformType}, user ${userId}`);
         return suggestions;
     }
 
     /**
-     * Saves the mappings confirmed by the user.
+     * Saves the mappings confirmed by the user into PlatformConnections.PlatformSpecificData.
      */
-    async saveConfirmedMappings(connection: PlatformConnection, confirmationData: { confirmedMatches: ConfirmedMapping[] }): Promise<void> {
-        const supabase = this.getSupabaseClient(); // Get client here
+    async saveConfirmedMappings(connection: PlatformConnection, confirmationData: { confirmedMatches: ConfirmedMatch[] }): Promise<void> {
         this.logger.log(`Saving ${confirmationData.confirmedMatches.length} confirmed mappings for connection ${connection.Id}`);
 
+        const dataToStore: StoredConfirmationData = {
+            confirmedMatches: confirmationData.confirmedMatches,
+            confirmedAt: new Date().toISOString(),
+        };
+
+        const currentData = connection.PlatformSpecificData || {};
+        const newData = { ...currentData, mappingConfirmations: dataToStore };
+
+        try {
+            await this.connectionsService.updateConnectionData(connection.Id, connection.UserId, { PlatformSpecificData: newData });
+            this.logger.log(`Successfully saved mapping confirmations to PlatformSpecificData for connection ${connection.Id}`);
+        } catch (error) {
+             this.logger.error(`Failed to update PlatformSpecificData with confirmed mappings for connection ${connection.Id}: ${error.message}`);
+             throw new InternalServerErrorException('Failed to save mapping confirmations.');
+        }
+
+        // Also save direct links to PlatformProductMappings table for 'link' actions
         const mappingsToUpsert = confirmationData.confirmedMatches
-            .filter(match => match.action === 'link' && match.sssyncVariantId) // Only save links with target ID
+            .filter(match => match.action === 'link' && match.sssyncVariantId)
             .map(match => ({
                 PlatformConnectionId: connection.Id,
-                ProductVariantId: match.sssyncVariantId, // Canonical sssync Variant ID
-                PlatformProductId: match.platformProductId, // Platform's ID
-                // PlatformVariantId: match.platformVariantId, // Add if applicable
-                PlatformSpecificData: { confirmedByUser: true }, // Optional metadata
-                SyncStatus: 'Pending', // Initial status for linked items
+                ProductVariantId: match.sssyncVariantId,
+                PlatformProductId: match.platformProductId,
+                PlatformVariantId: match.platformVariantId || null,
+                PlatformSku: match.platformProductSku || null,
+                PlatformSpecificData: { confirmedByUser: true, action: 'link' },
+                SyncStatus: 'Linked', // Or 'Pending' if initial sync needed
                 IsEnabled: true,
-                // Use platform's SKU/Variant ID if needed for uniqueness constraint? Check schema.
+                UpdatedAt: new Date().toISOString(),
             }));
 
         if (mappingsToUpsert.length > 0) {
-            const { error } = await supabase
-                .from('PlatformProductMappings')
-                .upsert(mappingsToUpsert, { onConflict: 'PlatformConnectionId, ProductVariantId' }); // Adjust onConflict based on unique constraints
+             const supabase = this.getSupabaseClient();
+             this.logger.log(`Upserting ${mappingsToUpsert.length} direct links into PlatformProductMappings.`);
+             const { error } = await supabase
+                 .from('PlatformProductMappings')
+                 .upsert(mappingsToUpsert, { onConflict: 'PlatformConnectionId, ProductVariantId' }); // Adjust onConflict based on unique constraints
 
-            if (error) {
-                this.logger.error(`Failed to save confirmed mappings for connection ${connection.Id}: ${error.message}`);
-                throw new InternalServerErrorException('Failed to save mapping confirmations.');
-            }
+             if (error) {
+                 this.logger.error(`Failed to save direct mappings for connection ${connection.Id}: ${error.message}`);
+                 // Don't necessarily throw here if PlatformSpecificData save succeeded, but log error
+             }
         }
-        // Note: 'create' actions will be handled during the InitialSyncProcessor based on this confirmation data
-        // Note: 'ignore' actions are implicitly handled by not creating a mapping.
-        this.logger.log(`Successfully saved/updated ${mappingsToUpsert.length} mappings for connection ${connection.Id}`);
     }
 
      /**
@@ -172,22 +198,31 @@ export class MappingService {
      }
 
      /**
-      * Retrieves the confirmed mappings/actions for a connection.
-      * This data might be stored temporarily (Redis) or persistently (DB).
+      * Retrieves the confirmed mapping actions from PlatformConnections.PlatformSpecificData.
       */
-     async getConfirmedMappings(connectionId: string): Promise<{ confirmedMatches: ConfirmedMapping[] } | null> {
-         const supabase = this.getSupabaseClient(); // Get client here
-         this.logger.log(`Fetching confirmed mappings for connection ${connectionId}`);
-         // TODO: Implement retrieval logic.
-         // How was the data from saveConfirmedMappings stored?
-         // Option A: Store in PlatformConnections.PlatformSpecificData JSONB column.
-         // Option B: Store in a dedicated "MappingConfirmations" table.
-         // Option C: Store temporarily in Redis Cache.
-         // Placeholder - assumes it needs implementation:
-         console.warn(`getConfirmedMappings for ${connectionId} not fully implemented.`);
-         // Example returning empty if not found:
-         return { confirmedMatches: [] }; // Return structure expected by processor
-         // return null; // Or return null if absolutely nothing found
+     async getConfirmedMappings(connectionId: string): Promise<StoredConfirmationData | null> {
+         const supabase = this.getSupabaseClient();
+         this.logger.log(`Fetching confirmed mappings from PlatformSpecificData for connection ${connectionId}`);
+
+         const { data, error } = await supabase
+            .from('PlatformConnections')
+            .select('PlatformSpecificData')
+            .eq('Id', connectionId)
+            .single();
+
+        if (error) {
+            this.logger.error(`Failed to fetch PlatformSpecificData for connection ${connectionId}: ${error.message}`);
+            // Throw or return null? Returning null might be safer for processor flow.
+            return null;
+        }
+
+        if (!data || !data.PlatformSpecificData?.mappingConfirmations) {
+            this.logger.warn(`No mappingConfirmations found in PlatformSpecificData for connection ${connectionId}`);
+            return null;
+        }
+
+        // TODO: Add validation here? Use class-transformer?
+        return data.PlatformSpecificData.mappingConfirmations as StoredConfirmationData;
      }
 
      // TODO: Add findVariantByPlatformId etc. as needed by SyncCoordinator
