@@ -31,9 +31,9 @@ export class PlatformConnectionsService {
     ) {
     }
 
-    // Helper function to get the client or throw
+    // Helper function to get the client or throw - Use service client to bypass RLS
     private getSupabaseClient(): SupabaseClient {
-        return this.supabaseService.getClient();
+        return this.supabaseService.getServiceClient(); // Use the service_role client to bypass RLS
     }
 
     async createOrUpdateConnection(
