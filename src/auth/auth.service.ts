@@ -133,20 +133,34 @@ export class AuthService {
   getShopifyStoreLoginUrl(userId: string, appFinalRedirectUri: string): string {
     this.logger.log(`Generating Shopify Store Login URL for user ${userId}, final app URI: ${appFinalRedirectUri}`);
     const accountsBaseUrl = 'https://accounts.shopify.com';
-    const intermediateCallbackPath = '/api/auth/shopify/store-picker-callback'; // Define path for the intermediate callback
+    const intermediateCallbackPath = '/auth/shopify/store-picker-callback';
 
     // Construct the full intermediate callback URL (must be absolute)
-    // Use HOST_NAME which should be the base URL of *this* backend API
     const apiBaseUrl = this.configService.get<string>('HOST_NAME');
     if (!apiBaseUrl) {
         this.logger.error('HOST_NAME is not configured. Cannot build intermediate callback URL.');
         throw new InternalServerErrorException('Server configuration error: HOST_NAME missing.');
     }
 
-    // Ensure apiBaseUrl includes the protocol
-    const fullApiBase = apiBaseUrl.startsWith('http') ? apiBaseUrl : `https://${apiBaseUrl}`;
+    let fullApiBase = apiBaseUrl; // Assume it might already include it
+    if (!fullApiBase.startsWith('http://') && !fullApiBase.startsWith('https://')) {
+        // Default to HTTPS if no protocol specified
+        fullApiBase = `https://${apiBaseUrl}`;
+    } else if (fullApiBase.startsWith('http://')) {
+        // Warn/error if http is explicitly used for HOST_NAME, as HTTPS is required
+        this.logger.warn(`HOST_NAME uses http:// (${fullApiBase}). Shopify callbacks require https://.`);
+        // Optionally force HTTPS:
+        // fullApiBase = fullApiBase.replace('http://', 'https://');
+    }
 
-    const intermediateCallbackUrl = new URL(intermediateCallbackPath, fullApiBase);
+    // Construct URL object using the corrected base and path
+    let intermediateCallbackUrl: URL;
+    try {
+         intermediateCallbackUrl = new URL(intermediateCallbackPath, fullApiBase);
+    } catch (e) {
+         this.logger.error(`Failed to construct intermediate callback URL object from base '${fullApiBase}' and path '${intermediateCallbackPath}': ${e.message}`);
+         throw new InternalServerErrorException('Failed to construct internal callback URL.');
+    }
 
     // Add necessary parameters for the intermediate callback
     intermediateCallbackUrl.searchParams.set('userId', userId);
