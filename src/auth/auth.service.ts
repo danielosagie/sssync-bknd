@@ -128,32 +128,26 @@ export class AuthService {
 
   /**
    * Constructs the URL for the generic Shopify Accounts store login/picker page.
-   * Embeds the necessary info for our intermediate callback.
+   * Embeds the necessary info (userId, finalRedirectUri) in the state parameter.
    */
   getShopifyStoreLoginUrl(userId: string, appFinalRedirectUri: string): string {
     this.logger.log(`Generating Shopify Store Login URL for user ${userId}, final app URI: ${appFinalRedirectUri}`);
     const accountsBaseUrl = 'https://accounts.shopify.com';
     const intermediateCallbackPath = '/auth/shopify/store-picker-callback';
 
-    // Construct the full intermediate callback URL (must be absolute)
     const apiBaseUrl = this.configService.get<string>('HOST_NAME');
     if (!apiBaseUrl) {
         this.logger.error('HOST_NAME is not configured. Cannot build intermediate callback URL.');
         throw new InternalServerErrorException('Server configuration error: HOST_NAME missing.');
     }
 
-    let fullApiBase = apiBaseUrl; // Assume it might already include it
+    let fullApiBase = apiBaseUrl;
     if (!fullApiBase.startsWith('http://') && !fullApiBase.startsWith('https://')) {
-        // Default to HTTPS if no protocol specified
         fullApiBase = `https://${apiBaseUrl}`;
     } else if (fullApiBase.startsWith('http://')) {
-        // Warn/error if http is explicitly used for HOST_NAME, as HTTPS is required
         this.logger.warn(`HOST_NAME uses http:// (${fullApiBase}). Shopify callbacks require https://.`);
-        // Optionally force HTTPS:
-        // fullApiBase = fullApiBase.replace('http://', 'https://');
     }
 
-    // Construct URL object using the corrected base and path
     let intermediateCallbackUrl: URL;
     try {
          intermediateCallbackUrl = new URL(intermediateCallbackPath, fullApiBase);
@@ -162,15 +156,20 @@ export class AuthService {
          throw new InternalServerErrorException('Failed to construct internal callback URL.');
     }
 
-    // Add necessary parameters for the intermediate callback
-    intermediateCallbackUrl.searchParams.set('userId', userId);
-    intermediateCallbackUrl.searchParams.set('finalRedirectUri', appFinalRedirectUri); // Pass the app's final target
+    const statePayload: Omit<StatePayload, 'nonce' | 'shop'> = {
+        userId,
+        platform: 'shopify-intermediate',
+        finalRedirectUri: appFinalRedirectUri,
+    };
+    const state = this.generateStateJwt(statePayload);
 
-    // Construct the final URL for Shopify Accounts
     const storeLoginUrl = new URL('/store-login', accountsBaseUrl);
     storeLoginUrl.searchParams.set('redirect_uri', intermediateCallbackUrl.toString());
+    storeLoginUrl.searchParams.set('state', state);
 
     this.logger.debug(`Constructed Store Login URL: ${storeLoginUrl.toString()}`);
+    this.logger.debug(`Intermediate Redirect URI for Store Login: ${intermediateCallbackUrl.toString()}`);
+    this.logger.debug(`State for Store Login: ${state}`);
     return storeLoginUrl.toString();
   }
 
