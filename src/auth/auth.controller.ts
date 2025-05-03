@@ -16,77 +16,50 @@ import * as crypto from 'crypto'; // Import crypto for HMAC verification
 import { StatePayload } from './interfaces/state-payload.interface'; // Ensure this import is correct
 
 
-// Helper function to build redirect URL
-const buildRedirectUrl = (base: string, platform: string, success: boolean, error?: string) => {
-  // Check if base is already a full URL (e.g., custom scheme like myapp://)
-  let redirectUrl: URL;
-  let isCustomScheme = false;
-  try {
-    // Try creating a URL with a dummy base if 'base' isn't a full URL itself
-    redirectUrl = new URL(base, 'http://api.sssync.app/');
-    if (redirectUrl.protocol === 'http:' || redirectUrl.protocol === 'https:') {
-       // It's a standard web URL or became one with the dummy base
-       isCustomScheme = false;
-    } else {
-        // It's likely a custom scheme or was intended as such
-       isCustomScheme = true;
-       // Re-parse without the dummy base if it seems like a custom scheme
-       if (base.includes('://')) {
-           redirectUrl = new URL(base);
-       } else {
-           // If it doesn't include :// but isn't http/s, it's likely invalid or needs special handling
-           // For now, let's assume it should be treated as a path component
-           console.warn(`Potentially malformed redirect base: ${base}. Treating as path.`);
-           // Fallback to treating it as a path relative to some origin, though this is ambiguous
-           // It might be better to throw an error or use a default base here.
-           // For this example, we'll construct the query string and append it.
-            const params = new URLSearchParams();
-            params.set('connection', platform);
-            params.set('status', success ? 'success' : 'error');
-            if (error) {
-                params.set('message', error);
-            }
-           return `${base}?${params.toString()}`;
-       }
+// Helper function to build redirect URL - Revised for clarity and robustness
+const buildRedirectUrl = (base: string, platform: string, success: boolean, error?: string): string => {
+    const logger = new Logger('buildRedirectUrl'); // Add logger for debugging
+    let finalUrl: URL;
+
+    try {
+        // Attempt to parse the base as is. This works for full URLs (http, https, custom schemes)
+        finalUrl = new URL(base);
+    } catch (e) {
+        // If parsing fails, it might be a relative path intended for web redirects,
+        // or simply an invalid base.
+        logger.warn(`Provided base "${base}" is not a valid URL. Assuming it's a web path.`);
+
+        // For web paths, we ideally need a configured frontend origin.
+        // For now, we'll construct a relative path starting with '/'.
+        // This relies on the client/browser context to resolve correctly.
+        // Consider throwing an error or using a default origin from config for more robustness.
+        const path = base.startsWith('/') ? base : `/${base}`;
+        const params = new URLSearchParams();
+        params.set('connection', platform);
+        params.set('status', success ? 'success' : 'error');
+        if (error) {
+            params.set('message', error);
+        }
+        return `${path}?${params.toString()}`; // Return relative path + query
     }
-  } catch (e) {
-      // Handle cases where 'base' might be like 'myapp://callback'
-      if (base.includes('://')) {
-          isCustomScheme = true;
-          try {
-              redirectUrl = new URL(base); // Try parsing directly
-          } catch (urlError) {
-              console.error(`Invalid redirect base URL provided: ${base}`, urlError);
-              // Fallback to a default known-good base URL if parsing fails
-              // This default should ideally come from config
-              const defaultBase = 'http://localhost:3000/auth/callback'; // Example default
-              console.warn(`Falling back to default redirect base: ${defaultBase}`);
-              redirectUrl = new URL(defaultBase);
-              isCustomScheme = false; // Reset as we're using a standard URL now
-          }
-      } else {
-        // If it's not a full URL and not http/s, treat as path relative to dummy
-        console.warn(`Treating redirect base as path relative to dummy: ${base}`);
-        redirectUrl = new URL(base, 'http://dummy-base');
-        isCustomScheme = false;
-      }
-  }
 
-  // Append parameters
-  redirectUrl.searchParams.set('connection', platform);
-  redirectUrl.searchParams.set('status', success ? 'success' : 'error');
-  if (error) {
-    redirectUrl.searchParams.set('message', error);
-  }
-
-  if (isCustomScheme) {
-      // For custom schemes, return the full URL string including the scheme
-      return redirectUrl.toString();
-  } else {
-      // For standard URLs (or those treated as paths), return path + query
-      // This assumes the frontend router handles the origin part.
-      return redirectUrl.pathname + redirectUrl.search;
-  }
+    // If parsing succeeded, append parameters to the existing URL object
+    try {
+        finalUrl.searchParams.set('connection', platform);
+        finalUrl.searchParams.set('status', success ? 'success' : 'error');
+        if (error) {
+            finalUrl.searchParams.set('message', error);
+        }
+        return finalUrl.toString(); // Return the full URL string
+    } catch (urlError) {
+         logger.error(`Error appending search params to URL object for base "${base}": ${urlError.message}`);
+         // Fallback in case of unexpected error during param setting
+         const fallbackParams = new URLSearchParams();
+         fallbackParams.set('connection', platform);
+         fallbackParams.set('status', 'error');
+         fallbackParams.set('message', 'Internal redirect generation error');
+         return `/?${fallbackParams.toString()}`; // Redirect to root with generic error
+    }
 };
 
 @Controller('auth')

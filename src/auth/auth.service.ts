@@ -163,8 +163,16 @@ export class AuthService {
     try {
       statePayload = this.verifyStateJwt(state, 'shopify');
 
-      if (statePayload.shop !== shop) {
-        throw new BadRequestException(`State shop parameter mismatch. Expected ${statePayload.shop}, received ${shop}`);
+      if (!statePayload.shop) {
+        throw new BadRequestException('Shop parameter missing in state payload.');
+      }
+
+      const normalizedStateShop = statePayload.shop.includes('.myshopify.com')
+           ? statePayload.shop
+           : `${statePayload.shop}.myshopify.com`;
+
+      if (normalizedStateShop !== shop) {
+        throw new BadRequestException(`State shop parameter mismatch. Expected ${normalizedStateShop}, received ${shop}`);
       }
       this.logger.debug(`State verified for shop: ${shop}, userId: ${statePayload.userId}`);
 
