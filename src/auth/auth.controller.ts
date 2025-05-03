@@ -170,6 +170,72 @@ export class AuthController {
     }
   }
 
+  /**
+   * Initiates the Shopify Store Login/Picker flow.
+   * Called by the mobile app.
+   * Redirects user to Shopify Accounts to login and pick store.
+   */
+  @Get('shopify/initiate-store-picker')
+  async shopifyInitiateStorePicker(
+    @Query('userId') userId: string,
+    @Query('finalRedirectUri') finalRedirectUri: string, // Expecting the app's custom scheme URI
+    @Res() res: Response,
+  ) {
+    if (!userId || !finalRedirectUri) {
+      throw new BadRequestException('Missing required query parameters: userId and finalRedirectUri.');
+    }
+    // Basic validation for custom scheme (optional but recommended)
+    if (!finalRedirectUri.includes('://')) {
+         this.logger.warn(`Invalid finalRedirectUri provided for store picker: ${finalRedirectUri}. Expected a URI with a scheme.`);
+         // Redirect back to the potentially invalid URI with an error?
+         // Or throw? Throwing is safer.
+         throw new BadRequestException('Invalid finalRedirectUri format. Expected a full URI with a custom scheme.');
+    }
+
+    this.logger.log(`Initiating Shopify Store Picker flow for userId: ${userId}, final app URI: ${finalRedirectUri}`);
+
+    try {
+        const storeLoginUrl = this.authService.getShopifyStoreLoginUrl(userId, finalRedirectUri);
+        res.redirect(storeLoginUrl);
+    } catch (error) {
+        this.logger.error(`Error generating Shopify Store Login URL: ${error.message}`, error.stack);
+        // Redirect back to the app's final URI with an error message
+        const errorRedirect = buildRedirectUrl(finalRedirectUri, 'shopify', false, 'Configuration error initiating login flow.');
+        res.redirect(errorRedirect);
+    }
+  }
+
+  // --- Intermediate Callback for Store Picker ---
+  /**
+   * Intermediate callback from Shopify Accounts after store selection.
+   * Constructs the final OAuth URL for the specific shop and redirects.
+   */
+  @Get('shopify/store-picker-callback')
+  async shopifyStorePickerCallback(
+      @Query('shop') shop: string, // Provided by Shopify Accounts
+      @Query('userId') userId: string, // Passed through via redirect_uri
+      @Query('finalRedirectUri') finalRedirectUri: string, // Passed through via redirect_uri
+      @Res() res: Response,
+  ) {
+      if (!shop || !userId || !finalRedirectUri) {
+         throw new BadRequestException('Missing required parameters from Shopify store picker callback.');
+      }
+      this.logger.log(`Received Shopify Store Picker callback for shop: ${shop}, user: ${userId}, final app URI: ${finalRedirectUri}`);
+
+      try {
+        // Now use the *original* getShopifyAuthUrl service method to build the
+        // final authorization URL for the *specific* shop, passing the final app URI through.
+        const finalAuthUrl = this.authService.getShopifyAuthUrl(shop, userId, finalRedirectUri);
+        this.logger.debug(`Redirecting user to final shop-specific auth URL: ${finalAuthUrl}`);
+        res.redirect(finalAuthUrl);
+      } catch (error) {
+         this.logger.error(`Error constructing final shop-specific auth URL for ${shop}: ${error.message}`, error.stack);
+         // Redirect back to the app's final URI with an error message
+         const errorRedirect = buildRedirectUrl(finalRedirectUri, 'shopify', false, 'Error preparing shop authorization.');
+         res.redirect(errorRedirect);
+      }
+  }
+
   // --- Clover Endpoints ---
   @Get('clover/login')
   async cloverLogin(

@@ -126,6 +126,40 @@ export class AuthService {
 
   // --- Shopify ---
 
+  /**
+   * Constructs the URL for the generic Shopify Accounts store login/picker page.
+   * Embeds the necessary info for our intermediate callback.
+   */
+  getShopifyStoreLoginUrl(userId: string, appFinalRedirectUri: string): string {
+    this.logger.log(`Generating Shopify Store Login URL for user ${userId}, final app URI: ${appFinalRedirectUri}`);
+    const accountsBaseUrl = 'https://accounts.shopify.com';
+    const intermediateCallbackPath = '/api/auth/shopify/store-picker-callback'; // Define path for the intermediate callback
+
+    // Construct the full intermediate callback URL (must be absolute)
+    // Use HOST_NAME which should be the base URL of *this* backend API
+    const apiBaseUrl = this.configService.get<string>('HOST_NAME');
+    if (!apiBaseUrl) {
+        this.logger.error('HOST_NAME is not configured. Cannot build intermediate callback URL.');
+        throw new InternalServerErrorException('Server configuration error: HOST_NAME missing.');
+    }
+
+    // Ensure apiBaseUrl includes the protocol
+    const fullApiBase = apiBaseUrl.startsWith('http') ? apiBaseUrl : `https://${apiBaseUrl}`;
+
+    const intermediateCallbackUrl = new URL(intermediateCallbackPath, fullApiBase);
+
+    // Add necessary parameters for the intermediate callback
+    intermediateCallbackUrl.searchParams.set('userId', userId);
+    intermediateCallbackUrl.searchParams.set('finalRedirectUri', appFinalRedirectUri); // Pass the app's final target
+
+    // Construct the final URL for Shopify Accounts
+    const storeLoginUrl = new URL('/store-login', accountsBaseUrl);
+    storeLoginUrl.searchParams.set('redirect_uri', intermediateCallbackUrl.toString());
+
+    this.logger.debug(`Constructed Store Login URL: ${storeLoginUrl.toString()}`);
+    return storeLoginUrl.toString();
+  }
+
   getShopifyAuthUrl(shop: string, userId: string, finalRedirectUri: string): string {
     const apiKey = this.configService.get<string>('SHOPIFY_API_KEY');
     const scopes = this.configService.get<string>('SHOPIFY_SCOPES');
