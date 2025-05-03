@@ -213,43 +213,43 @@ export class AuthController {
   @Get('shopify/store-picker-callback')
   async shopifyStorePickerCallback(
       @Query('shop') shop: string, // Provided by Shopify Accounts
-      @Query('state') state: string, // <<< ADD state query parameter >>>
+      @Query('state') state: string,
       @Res() res: Response,
+      @Req() req: Request // <<< Inject original request for more details
   ) {
-      // <<< FIX: Validate presence of shop and state >>>
+      this.logger.log(`>>> ENTERING /auth/shopify/store-picker-callback <<<`);
+      this.logger.debug(`Store Picker Callback Raw Query: ${JSON.stringify(req.query)}`); // Log raw query
+      this.logger.debug(`Store Picker Callback Headers: ${JSON.stringify(req.headers)}`); // Log headers (useful for debugging proxies/IPs)
+
       if (!shop || !state) {
+         // Log the failure reason more clearly
+         this.logger.error(`Store Picker Callback missing required parameters. Shop: ${shop}, State: ${state}`);
          throw new BadRequestException('Missing required parameters (shop or state) from Shopify store picker callback.');
       }
 
-      // <<< FIX: Verify state JWT and extract data >>>
       let statePayload: StatePayload;
       let userId: string;
       let finalRedirectUri: string;
       try {
-          // Expecting the intermediate state type here
+          this.logger.debug(`Store Picker Callback attempting to verify state: ${state}`);
           statePayload = this.authService.verifyStateJwt(state, 'shopify-intermediate');
           userId = statePayload.userId;
           finalRedirectUri = statePayload.finalRedirectUri;
-          this.logger.log(`Received Shopify Store Picker callback for shop: ${shop}, user: ${userId}, final app URI: ${finalRedirectUri}`);
+          this.logger.log(`Store Picker Callback state VERIFIED. Shop: ${shop}, User: ${userId}, Final URI: ${finalRedirectUri}`);
       } catch (error) {
-           this.logger.error(`Invalid state received in store picker callback: ${error.message}`);
-           // Redirect back to a known base or the (potentially untrusted) finalRedirectUri with error
-           // Since finalRedirectUri might be compromised if state is bad, redirecting to default base is safer.
+           this.logger.error(`Invalid state received in store picker callback: ${error.message}. State JWT: ${state}`);
            const errorRedirect = buildRedirectUrl(this.frontendRedirectBase, 'shopify', false, 'Invalid state received during login.');
            res.redirect(errorRedirect);
-           return; // Stop execution
+           return;
       }
 
       try {
-        // Now use the *original* getShopifyAuthUrl service method to build the
-        // final authorization URL for the *specific* shop, passing the final app URI through.
-        // This method will generate a *new* state JWT for the final OAuth step.
+        this.logger.debug(`Store Picker Callback attempting to get final auth URL for shop: ${shop}`);
         const finalAuthUrl = this.authService.getShopifyAuthUrl(shop, userId, finalRedirectUri);
-        this.logger.debug(`Redirecting user to final shop-specific auth URL: ${finalAuthUrl}`);
+        this.logger.log(`Store Picker Callback SUCCESS. Redirecting to final auth URL: ${finalAuthUrl}`);
         res.redirect(finalAuthUrl);
       } catch (error) {
-         this.logger.error(`Error constructing final shop-specific auth URL for ${shop}: ${error.message}`, error.stack);
-         // Redirect back to the app's final URI (retrieved from verified state) with an error message
+         this.logger.error(`Store Picker Callback FAILED to construct final shop-specific auth URL for ${shop}: ${error.message}`, error.stack);
          const errorRedirect = buildRedirectUrl(finalRedirectUri, 'shopify', false, 'Error preparing shop authorization.');
          res.redirect(errorRedirect);
       }

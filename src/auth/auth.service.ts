@@ -133,7 +133,7 @@ export class AuthService {
   getShopifyStoreLoginUrl(userId: string, appFinalRedirectUri: string): string {
     this.logger.log(`Generating Shopify Store Login URL for user ${userId}, final app URI: ${appFinalRedirectUri}`);
     const accountsBaseUrl = 'https://accounts.shopify.com';
-    const intermediateCallbackPath = '/auth/shopify/store-picker-callback';
+    const intermediateCallbackPath = '/api/auth/shopify/store-picker-callback';
 
     const apiBaseUrl = this.configService.get<string>('HOST_NAME');
     if (!apiBaseUrl) {
@@ -168,7 +168,7 @@ export class AuthService {
     storeLoginUrl.searchParams.set('state', state);
 
     this.logger.debug(`Constructed Store Login URL: ${storeLoginUrl.toString()}`);
-    this.logger.debug(`Intermediate Redirect URI for Store Login: ${intermediateCallbackUrl.toString()}`);
+    this.logger.debug(`Intermediate Redirect URI for Store Login (Experiment with /api): ${intermediateCallbackUrl.toString()}`);
     this.logger.debug(`State for Store Login: ${state}`);
     return storeLoginUrl.toString();
   }
