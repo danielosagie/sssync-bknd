@@ -84,7 +84,8 @@ export class AuthService {
   private async savePlatformConnection(
     input: PlatformConnectionInput,
   ): Promise<PostgrestSingleResponse<any>> {
-    const supabase = this.supabaseService.getClient();
+    // Use service client to bypass RLS for backend connection management
+    const supabase = this.supabaseService.getServiceClient();
 
     const encryptedCredentials = this.encryptionService.encrypt(input.Credentials);
 

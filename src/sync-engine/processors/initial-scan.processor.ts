@@ -52,7 +52,12 @@ export class InitialScanProcessor extends WorkerHost {
              // 3. Generate & Store Mapping Suggestions using MappingService
              this.logger.log(`Job ${job.id}: Generating mapping suggestions...`);
              const suggestions = await this.mappingService.generateSuggestions(platformData, userId, platformType);
-             this.logger.log(`Job ${job.id}: Generated ${suggestions.length} suggestions. Storing not implemented, logging instead: ${JSON.stringify(suggestions.slice(0, 5))}...`);
+             this.logger.log(`Job ${job.id}: Generated ${suggestions.length} suggestions. Storing in PlatformSpecificData...`);
+             // Store suggestions along with existing PlatformSpecificData
+             const currentData = connection.PlatformSpecificData || {};
+             const suggestionsData = { ...currentData, mappingSuggestions: suggestions };
+             await this.connectionService.updateConnectionData(connectionId, userId, { PlatformSpecificData: suggestionsData });
+             this.logger.log(`Job ${job.id}: Mapping suggestions stored for connection ${connectionId}`);
 
             // 4. Update Connection Status
             await this.connectionService.updateConnectionStatus(connectionId, userId, 'needs_review');
