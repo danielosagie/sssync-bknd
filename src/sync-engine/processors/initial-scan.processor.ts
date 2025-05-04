@@ -8,7 +8,7 @@ import { PlatformAdapterRegistry } from '../../platform-adapters/adapter.registr
 import { InitialScanResult, JobData } from '../initial-sync.service';
 import { ProductsService } from '../../canonical-data/products.service';
 
-// @Processor(INITIAL_SCAN_QUEUE)
+@Processor(INITIAL_SCAN_QUEUE)
 export class InitialScanProcessor extends WorkerHost {
     private readonly logger = new Logger(InitialScanProcessor.name);
 
