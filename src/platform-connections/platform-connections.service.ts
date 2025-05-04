@@ -157,21 +157,28 @@ export class PlatformConnectionsService {
         }
 
         try {
-            // --- FIX ---
-            // Assume decrypt EXPECTS the exact data format stored by createOrUpdateConnection
-            // And assume it RETURNS the original JSON *string*
-            const decryptedString = this.encryptionService.decrypt(encryptedData);
+            // Assume decrypt EXPECTS the stored data (likely an object from jsonb)
+            // And assume it RETURNS the original decrypted *object*
+            const decryptedObject = this.encryptionService.decrypt(encryptedData);
 
-            if (typeof decryptedString !== 'string') {
-                this.logger.error(`Decryption result is not a string for connection ${connection.Id}. Type: ${typeof decryptedString}`);
-                throw new Error('Unexpected decryption result type, expected string.');
+            // Remove the check for string type and the JSON.parse call
+            // if (typeof decryptedString !== 'string') { ... }
+            // return JSON.parse(decryptedString);
+            
+            // Directly return the object returned by decrypt
+            if (typeof decryptedObject !== 'object' || decryptedObject === null) {
+                this.logger.error(`Decryption result is not a valid object for connection ${connection.Id}. Type: ${typeof decryptedObject}`);
+                throw new Error('Unexpected decryption result type, expected object.');
             }
-            // Parse the string returned by decrypt
-            return JSON.parse(decryptedString);
-            // --- END FIX ---
+
+            return decryptedObject;
         } catch (error) {
-            this.logger.error(`Failed to decrypt/parse credentials for connection ${connection.Id}: ${error.message}`);
-            throw new InternalServerErrorException('Could not access connection credentials.');
+            this.logger.error(`Failed to decrypt credentials for connection ${connection.Id}: ${error.message}`);
+            // If error is not already an InternalServerErrorException, wrap it
+            if (!(error instanceof InternalServerErrorException)) {
+                 throw new InternalServerErrorException(`Could not access connection credentials due to decryption error: ${error.message}`);
+            }
+            throw error; // Re-throw if it's already the correct type
         }
     }
 
