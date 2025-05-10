@@ -6,7 +6,7 @@ import { ProductVariant } from '../canonical-data/entities/product-variant.entit
 import { ProductsService } from '../canonical-data/products.service'; // <<< Import ProductsService
 
 // Interfaces (define more comprehensively based on needs)
-interface PlatformProductData {
+export interface PlatformProductData {
     id: string; // Platform GID/ID
     sku?: string | null;
     barcode?: string | null;

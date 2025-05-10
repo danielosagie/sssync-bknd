@@ -1,32 +1,56 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { 
+    ShopifyProductNode, 
+    ShopifyVariantNode, 
+    ShopifyInventoryLevelNode, 
+    ShopifyLocationNode 
+} from './shopify-api-client.service'; // Assuming these are exported
+import { CanonicalInventoryLevel } from '../../canonical-data/inventory.service'; // Adjust path if needed
 
-// Define the canonical structure based on ProductVariants table
-// Use Partial<> as not all fields might be mapped during initial scan/fetch
-// Ensure type compatibility (e.g., decimal -> number, text -> string)
+// --- Canonical Data Structure Interfaces (based on sssync-db.md) ---
+// These might eventually live in a central canonical-data module and be imported
+export interface CanonicalProduct {
+    Id?: string; // Will be set by DB or ProductsService
+    UserId: string;
+    IsArchived: boolean;
+    // CreatedAt, UpdatedAt are DB managed
+    // Any other product-level fields from your DB schema?
+}
+
+// Refining the existing CanonicalProductVariant
 export interface CanonicalProductVariant {
-    Id?: string; // Internal ID, usually not set by mapper
-    ProductId?: string; // Internal ID, usually not set directly by mapper
-    UserId?: string; // Internal ID, usually not set by mapper
-    Sku: string | null; // Allow null if Shopify allows missing SKU
-    Barcode: string | null;
+    Id?: string; // Will be set by DB or ProductsService
+    ProductId: string; // Link to CanonicalProduct.Id (set after product is created)
+    UserId: string;
+    Sku: string | null;
+    Barcode?: string | null;
     Title: string;
-    Description?: string | null; // Product-level description
-    Price: number; // Convert from string
-    CompareAtPrice?: number | null; // Convert from string
+    Description?: string | null;
+    Price: number;
+    CompareAtPrice?: number | null;
     Weight?: number | null;
     WeightUnit?: string | null;
-    Options?: Record<string, string> | null; // Map selectedOptions
-    // Add other relevant fields like Images if needed
+    Options?: Record<string, string> | null; // e.g. { "Color": "Blue", "Size": "Large" }
+    // Add fields for images if they are directly on the variant in canonical model
     // CreatedAt, UpdatedAt are DB managed
 }
 
-// Define the structure received from ShopifyApiClient (flattened variant)
-interface ShopifyVariantData {
-    id: string; // Shopify Variant GID (e.g., gid://shopify/ProductVariant/123)
+// No longer defined here, will be imported
+// export interface CanonicalInventoryLevel {
+//     Id?: string; 
+//     ProductVariantId: string; 
+//     PlatformConnectionId: string; 
+//     PlatformLocationId: string; 
+//     Quantity: number;
+// }
+
+// Existing ShopifyVariantData for mapShopifyVariantToCanonical - may need review/removal if subsumed by new flow
+interface ShopifyVariantData { // This was for a FLATTENED variant structure
+    id: string; 
     sku: string | null;
     barcode: string | null;
-    title: string; // Variant title
-    price: string; // Comes as string
+    title: string; 
+    price: string; 
     compareAtPrice: string | null;
     weight: number | null;
     weightUnit: string;
@@ -34,8 +58,7 @@ interface ShopifyVariantData {
     inventoryItem: { id: string };
     image: { id: string; url: string; altText: string } | null;
     selectedOptions: { name: string; value: string }[];
-    productId: string; // Shopify Product GID (e.g., gid://shopify/Product/456)
-    // Include fields from the parent Product node if needed for mapping
+    productId: string; 
     productTitle?: string;
     productDescriptionHtml?: string;
     productVendor?: string;
@@ -46,68 +69,146 @@ interface ShopifyVariantData {
 export class ShopifyMapper {
     private readonly logger = new Logger(ShopifyMapper.name);
 
-    // Renamed to reflect mapping a variant (potentially with product context)
-    mapShopifyVariantToCanonical(shopifyVariant: ShopifyVariantData, shopifyProduct?: any /* Pass product node if needed */): Partial<CanonicalProductVariant> {
+    /**
+     * Main method to map all fetched Shopify data to canonical structures.
+     */
+    mapShopifyDataToCanonical(
+        shopifyData: { products: ShopifyProductNode[], locations: ShopifyLocationNode[] },
+        userId: string,
+        platformConnectionId: string
+    ): {
+        canonicalProducts: CanonicalProduct[];
+        canonicalVariants: CanonicalProductVariant[];
+        canonicalInventoryLevels: CanonicalInventoryLevel[];
+    } {
+        const canonicalProducts: CanonicalProduct[] = [];
+        const canonicalVariants: CanonicalProductVariant[] = [];
+        const canonicalInventoryLevels: CanonicalInventoryLevel[] = [];
+
+        for (const shopifyProduct of shopifyData.products) {
+            // Placeholder for actual product ID after it's saved
+            // In a real scenario, you might save product, get ID, then save variants with that ID.
+            // Or, the ProductsService handles creating product and variants together if IDs are managed by DB.
+            const tempCanonicalProductId = `temp-product-${shopifyProduct.id}`;
+
+            canonicalProducts.push(
+                this._mapSingleProduct(shopifyProduct, userId, tempCanonicalProductId)
+            );
+
+            for (const variantEdge of shopifyProduct.variants.edges) {
+                const shopifyVariant = variantEdge.node;
+                canonicalVariants.push(
+                    this._mapSingleVariant(shopifyVariant, shopifyProduct, userId, tempCanonicalProductId)
+                );
+
+                if (shopifyVariant.inventoryItem?.inventoryLevels?.edges) {
+                    for (const invLevelEdge of shopifyVariant.inventoryItem.inventoryLevels.edges) {
+                        const shopifyInvLevel = invLevelEdge.node;
+                        // Placeholder for actual variant ID after it's saved
+                        const tempCanonicalVariantId = `temp-variant-${shopifyVariant.id}`;
+                        canonicalInventoryLevels.push(
+                            this._mapSingleInventoryLevel(
+                                shopifyInvLevel,
+                                tempCanonicalVariantId, // This needs to be the ID of the canonical variant we just mapped
+                                platformConnectionId
+                            )
+                        );
+                    }
+                }
+            }
+        }
+        this.logger.log(`Mapped ${canonicalProducts.length} products, ${canonicalVariants.length} variants, ${canonicalInventoryLevels.length} inventory levels.`);
+        return { canonicalProducts, canonicalVariants, canonicalInventoryLevels };
+    }
+
+    private _mapSingleProduct(productNode: ShopifyProductNode, userId: string, tempProductId: string): CanonicalProduct {
+        return {
+            Id: tempProductId, // This is temporary; actual ID comes from DB.
+            UserId: userId,
+            IsArchived: productNode.status.toUpperCase() === 'ARCHIVED',
+            // TODO: Map other product-level fields if your CanonicalProduct has them
+            // e.g., Title (if product title distinct from variant titles in canonical), Tags, Vendor, ProductType
+        };
+    }
+
+    private _mapSingleVariant(variantNode: ShopifyVariantNode, productNode: ShopifyProductNode, userId: string, canonicalProductId: string): CanonicalProductVariant {
+        const optionsMap = variantNode.selectedOptions?.reduce((acc, opt) => {
+            acc[opt.name] = opt.value;
+            return acc;
+        }, {});
+
+        return {
+            // Id: Will be set by DB or ProductsService
+            ProductId: canonicalProductId, // Link to the canonical product
+            UserId: userId,
+            Sku: variantNode.sku || null,
+            Barcode: variantNode.barcode || null,
+            Title: productNode.title,
+            Description: productNode.descriptionHtml || null,
+            Price: parseFloat(variantNode.price),
+            CompareAtPrice: variantNode.compareAtPrice ? parseFloat(variantNode.compareAtPrice) : null,
+            Weight: variantNode.weight,
+            WeightUnit: variantNode.weightUnit?.toLowerCase(),
+            Options: optionsMap || null,
+        };
+    }
+
+    private _mapSingleInventoryLevel(
+        invLevelNode: ShopifyInventoryLevelNode, 
+        canonicalVariantId: string, 
+        platformConnectionId: string
+    ): CanonicalInventoryLevel {
+        return {
+            // Id: Will be set by DB or InventoryService
+            ProductVariantId: canonicalVariantId, // Link to the canonical variant
+            PlatformConnectionId: platformConnectionId,
+            PlatformLocationId: invLevelNode.location.id, // This is the Shopify Location GID
+            Quantity: invLevelNode.available ?? 0,
+        };
+    }
+
+
+    // This old method might need to be reviewed or removed if the new flow supersedes it.
+    // It was designed for a flattened ShopifyVariantData input.
+    mapShopifyVariantToCanonical(shopifyVariant: ShopifyVariantData, shopifyProduct?: any): Partial<CanonicalProductVariant> {
         if (!shopifyVariant) {
             this.logger.warn('Attempted to map null/undefined Shopify variant.');
             return {};
         }
-
+        // ... (rest of the existing method, which might be deprecated by the new structure)
+        // For now, I will keep the body as is but it should be reviewed.
         try {
             const optionsMap = shopifyVariant.selectedOptions?.reduce((acc, opt) => {
                 acc[opt.name] = opt.value;
                 return acc;
             }, {});
 
-            // Combine variant title with product title if needed (depends on desired canonical title)
-            // Example: const canonicalTitle = shopifyProduct?.title ? `${shopifyProduct.title} - ${shopifyVariant.title}` : shopifyVariant.title;
-            const canonicalTitle = shopifyVariant.title; // Or just use variant title if product title is separate
+            const canonicalTitle = shopifyVariant.title;
 
             return {
                 Sku: shopifyVariant.sku || null,
                 Barcode: shopifyVariant.barcode || null,
                 Title: canonicalTitle,
-                // Use product description if available (strip HTML?) - Requires passing product node
                 Description: shopifyProduct?.descriptionHtml || null,
-                Price: parseFloat(shopifyVariant.price), // Convert price string to number
+                Price: parseFloat(shopifyVariant.price),
                 CompareAtPrice: shopifyVariant.compareAtPrice ? parseFloat(shopifyVariant.compareAtPrice) : null,
                 Weight: shopifyVariant.weight,
                 WeightUnit: shopifyVariant.weightUnit?.toLowerCase(),
                 Options: optionsMap || null,
-                 // --- Platform Specific Data (Not part of canonical model directly, but useful for Mapping table) ---
-                 // We return the core canonical fields. The processor using this mapper
-                 // will need access to the original shopifyVariant.id, shopifyVariant.productId etc.
-                 // to populate the PlatformProductMappings table.
             };
         } catch (error) {
              this.logger.error(`Error mapping Shopify variant ${shopifyVariant.id}: ${error.message}`, error.stack);
-             // Return partial data or throw?
-             return { Title: shopifyVariant.title || 'Mapping Error' }; // Basic fallback
+             return { Title: shopifyVariant.title || 'Mapping Error' }; 
         }
     }
 
-    mapCanonicalVariantToShopify(variantData: CanonicalProductVariant): any /* Shopify ProductInput or VariantInput */ {
+    mapCanonicalVariantToShopify(variantData: CanonicalProductVariant): any {
         this.logger.warn('mapCanonicalVariantToShopify not implemented');
-        // TODO: Implement mapping logic from Canonical -> Shopify (for creating/updating)
-        // This will likely involve constructing a complex GraphQL mutation variable object.
-        return {
-            // Example structure (needs refinement based on mutation)
-            // productVariant: {
-            //     sku: variantData.Sku,
-            //     barcode: variantData.Barcode,
-            //     price: variantData.Price?.toString(),
-            //     compareAtPrice: variantData.CompareAtPrice?.toString(),
-            //     weight: variantData.Weight,
-            //     weightUnit: variantData.WeightUnit?.toUpperCase(),
-            //     options: Object.values(variantData.Options || {}),
-            //     // Needs inventoryItem ID for inventory updates
-            // }
-        };
+        return {};
     }
 
      mapShopifyInventory(inventoryData: any): any {
          this.logger.warn('mapShopifyInventory not implemented');
-         // TODO: Implement mapping for inventory levels (often involves Location IDs)
          return {};
      }
 }

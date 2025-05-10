@@ -14,7 +14,6 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
 
     // Return the configured client instance
     getApiClient(connection: PlatformConnection): ShopifyApiClient {
-        this.apiClientInstance.initialize(connection); // Ensure initialization happens
         return this.apiClientInstance;
     }
 

@@ -33,6 +33,56 @@ export class ProductsService {
         return (data || []) as Partial<ProductVariant>[];
     }
 
+    async saveProduct(product: Omit<Product, 'Id' | 'CreatedAt' | 'UpdatedAt'>): Promise<Product> {
+        const supabase = this.getSupabaseClient();
+        this.logger.log(`Saving product for user ${product.UserId}`);
+
+        const { data, error } = await supabase
+            .from('Products')
+            .insert(product)
+            .select()
+            .single();
+
+        if (error || !data) {
+            this.logger.error(`Failed to save product for user ${product.UserId}: ${error?.message}`, error);
+            throw new InternalServerErrorException(`Could not save product: ${error?.message}`);
+        }
+        this.logger.log(`Product saved with ID: ${data.Id}`);
+        return data as Product;
+    }
+
+    async saveVariants(variants: Array<Omit<ProductVariant, 'Id' | 'CreatedAt' | 'UpdatedAt'>>): Promise<ProductVariant[]> {
+        if (!variants || variants.length === 0) {
+            this.logger.log('No variants to save.');
+            return [];
+        }
+        const supabase = this.getSupabaseClient();
+        const firstVariant = variants[0];
+        this.logger.log(`Saving ${variants.length} variants for user ${firstVariant.UserId}, product ${firstVariant.ProductId}`);
+
+        // Ensure all variants have ProductId and UserId
+        for (const variant of variants) {
+            if (!variant.ProductId || !variant.UserId) {
+                throw new InternalServerErrorException('Variant is missing ProductId or UserId for saving.');
+            }
+        }
+        
+        const { data, error } = await supabase
+            .from('ProductVariants')
+            .upsert(variants, { 
+                onConflict: 'UserId, Sku', // Assumes Sku should be unique per user for a product
+                ignoreDuplicates: false, // Update existing if Sku matches for user
+            })
+            .select();
+
+        if (error) {
+            this.logger.error(`Failed to save variants for user ${firstVariant.UserId}, product ${firstVariant.ProductId}: ${error?.message}`, error);
+            throw new InternalServerErrorException(`Could not save variants: ${error?.message}`);
+        }
+        this.logger.log(`Successfully saved/updated ${data?.length || 0} variants.`);
+        return (data || []) as ProductVariant[];
+    }
+
     /**
      * Creates a new Product and a corresponding ProductVariant in the database.
      * NOTE: Ideally, this should be wrapped in a database transaction.

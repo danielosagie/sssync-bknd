@@ -33,9 +33,10 @@ import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, WEBHOOK_QUEUE } from './sync-en
     ShopifyAdapterModule, // Example: Import specific adapter modules
     SquareAdapterModule,  // <<< NEW: Import Square
     // PlatformAdapterRegistry, // <<< REMOVED from imports
-    BullModule, // <<< UNCOMMENT
+    BullModule, // <<< UNCOMMENT 
 
     // <<< UNCOMMENT BullMQ Config >>>
+    // /* // Temporarily commented out to avoid Redis connection issues // Removed outer comment block
     BullModule.forRootAsync({
         imports: [ConfigModule],
         inject: [ConfigService],
@@ -43,18 +44,16 @@ import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, WEBHOOK_QUEUE } from './sync-en
             const redisUrl = configService.get<string>('REDIS_URL');
             if (!redisUrl) {
                  console.error('[BullMQ Config] *** REDIS_URL is not defined! BullMQ will likely fail. ***');
-                 // Return an empty connection object or handle appropriately if Redis is optional
-                 return { connection: {} }; // Or throw an error if Redis is mandatory
+                 return { connection: {} }; 
             }
             console.log(`[BullMQ Config] Using REDIS_URL: ${redisUrl ? '**** (set)' : 'undefined'}`);
-            // Basic check for TLS requirement based on protocol
-            const tlsOptions = redisUrl.startsWith('rediss://') ? { tls: { rejectUnauthorized: false } } : {}; // Added rejectUnauthorized: false for common cloud Redis setups, adjust if needed
+            const tlsOptions = redisUrl.startsWith('rediss://') ? { tls: { rejectUnauthorized: false } } : {}; 
             return {
                 connection: { 
                     host: new URL(redisUrl).hostname,
                     port: parseInt(new URL(redisUrl).port),
                     password: new URL(redisUrl).password,
-                    ...(tlsOptions) // Spread TLS options if applicable
+                    ...(tlsOptions) 
                 },
             };
         },
@@ -62,8 +61,9 @@ import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, WEBHOOK_QUEUE } from './sync-en
     BullModule.registerQueue(
         { name: INITIAL_SCAN_QUEUE },
         { name: INITIAL_SYNC_QUEUE },
-        // { name: WEBHOOK_QUEUE }, // Keep webhook queue commented if not used yet
+        // { name: WEBHOOK_QUEUE }, 
     ),
+    // */ // End of temporary comment out // Removed outer comment block
     // <<< END UNCOMMENT BullMQ Config >>>
   ],
   controllers: [WebhookController, SyncController],
@@ -79,7 +79,10 @@ import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, WEBHOOK_QUEUE } from './sync-en
   ],
   exports: [
       // Export services if needed by other modules (less common for engine)
-      PlatformAdapterRegistry // <<< ENSURE it's in exports
+      PlatformAdapterRegistry, // <<< ENSURE it's in exports
+      InitialScanProcessor, // <<< EXPORT InitialScanProcessor
+      InitialSyncService, // Might be needed if other modules queue jobs directly, good practice to export if it has public methods used elsewhere
+      MappingService, // If other modules need mapping services directly
   ]
 })
 export class SyncEngineModule {} 

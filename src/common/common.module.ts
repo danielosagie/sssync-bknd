@@ -1,6 +1,6 @@
 import { Module, Global } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SupabaseService } from './supabase.service';
 import { EncryptionService } from './encryption.service';
 import { ActivityLogService } from './activity-log.service';
@@ -8,6 +8,7 @@ import { ActivityLogService } from './activity-log.service';
 //@Global()
 @Module({
   imports: [
+    ConfigModule,
     JwtModule.registerAsync({
       useFactory: async (configService: ConfigService) => ({
         secret: configService.get<string>('CREDENTIALS_ENCRYPTION_SECRET'),
@@ -16,7 +17,19 @@ import { ActivityLogService } from './activity-log.service';
       inject: [ConfigService],
     }),
   ],
-  providers: [SupabaseService, EncryptionService, ActivityLogService],
+  providers: [
+    EncryptionService, 
+    ActivityLogService,
+    {
+      provide: SupabaseService,
+      useFactory: async (configService: ConfigService) => {
+        const service = new SupabaseService(configService);
+        await service.initialize();
+        return service;
+      },
+      inject: [ConfigService],
+    },
+  ],
   exports: [SupabaseService, EncryptionService, JwtModule, ActivityLogService],
 })
 export class CommonModule {}
