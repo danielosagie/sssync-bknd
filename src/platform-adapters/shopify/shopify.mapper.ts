@@ -163,7 +163,7 @@ export class ShopifyMapper {
             ProductVariantId: canonicalVariantId, // Link to the canonical variant
             PlatformConnectionId: platformConnectionId,
             PlatformLocationId: invLevelNode.location.id, // This is the Shopify Location GID
-            Quantity: invLevelNode.available ?? 0,
+            Quantity: 0, // TEMP: Set to 0 as 'available' was removed from ShopifyInventoryLevelNode
         };
     }
 
