@@ -48,7 +48,6 @@ export interface ShopifyInventoryLevelLocationNode {
 
 export interface ShopifyInventoryLevelNode {
     // available: number; // This was missing in user's query but is crucial - will add to query
-    available?: number; // Making it optional for now, will ensure query asks for it
     location: ShopifyInventoryLevelLocationNode;
 }
 
@@ -196,7 +195,6 @@ const GET_PRODUCTS_AND_FIRST_VARIANTS_QUERY = `
                   inventoryLevels(first: 10) { # First 10 inventory levels for this variant
                     edges {
                       node { # ShopifyInventoryLevelNode
-                        available # <<< Ensuring 'available' is fetched
                         location {
                           id
                           name
@@ -257,7 +255,6 @@ const GET_PRODUCT_VARIANTS_QUERY = `
                 inventoryLevels(first: 10) {
                   edges {
                     node {
-                      available
                       location {
                         id
                         name
