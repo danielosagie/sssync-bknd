@@ -10,7 +10,7 @@ import { ProductsService } from '../../canonical-data/products.service';
 import { InventoryService, CanonicalInventoryLevel } from '../../canonical-data/inventory.service';
 import { ShopifyProductNode, ShopifyVariantNode } from '../../platform-adapters/shopify/shopify-api-client.service';
 import { CanonicalProduct, CanonicalProductVariant } from '../../platform-adapters/shopify/shopify.mapper';
-import { ProductVariant } from '../../canonical-data/entities/product-variant.entity';
+import { ProductVariant } from '../../common/types/supabase.types';
 
 @Processor(INITIAL_SCAN_QUEUE)
 export class InitialScanProcessor extends WorkerHost {
@@ -62,10 +62,20 @@ export class InitialScanProcessor extends WorkerHost {
             const finalCanonicalProducts: CanonicalProduct[] = [];
 
             for (const tempProduct of mappedProducts) {
-                const { Id: tempId, ...productToSave } = tempProduct; // Separate tempId
-                const savedProduct = await this.productsService.saveProduct(productToSave as Omit<CanonicalProduct, 'Id'>);
+                const { Id: tempId, UserId, IsArchived, ImageUrls } = tempProduct; // Destructure known direct fields
+                // Create an object specifically for saving, matching expected columns for the Products table
+                const productTableData = { 
+                    UserId,
+                    IsArchived 
+                    // Add any other direct column fields from CanonicalProduct that should be saved to Products table
+                };
+                const savedProduct = await this.productsService.saveProduct(productTableData);
                 if (tempId) savedProductsMap.set(tempId, savedProduct.Id!); // Store mapping from tempId to actual Id
-                finalCanonicalProducts.push(savedProduct);
+                // We keep the full mappedProduct (including ImageUrls) for later use if needed, 
+                // but only save the direct table data.
+                // To avoid confusion, ensure finalCanonicalProducts stores the saved DB representation if its structure differs significantly
+                // For now, assuming savedProduct is compatible with CanonicalProduct for what we need later (Id).
+                finalCanonicalProducts.push({ ...tempProduct, Id: savedProduct.Id! }); // Store original mapped data with new DB Id
             }
             this.logger.log(`Job ${job.id}: Saved ${finalCanonicalProducts.length} products.`);
 
@@ -73,7 +83,8 @@ export class InitialScanProcessor extends WorkerHost {
             this.logger.log(`Job ${job.id}: Updating ProductIds and saving ${mappedVariants.length} canonical variants...`);
             const variantsToSave: Array<Omit<CanonicalProductVariant, 'Id'>> = [];
             const savedVariantsMap = new Map<string, string>(); // Map tempVariantId from mapper to actual DB Id
-            
+            const variantToTempProductMap = new Map<string, CanonicalProduct>(); // Map tempVariantId to its original mapped Product (for images)
+
             for (const tempVariant of mappedVariants) {
                 const { Id: tempVariantId, ProductId: tempProductId, ...variantData } = tempVariant;
 
@@ -88,6 +99,11 @@ export class InitialScanProcessor extends WorkerHost {
                     continue;
                 }
                 variantsToSave.push({ ...variantData, Sku: variantData.Sku, ProductId: actualProductId, UserId: userId });
+                // Store the original mapped product for this variant for later image association
+                const originalProduct = mappedProducts.find(p => p.Id === tempProductId);
+                if (originalProduct && tempVariantId) {
+                    variantToTempProductMap.set(tempVariantId, originalProduct);
+                }
             }
 
             const finalCanonicalVariants = await this.productsService.saveVariants(
@@ -100,6 +116,24 @@ export class InitialScanProcessor extends WorkerHost {
             });
             this.logger.log(`Job ${job.id}: Saved ${finalCanonicalVariants.length} variants.`);
 
+            // 4.5 Save Product Images (associating product-level images with each variant)
+            this.logger.log(`Job ${job.id}: Saving product images...`);
+            for (const tempVariant of mappedVariants) {
+                if (!tempVariant.Id) continue; // Should have tempId if processed
+                const actualVariantId = savedVariantsMap.get(tempVariant.Id);
+                const originalProductForVariant = variantToTempProductMap.get(tempVariant.Id);
+
+                if (actualVariantId && originalProductForVariant?.ImageUrls && originalProductForVariant.ImageUrls.length > 0) {
+                    try {
+                        await this.productsService.saveVariantImages(actualVariantId, originalProductForVariant.ImageUrls);
+                        this.logger.debug(`Job ${job.id}: Associated product images with variant ${actualVariantId}`);
+                    } catch (imgError) {
+                        this.logger.error(`Job ${job.id}: Failed to save images for variant ${actualVariantId}: ${imgError.message}`, imgError.stack);
+                        // Continue processing other variants even if image saving fails for one
+                    }
+                }
+            }
+            this.logger.log(`Job ${job.id}: Finished processing product images.`);
 
             // 5. Update ProductVariantId in Canonical Inventory Levels and Save them
             this.logger.log(`Job ${job.id}: Updating ProductVariantIds and saving ${mappedInventoryLevels.length} inventory levels...`);

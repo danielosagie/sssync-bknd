@@ -1,7 +1,6 @@
 import { Injectable, Logger, NotFoundException, InternalServerErrorException } from '@nestjs/common';
-import { SupabaseService } from '../common/supabase.service'; // Adjust path
-import { Product } from './entities/product.entity';
-import { ProductVariant } from './entities/product-variant.entity';
+import { SupabaseService } from '../common/supabase.service';
+import { Product, ProductVariant, ProductImage } from '../common/types/supabase.types';
 import { SupabaseClient } from '@supabase/supabase-js';
 
 @Injectable()
@@ -23,7 +22,7 @@ export class ProductsService {
         this.logger.debug(`Fetching all variants for user ${userId}`);
         const { data, error } = await supabase
             .from('ProductVariants')
-            .select('Id, Sku, Barcode, Title') // Select fields needed for matching
+            .select('Id, Sku, Barcode, Title')
             .eq('UserId', userId);
 
         if (error) {
@@ -70,8 +69,8 @@ export class ProductsService {
         const { data, error } = await supabase
             .from('ProductVariants')
             .upsert(variants, { 
-                onConflict: 'UserId, Sku', // Assumes Sku should be unique per user for a product
-                ignoreDuplicates: false, // Update existing if Sku matches for user
+                onConflict: 'UserId, Sku',
+                ignoreDuplicates: false,
             })
             .select();
 
@@ -110,9 +109,8 @@ export class ProductsService {
             ...variantData,
             ProductId: newProductId,
             UserId: userId,
-            // Ensure required fields are present
-            Sku: variantData.Sku, // Assuming Sku is always required
-            Title: variantData.Title || 'Untitled', // Provide defaults if necessary
+            Sku: variantData.Sku,
+            Title: variantData.Title || 'Untitled',
             Price: variantData.Price ?? 0,
         };
 
@@ -124,13 +122,37 @@ export class ProductsService {
 
         if (variantError || !newVariantData) {
             this.logger.error(`Failed to create product variant for product ${newProductId}, SKU ${variantData.Sku}: ${variantError?.message}`, variantError);
-            // CRITICAL: Consider rolling back the Product creation or marking it for cleanup
             this.logger.warn(`Product ${newProductId} was created, but variant creation failed. Recommend implementing transactions.`);
             throw new InternalServerErrorException(`Could not create product variant: ${variantError?.message}`);
         }
 
         this.logger.log(`Successfully created variant ${newVariantData.Id} for product ${newProductId}`);
         return newVariantData as ProductVariant;
+    }
+
+    async saveVariantImages(variantId: string, imageUrls: string[]): Promise<void> {
+        if (!imageUrls || imageUrls.length === 0) {
+            this.logger.debug(`No image URLs provided for variant ${variantId}. Skipping image save.`);
+            return;
+        }
+        const supabase = this.getSupabaseClient();
+        this.logger.log(`Saving ${imageUrls.length} images for variant ${variantId}.`);
+
+        const imagesToInsert = imageUrls.map((url, index) => ({
+            ProductVariantId: variantId,
+            ImageUrl: url,
+            Position: index,
+        }));
+
+        const { error } = await supabase
+            .from('ProductImages')
+            .insert(imagesToInsert);
+
+        if (error) {
+            this.logger.error(`Failed to save images for variant ${variantId}: ${error.message}`, error);
+        } else {
+            this.logger.log(`Successfully saved ${imagesToInsert.length} images for variant ${variantId}.`);
+        }
     }
 
     // Add other methods as needed (getProductById, updateVariant, etc.)

@@ -1,8 +1,11 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { ProductVariant } from '../../common/types/supabase.types';
 
 @Injectable()
 export class SquareMapper {
-    mapSquareItemToCanonical(squareItem: any, squareVariation: any): any /* Partial<ProductVariant> */ {
+    private readonly logger = new Logger(SquareMapper.name);
+
+    mapSquareItemToCanonical(squareItem: any, squareVariation: any): Partial<ProductVariant> {
         // TODO: Implement mapping logic (Square often links price/sku to variations)
         return {
             Title: squareItem?.itemData?.name + (squareVariation ? ` - ${squareVariation.itemVariationData?.name}` : ''),

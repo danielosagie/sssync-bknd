@@ -1,6 +1,6 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
-import { SupabaseService } from '../common/supabase.service'; // Adjust path
-import { InventoryLevel } from './entities/inventory-level.entity';
+import { SupabaseService } from '../common/supabase.service';
+import { InventoryLevel } from '../common/types/supabase.types';
 import { SupabaseClient } from '@supabase/supabase-js';
 
 // Interface for Canonical Inventory Level data based on sssync-db.md
@@ -8,19 +8,17 @@ export interface CanonicalInventoryLevel {
     Id?: string; // Optional: Will be set by DB
     ProductVariantId: string; // FK to ProductVariants.Id
     PlatformConnectionId: string; // FK to PlatformConnections.Id
-    PlatformLocationId: string; // The platform-specific location ID (e.g., Shopify Location GID)
+    PlatformLocationId: string | null; // The platform-specific location ID (e.g., Shopify Location GID)
     Quantity: number;
+    LastPlatformUpdateAt?: Date | null;
     // UpdatedAt is managed by the DB
 }
 
 @Injectable()
 export class InventoryService {
     private readonly logger = new Logger(InventoryService.name);
-    private supabase: SupabaseClient;
 
-    constructor(private readonly supabaseService: SupabaseService) {
-        this.supabase = this.supabaseService.getServiceClient(); // Use service client for direct DB access
-    }
+    constructor(private supabaseService: SupabaseService) {}
 
     private getSupabaseClient(): SupabaseClient {
         return this.supabaseService.getClient();
@@ -62,39 +60,85 @@ export class InventoryService {
         return data as InventoryLevel;
     }
 
-    async saveBulkInventoryLevels(levels: CanonicalInventoryLevel[]): Promise<void> {
-        if (!levels || levels.length === 0) {
+    async saveBulkInventoryLevels(inventoryLevels: CanonicalInventoryLevel[]): Promise<void> {
+        if (!inventoryLevels || inventoryLevels.length === 0) {
             this.logger.log('No inventory levels to save.');
             return;
         }
 
-        this.logger.log(`Saving ${levels.length} inventory levels to the database.`);
+        const supabase = this.getSupabaseClient();
+        this.logger.log(`Saving ${inventoryLevels.length} inventory levels...`);
 
-        // Map to DB column names if they differ, though they seem to match here.
-        // Ensure ProductVariantId, PlatformConnectionId are populated correctly before calling this.
-        const recordsToInsert = levels.map(level => ({
+        // Transform the data to match Supabase schema
+        const inventoryLevelsToInsert = inventoryLevels.map(level => ({
             ProductVariantId: level.ProductVariantId,
             PlatformConnectionId: level.PlatformConnectionId,
             PlatformLocationId: level.PlatformLocationId,
             Quantity: level.Quantity,
-            // UpdatedAt will be set by default in the DB
+            LastPlatformUpdateAt: level.LastPlatformUpdateAt?.toISOString() || null,
         }));
 
-        const { data, error } = await this.supabase
+        const { error } = await supabase
             .from('InventoryLevels')
-            .upsert(recordsToInsert, {
-                onConflict: 'ProductVariantId, PlatformConnectionId, PlatformLocationId', // Specify conflict target
-                ignoreDuplicates: false, // Set to false to update on conflict
+            .upsert(inventoryLevelsToInsert, {
+                onConflict: 'ProductVariantId, PlatformConnectionId, PlatformLocationId',
+                ignoreDuplicates: false,
             });
 
         if (error) {
-            this.logger.error(`Error saving inventory levels: ${error.message}`, error.stack);
-            throw new Error(`Failed to save inventory levels: ${error.message}`);
+            this.logger.error(`Failed to save inventory levels: ${error.message}`, error);
+            throw new InternalServerErrorException(`Could not save inventory levels: ${error.message}`);
         }
 
-        this.logger.log(`${recordsToInsert.length} inventory levels saved successfully.`);
-        // Data returned by upsert might contain the saved records if needed, but Supabase v2 often returns null on upsert unless .select() is added.
-        // For now, we assume success if no error.
+        this.logger.log(`Successfully saved ${inventoryLevels.length} inventory levels.`);
+    }
+
+    async getInventoryLevelsForVariant(variantId: string): Promise<InventoryLevel[]> {
+        const supabase = this.getSupabaseClient();
+        this.logger.debug(`Fetching inventory levels for variant ${variantId}`);
+
+        const { data, error } = await supabase
+            .from('InventoryLevels')
+            .select('*')
+            .eq('ProductVariantId', variantId);
+
+        if (error) {
+            this.logger.error(`Error fetching inventory levels for variant ${variantId}: ${error.message}`);
+            throw new InternalServerErrorException(`Could not fetch inventory levels: ${error.message}`);
+        }
+
+        return (data || []) as InventoryLevel[];
+    }
+
+    async updateInventoryLevel(
+        variantId: string,
+        platformConnectionId: string,
+        platformLocationId: string | null,
+        quantity: number
+    ): Promise<InventoryLevel> {
+        const supabase = this.getSupabaseClient();
+        this.logger.log(`Updating inventory level for variant ${variantId}, location ${platformLocationId}`);
+
+        const { data, error } = await supabase
+            .from('InventoryLevels')
+            .upsert({
+                ProductVariantId: variantId,
+                PlatformConnectionId: platformConnectionId,
+                PlatformLocationId: platformLocationId,
+                Quantity: quantity,
+                LastPlatformUpdateAt: new Date().toISOString(),
+            }, {
+                onConflict: 'ProductVariantId, PlatformConnectionId, PlatformLocationId',
+            })
+            .select()
+            .single();
+
+        if (error || !data) {
+            this.logger.error(`Failed to update inventory level: ${error?.message}`, error);
+            throw new InternalServerErrorException(`Could not update inventory level: ${error?.message}`);
+        }
+
+        return data as InventoryLevel;
     }
 
     // Add other methods as needed (getLevel, getLevelsForVariant, etc.)

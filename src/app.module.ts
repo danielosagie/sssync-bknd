@@ -40,8 +40,8 @@ import { EncryptionService } from './common/encryption.service';
         }
 
         const throttlerConfig = [{
-          ttl: 4,
-          limit: 1,
+          ttl: 120,
+          limit: 2,
         }];
 
         if (!redisUrl) {

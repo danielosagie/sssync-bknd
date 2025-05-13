@@ -7,6 +7,8 @@ import { ConfigModule } from '@nestjs/config';
 import { CommonModule } from '../common/common.module';
 import { PlatformConnectionsModule } from '../platform-connections/platform-connections.module';
 import { SyncEngineModule } from '../sync-engine/sync-engine.module';
+import { PlatformProductMappingsModule } from '../platform-product-mappings/platform-product-mappings.module';
+import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.module';
 
 @Module({
   imports: [
@@ -14,6 +16,8 @@ import { SyncEngineModule } from '../sync-engine/sync-engine.module';
     CommonModule,
     PlatformConnectionsModule,
     SyncEngineModule,
+    PlatformProductMappingsModule,
+    PlatformAdaptersModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService, ImageRecognitionService, AiGenerationService],

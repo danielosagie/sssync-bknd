@@ -1,8 +1,8 @@
 import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
-import { SupabaseService } from '../common/supabase.service'; // Adjust path
+import { SupabaseService } from '../common/supabase.service';
 import { PlatformConnection, PlatformConnectionsService } from '../platform-connections/platform-connections.service'; // Adjust path
 import { SupabaseClient } from '@supabase/supabase-js';
-import { ProductVariant } from '../canonical-data/entities/product-variant.entity'; // <<< Import Canonical type
+import { ProductVariant } from '../common/types/supabase.types';
 import { ProductsService } from '../canonical-data/products.service'; // <<< Import ProductsService
 
 // Interfaces (define more comprehensively based on needs)

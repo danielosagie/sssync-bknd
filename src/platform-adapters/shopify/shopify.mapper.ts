@@ -13,6 +13,7 @@ export interface CanonicalProduct {
     Id?: string; // Will be set by DB or ProductsService
     UserId: string;
     IsArchived: boolean;
+    ImageUrls?: string[]; // Added for product-level images
     // CreatedAt, UpdatedAt are DB managed
     // Any other product-level fields from your DB schema?
 }
@@ -122,10 +123,20 @@ export class ShopifyMapper {
     }
 
     private _mapSingleProduct(productNode: ShopifyProductNode, userId: string, tempProductId: string): CanonicalProduct {
+        const imageUrls: string[] = [];
+        if (productNode.media?.edges) {
+            for (const edge of productNode.media.edges) {
+                if (edge.node?.preview?.image?.url) {
+                    imageUrls.push(edge.node.preview.image.url);
+                }
+            }
+        }
+
         return {
             Id: tempProductId, // This is temporary; actual ID comes from DB.
             UserId: userId,
             IsArchived: productNode.status.toUpperCase() === 'ARCHIVED',
+            ImageUrls: imageUrls.length > 0 ? imageUrls : undefined,
             // TODO: Map other product-level fields if your CanonicalProduct has them
             // e.g., Title (if product title distinct from variant titles in canonical), Tags, Vendor, ProductType
         };
@@ -147,8 +158,8 @@ export class ShopifyMapper {
             Description: productNode.descriptionHtml || null,
             Price: parseFloat(variantNode.price),
             CompareAtPrice: variantNode.compareAtPrice ? parseFloat(variantNode.compareAtPrice) : null,
-            Weight: variantNode.weight,
-            WeightUnit: variantNode.weightUnit?.toLowerCase(),
+            Weight: variantNode.inventoryItem?.measurement?.weight?.value ?? null,
+            WeightUnit: variantNode.inventoryItem?.measurement?.weight?.unit?.toLowerCase() ?? null,
             Options: optionsMap || null,
         };
     }

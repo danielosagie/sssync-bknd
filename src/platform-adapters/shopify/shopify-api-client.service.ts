@@ -1,4 +1,4 @@
-import { Injectable, Logger, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
+import { Injectable, Logger, InternalServerErrorException, UnauthorizedException, HttpException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PlatformConnection, PlatformConnectionsService } from '../../platform-connections/platform-connections.service'; // Adjust path
 import {
@@ -129,6 +129,218 @@ export interface ShopifyProductNode {
     };
 }
 // --- End interface definitions ---
+
+// Types for Shopify GraphQL responses
+interface ShopifyLocation {
+    id: string;
+    name: string;
+    address: {
+        formatted: string[];
+    };
+    isActive: boolean;
+    createdAt: string;
+}
+
+interface ShopifyProductSetOperation {
+    id: string;
+    status: string;
+    product: {
+        id: string;
+        title: string;
+        status: string;
+        options: Array<{
+            name: string;
+            values: string[];
+        }>;
+        media: {
+            nodes: Array<{
+                id: string;
+                alt: string;
+                mediaContentType: string;
+                status: string;
+                preview: {
+                    image: {
+                        url: string;
+                    };
+                };
+            }>;
+        };
+        variants: {
+            nodes: Array<{
+                id: string;
+                title: string;
+                price: string;
+                sku: string;
+                media: {
+                    nodes: Array<{
+                        id: string;
+                        alt: string;
+                        mediaContentType: string;
+                        status: string;
+                        preview: {
+                            image: {
+                                url: string;
+                            };
+                        };
+                    }>;
+                };
+            }>;
+        };
+    } | null;
+    userErrors: Array<{
+        field: string;
+        message: string;
+        code: string;
+    }>;
+}
+
+// Updated location query
+const GET_ALL_LOCATIONS_QUERY = `
+  query GetAllLocations {
+    locations(first: 50) {
+      edges {
+        node {
+          id
+          name
+          address {
+            formatted
+          }
+          isActive
+          createdAt
+        }
+      }
+    }
+  }
+`;
+
+// Updated product creation mutation
+const CREATE_PRODUCT_ASYNC_MUTATION = `
+  mutation CreateProductAsyncWithMedia($productInput: ProductSetInput!) {
+    productSet(input: $productInput, synchronous: false) {
+      product {
+        id
+        title
+      }
+      productSetOperation {
+        id
+        status
+        product {
+          id
+          title
+          status
+          options {
+            name
+            values
+          }
+          media(first: 10) {
+            nodes {
+              id
+              alt
+              mediaContentType
+              status
+              preview {
+                image {
+                  url
+                }
+              }
+            }
+          }
+          variants {
+            nodes {
+              id
+              title
+              price
+              sku
+              media(first: 1) {
+                nodes {
+                  id
+                  alt
+                  mediaContentType
+                  status
+                  preview {
+                    image {
+                      url
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        userErrors {
+          field
+          message
+          code
+        }
+      }
+      userErrors {
+        field
+        message
+        code
+      }
+    }
+  }
+`;
+
+// Types for product creation input
+interface ShopifyProductOptionValue {
+    name: string;
+}
+
+interface ShopifyProductOption {
+    name: string;
+    values: ShopifyProductOptionValue[];
+}
+
+interface ShopifyProductFile {
+    originalSource: string;
+    alt?: string;
+    filename: string;
+    contentType: 'IMAGE' | 'VIDEO' | 'EXTERNAL_VIDEO' | 'MODEL_3D';
+}
+
+interface ShopifyInventoryQuantity {
+    locationId: string;
+    name: 'available' | 'committed';
+    quantity: number;
+}
+
+interface ShopifyInventoryItem {
+    cost?: string;
+    tracked: boolean;
+    measurement?: {
+        weight: {
+            value: number;
+            unit: 'KILOGRAMS' | 'GRAMS' | 'POUNDS' | 'OUNCES';
+        };
+    };
+}
+
+interface ShopifyVariantInput {
+    optionValues: Array<{
+        optionName: string;
+        name: string;
+    }>;
+    price: string;
+    sku: string;
+    inventoryItem: ShopifyInventoryItem;
+    inventoryQuantities: ShopifyInventoryQuantity[];
+    taxable?: boolean;
+    barcode?: string;
+    file?: ShopifyProductFile;
+}
+
+export interface ShopifyProductSetInput {
+    title: string;
+    descriptionHtml?: string;
+    vendor?: string;
+    productType?: string;
+    status?: 'ACTIVE' | 'DRAFT' | 'ARCHIVED';
+    tags?: string[];
+    productOptions?: ShopifyProductOption[];
+    files?: ShopifyProductFile[];
+    variants: ShopifyVariantInput[];
+}
 
 // Query to fetch a page of products and the first page of their variants for a given location
 const GET_PRODUCTS_AND_FIRST_VARIANTS_QUERY = `
@@ -270,6 +482,81 @@ const GET_PRODUCT_VARIANTS_QUERY = `
             }
           }
         }
+      }
+    }
+  }
+`;
+
+// Query to create a product in Shopify
+const CREATE_PRODUCT_MUTATION = `
+  mutation CreateProduct($input: ProductInput!) {
+    productCreate(input: $input) {
+      product {
+        id
+        title
+        status
+        variants(first: 1) {
+          edges {
+            node {
+              id
+              sku
+            }
+          }
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+// Query to update a product in Shopify
+const UPDATE_PRODUCT_MUTATION = `
+  mutation UpdateProduct($input: ProductInput!) {
+    productUpdate(input: $input) {
+      product {
+        id
+        title
+        status
+        variants(first: 1) {
+          edges {
+            node {
+              id
+              sku
+            }
+          }
+        }
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+// Query to update inventory levels
+const UPDATE_INVENTORY_LEVELS_MUTATION = `
+  mutation UpdateInventoryLevels($inventoryItemId: ID!, $locationId: ID!, $available: Int!) {
+    inventoryAdjustQuantity(
+      input: {
+        inventoryItemId: $inventoryItemId
+        locationId: $locationId
+        availableDelta: $available
+      }
+    ) {
+      inventoryLevel {
+        available
+        location {
+          id
+          name
+        }
+      }
+      userErrors {
+        field
+        message
       }
     }
   }
@@ -544,6 +831,279 @@ export class ShopifyApiClient {
         const uniqueProducts = Array.from(allProductsMap.values());
         this.logger.log(`Finished fetching data. Total unique products: ${uniqueProducts.length}. Total product pages fetched: ${productPagesFetched}. Total locations: ${allShopifyLocations.length}`);
         return { products: uniqueProducts, locations: allShopifyLocations };
+    }
+
+    async createProduct(
+        connection: PlatformConnection,
+        productData: {
+            title: string;
+            description?: string;
+            status?: 'ACTIVE' | 'DRAFT' | 'ARCHIVED';
+            vendor?: string;
+            productType?: string;
+            variants: Array<{
+                sku: string;
+                price: number;
+                compareAtPrice?: number;
+                inventoryQuantity?: number;
+                weight?: number;
+                weightUnit?: 'KILOGRAMS' | 'GRAMS' | 'POUNDS' | 'OUNCES';
+                options?: Array<{ name: string; value: string }>;
+            }>;
+            images?: Array<{ url: string; altText?: string }>;
+        }
+    ): Promise<{ productId: string; variantId: string }> {
+        const client = await this.getGraphQLClient(connection);
+        this.logger.log(`Creating product in Shopify for connection ${connection.Id}`);
+
+        try {
+            const response = await client.request(CREATE_PRODUCT_MUTATION, {
+                variables: {
+                    input: {
+                        title: productData.title,
+                        descriptionHtml: productData.description,
+                        status: productData.status || 'DRAFT',
+                        vendor: productData.vendor,
+                        productType: productData.productType,
+                        variants: productData.variants.map(variant => ({
+                            sku: variant.sku,
+                            price: variant.price.toString(),
+                            compareAtPrice: variant.compareAtPrice?.toString(),
+                            inventoryQuantities: variant.inventoryQuantity ? [{
+                                available: variant.inventoryQuantity,
+                                locationId: 'gid://shopify/Location/1' // Default location, should be configurable
+                            }] : undefined,
+                            weight: variant.weight,
+                            weightUnit: variant.weightUnit,
+                            options: variant.options
+                        })),
+                        images: productData.images?.map(image => ({
+                            src: image.url,
+                            altText: image.altText
+                        }))
+                    }
+                }
+            });
+
+            if (response.errors) {
+                this.logger.error(`GraphQL product creation errors: ${JSON.stringify(response.errors)}`);
+                throw new InternalServerErrorException(`Failed to create product: ${response.errors[0]?.message}`);
+            }
+
+            const product = response.data?.productCreate?.product;
+            if (!product) {
+                throw new InternalServerErrorException('Failed to create product: No product data returned');
+            }
+
+            const variant = product.variants.edges[0]?.node;
+            if (!variant) {
+                throw new InternalServerErrorException('Failed to create product: No variant data returned');
+            }
+
+            return {
+                productId: product.id,
+                variantId: variant.id
+            };
+        } catch (error) {
+            this.logger.error(`Error creating product: ${error.message}`, error.stack);
+            throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to create product');
+        }
+    }
+
+    async updateProduct(
+        connection: PlatformConnection,
+        productId: string,
+        productData: {
+            title?: string;
+            description?: string;
+            status?: 'ACTIVE' | 'DRAFT' | 'ARCHIVED';
+            vendor?: string;
+            productType?: string;
+            variants?: Array<{
+                id: string;
+                sku?: string;
+                price?: number;
+                compareAtPrice?: number;
+                inventoryQuantity?: number;
+                weight?: number;
+                weightUnit?: 'KILOGRAMS' | 'GRAMS' | 'POUNDS' | 'OUNCES';
+                options?: Array<{ name: string; value: string }>;
+            }>;
+            images?: Array<{ url: string; altText?: string }>;
+        }
+    ): Promise<{ productId: string; variantId: string }> {
+        const client = await this.getGraphQLClient(connection);
+        this.logger.log(`Updating product ${productId} in Shopify for connection ${connection.Id}`);
+
+        try {
+            const response = await client.request(UPDATE_PRODUCT_MUTATION, {
+                variables: {
+                    input: {
+                        id: productId,
+                        title: productData.title,
+                        descriptionHtml: productData.description,
+                        status: productData.status,
+                        vendor: productData.vendor,
+                        productType: productData.productType,
+                        variants: productData.variants?.map(variant => ({
+                            id: variant.id,
+                            sku: variant.sku,
+                            price: variant.price?.toString(),
+                            compareAtPrice: variant.compareAtPrice?.toString(),
+                            inventoryQuantities: variant.inventoryQuantity ? [{
+                                available: variant.inventoryQuantity,
+                                locationId: 'gid://shopify/Location/1' // Default location, should be configurable
+                            }] : undefined,
+                            weight: variant.weight,
+                            weightUnit: variant.weightUnit,
+                            options: variant.options
+                        })),
+                        images: productData.images?.map(image => ({
+                            src: image.url,
+                            altText: image.altText
+                        }))
+                    }
+                }
+            });
+
+            if (response.errors) {
+                this.logger.error(`GraphQL product update errors: ${JSON.stringify(response.errors)}`);
+                throw new InternalServerErrorException(`Failed to update product: ${response.errors[0]?.message}`);
+            }
+
+            const product = response.data?.productUpdate?.product;
+            if (!product) {
+                throw new InternalServerErrorException('Failed to update product: No product data returned');
+            }
+
+            const variant = product.variants.edges[0]?.node;
+            if (!variant) {
+                throw new InternalServerErrorException('Failed to update product: No variant data returned');
+            }
+
+            return {
+                productId: product.id,
+                variantId: variant.id
+            };
+        } catch (error) {
+            this.logger.error(`Error updating product: ${error.message}`, error.stack);
+            throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to update product');
+        }
+    }
+
+    async updateInventoryLevel(
+        connection: PlatformConnection,
+        inventoryItemId: string,
+        locationId: string,
+        quantity: number
+    ): Promise<{ available: number; location: { id: string; name: string } }> {
+        const client = await this.getGraphQLClient(connection);
+        this.logger.log(`Updating inventory level for item ${inventoryItemId} at location ${locationId}`);
+
+        try {
+            const response = await client.request(UPDATE_INVENTORY_LEVELS_MUTATION, {
+                variables: {
+                    inventoryItemId,
+                    locationId,
+                    available: quantity
+                }
+            });
+
+            if (response.errors) {
+                this.logger.error(`GraphQL inventory update errors: ${JSON.stringify(response.errors)}`);
+                throw new InternalServerErrorException(`Failed to update inventory: ${response.errors[0]?.message}`);
+            }
+
+            const inventoryLevel = response.data?.inventoryAdjustQuantity?.inventoryLevel;
+            if (!inventoryLevel) {
+                throw new InternalServerErrorException('Failed to update inventory: No inventory level data returned');
+            }
+
+            return inventoryLevel;
+        } catch (error) {
+            this.logger.error(`Error updating inventory: ${error.message}`, error.stack);
+            throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to update inventory');
+        }
+    }
+
+    async getAllLocations(connection: PlatformConnection): Promise<ShopifyLocation[]> {
+        const client = await this.getGraphQLClient(connection);
+        this.logger.log(`Fetching all locations for shop: ${connection.PlatformSpecificData?.['shop']}`);
+
+        try {
+            const response = await client.request<{
+                locations: {
+                    edges: Array<{
+                        node: ShopifyLocation;
+                    }>;
+                };
+            }>(GET_ALL_LOCATIONS_QUERY);
+
+            if (response.errors) {
+                this.logger.error(`GraphQL location query errors: ${JSON.stringify(response.errors)}`);
+                throw new InternalServerErrorException(`Failed to fetch locations: ${response.errors[0]?.message}`);
+            }
+
+            if (!response.data?.locations?.edges) {
+                throw new InternalServerErrorException('Invalid response structure from Shopify locations query');
+            }
+
+            return response.data.locations.edges.map(edge => edge.node);
+        } catch (error) {
+            this.logger.error(`Error fetching locations: ${error.message}`, error.stack);
+            throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to fetch locations');
+        }
+    }
+
+    async createProductAsync(
+        connection: PlatformConnection,
+        productInput: ShopifyProductSetInput
+    ): Promise<{
+        operationId: string;
+        status: string;
+        productId?: string;
+        userErrors: Array<{ field: string; message: string; code: string }>;
+    }> {
+        const client = await this.getGraphQLClient(connection);
+        this.logger.log(`Creating product asynchronously in Shopify for connection ${connection.Id}`);
+
+        try {
+            type ProductSetResponse = {
+                productSet: {
+                    product: { id: string; title: string } | null;
+                    productSetOperation: ShopifyProductSetOperation;
+                    userErrors: Array<{ field: string; message: string; code: string }>;
+                };
+            };
+
+            const response = await client.request<ProductSetResponse>(CREATE_PRODUCT_ASYNC_MUTATION, {
+                variables: {
+                    productInput
+                }
+            });
+
+            if (response.errors) {
+                this.logger.error(`GraphQL product creation errors: ${JSON.stringify(response.errors)}`);
+                throw new InternalServerErrorException(`Failed to create product: ${response.errors[0]?.message}`);
+            }
+
+            if (!response.data?.productSet) {
+                throw new InternalServerErrorException('Invalid response structure from Shopify product creation');
+            }
+
+            const { productSet } = response.data;
+            const { productSetOperation, userErrors } = productSet;
+
+            return {
+                operationId: productSetOperation.id,
+                status: productSetOperation.status,
+                productId: productSet.product?.id,
+                userErrors: [...userErrors, ...productSetOperation.userErrors]
+            };
+        } catch (error) {
+            this.logger.error(`Error creating product: ${error.message}`, error.stack);
+            throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to create product');
+        }
     }
 
     // TODO: Add methods for updating inventory, creating products etc.

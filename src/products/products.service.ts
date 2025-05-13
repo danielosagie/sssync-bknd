@@ -9,27 +9,15 @@ import { PublishProductDto, PublishIntent } from './dto/publish-product.dto';
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { ActivityLogService } from '../common/activity-log.service';
+import { ProductVariant } from '../common/types/supabase.types';
 
-// Define simple interfaces based on DB schema until DTOs are created
+// Use the actual ProductVariant type from Supabase types
+type SimpleProductVariant = Pick<ProductVariant, 'Id' | 'ProductId' | 'Sku' | 'Title' | 'Price'>;
+
 interface SimpleProduct {
-  Id: string;
-  UserId: string;
-  IsArchived: boolean;
-  CreatedAt: string;
-  UpdatedAt: string;
-}
-
-interface SimpleProductVariant {
-   Id: string;
-   ProductId: string;
-   UserId: string;
-   Sku: string;
-   Title: string;
-   Description: string | null;
-   Price: number; // Use number for decimal
-   CreatedAt: string;
-   UpdatedAt: string;
-   // Add other fields from sssync-db.md if needed immediately
+    Id: string;
+    UserId: string;
+    IsArchived: boolean;
 }
 
 interface SimpleAiGeneratedContent {
@@ -500,6 +488,96 @@ export class ProductsService {
     }
     this.logger.log(`Finished platform publish attempts for variant ${variantId}`);
     // --- END: Publish to Platforms ---
+  }
+
+  async createProductWithVariant(
+    userId: string,
+    variantData: Omit<ProductVariant, 'Id' | 'ProductId' | 'UserId' | 'CreatedAt' | 'UpdatedAt'>
+  ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
+    const supabase = this.getSupabaseClient();
+    this.logger.log(`Creating product with variant for user ${userId}`);
+
+    try {
+      // 1. Create Product
+      const { data: productData, error: productError } = await supabase
+        .from('Products')
+        .insert({
+          UserId: userId,
+          IsArchived: false,
+        })
+        .select()
+        .single();
+
+      if (productError || !productData) {
+        this.logger.error(`Failed to create product: ${productError?.message}`);
+        throw new InternalServerErrorException('Failed to create product');
+      }
+
+      const product = productData as SimpleProduct;
+
+      // 2. Create Variant
+      const { data: createdVariantData, error: variantError } = await supabase
+        .from('ProductVariants')
+        .insert({
+          ...variantData,
+          ProductId: product.Id,
+          UserId: userId,
+        })
+        .select()
+        .single();
+
+      if (variantError || !createdVariantData) {
+        this.logger.error(`Failed to create variant: ${variantError?.message}`);
+        // Cleanup: Delete the product if variant creation fails
+        await supabase.from('Products').delete().match({ Id: product.Id });
+        throw new InternalServerErrorException('Failed to create variant');
+      }
+
+      const variant = createdVariantData as SimpleProductVariant;
+
+      return {
+        product,
+        variant,
+      };
+    } catch (error) {
+      this.logger.error(`Error in createProductWithVariant: ${error.message}`, error.stack);
+      throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to create product and variant');
+    }
+  }
+
+  async getProduct(productId: string, userId: string): Promise<{ product: SimpleProduct & { Title: string; Description: string | null; }; variants: SimpleProductVariant[]; }> {
+    const supabase = this.getSupabaseClient();
+    this.logger.log(`Fetching product ${productId} for user ${userId}`);
+
+    // Get the product
+    const { data: productData, error: productError } = await supabase
+        .from('Products')
+        .select('Id, UserId, Title, Description, IsArchived')
+        .eq('Id', productId)
+        .eq('UserId', userId)
+        .single();
+
+    if (productError || !productData) {
+        this.logger.error(`Failed to fetch product ${productId}: ${productError?.message}`);
+        throw new NotFoundException(`Product ${productId} not found`);
+    }
+
+    // Get all variants for this product
+    const { data: variantsData, error: variantsError } = await supabase
+        .from('ProductVariants')
+        .select('Id, ProductId, Sku, Title, Price, Barcode, ImageUrl, Weight, Options')
+        .eq('ProductId', productId)
+        .eq('UserId', userId);
+
+    if (variantsError) {
+        this.logger.error(`Failed to fetch variants for product ${productId}: ${variantsError.message}`);
+        throw new InternalServerErrorException('Failed to fetch product variants');
+    }
+
+    return {
+        product: productData as SimpleProduct & { Title: string; Description: string | null; },
+        variants: variantsData as SimpleProductVariant[]
+    };
   }
 }
 
