@@ -149,7 +149,8 @@ CREATE TABLE "AiGeneratedContent" (
     "GeneratedText" text NOT NULL,
     "Metadata" jsonb,
     "IsActive" boolean NOT NULL DEFAULT false,
-    "CreatedAt" timestamptz NOT NULL DEFAULT now()
+    "CreatedAt" timestamptz NOT NULL DEFAULT now(),
+    "UpdatedAt" timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_aigeneratedcontent_productid ON "AiGeneratedContent"("ProductId");
 

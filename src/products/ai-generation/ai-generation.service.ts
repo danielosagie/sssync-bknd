@@ -84,7 +84,50 @@ export class AiGenerationService {
     const model = 'meta-llama/llama-4-maverick-17b-128e-instruct';
 
     // --- Construct the Prompt Text for Groq ---
-    let promptText = `You are an expert e-commerce data enrichment assistant specializing in creating compelling and platform-optimized product listings. Analyze the product shown in the provided image (${coverImageUrl}).`;
+    let promptText = `You are an expert e-commerce data enrichment assistant specializing in creating compelling and platform-optimized product listings. Analyze the product shown in the provided image (${coverImageUrl}). Use the provided context to generate the best possible product details for the following platforms but also follow this tone of product listing writing at a minimum: (AMAZON EXAMPLE: (Title: Bedsure Fleece Bed Blankets Queen Size Grey - Soft Lightweight Plush Fuzzy Cozy Luxury Blanket Microfiber, 90x90 inches. DescriptionL Thicker & Softer: We've upgraded our classic flannel fleece blanket to be softer and warmer than ever, now featuring enhanced premium microfiber. Perfect by itself or as an extra sheet on cold nights, its fluffy and ultra-cozy softness offers the utmost comfort all year round.
+Lightweight & Airy: The upgraded materials of this flannel fleece blanket maintain the ideal balance between weight and warmth. Enjoy being cuddled by this gentle, calming blanket whenever you're ready to snuggle up.
+Versatile: This lightweight blanket is the perfect accessory for your family and pets to get cozy—whether used as an addition to your kid's room, as a home decor element, or as the designated cozy blanket bed for your pet.
+A Gift for Your Loved Ones: This ultra-soft flannel fleece Christmas blanket makes the perfect gift for any occasion. Its cozy and comforting design offers a thoughtful way to show you care, providing warmth and style year-round. Ideal as one of the top Christmas gift ideas for the holiday season.
+Enhanced Durability: Made with unmatched quality, this blanket features neat stitching that ensures a more robust connection at the seams for improved durability. Guaranteed to resist fading and shedding. Product information
+Item details
+Brand Name	Bedsure
+Age Range Description	Adult
+Number of Items	1
+Included Components	1 Blanket (90" x 90")
+League Name	7.1
+Manufacturer	Bedshe
+Customer Reviews	4.6 4.6 out of 5 stars   (176,218)
+4.6 out of 5 stars
+Best Sellers Rank	#160 in Home & Kitchen (See Top 100 in Home & Kitchen)
+#1 in Bed Blankets
+ASIN	B0157T2ENY
+Item Type Name	throw-blankets
+Item Height	0.1 centimeters
+Measurements
+Item Dimensions L x W	90"L x 90"W
+Size	Queen (90" x 90")
+Unit Count	1.0 Count
+Item Weight	3.19 Pounds
+Item Thickness	0.5 Inches
+Warranty & Support
+Product Warranty: For warranty information about this product, please click here
+Feedback
+Would you like to tell us about a lower price? 
+Materials & Care
+Product Care Instructions	Machine Wash, Do Not Bleach
+Fabric Type	100% Polyester
+Style
+Color	Grey
+Style Name	Modern
+Blanket Form	Throw Blanket
+Theme	Love
+Pattern	Solid
+Sport Type	3.2
+Features & Specs
+Additional Features	Soft
+Recommended Uses For Product	Travel
+Seasons	All, Winter, Fall, Spring
+Fabric Warmth Description	Lightweight))`;
 
     const selectedMatch = selectedMatchContext?.visual_matches?.[0]; // Use only the single selected match
 
