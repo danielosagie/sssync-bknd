@@ -10,7 +10,7 @@ import { FeatureUsageGuard, Feature } from '../common/guards/feature-usage.guard
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard';
 import { PublishProductDto } from './dto/publish-product.dto';
 import { ProductVariant } from '../common/types/supabase.types';
-import { ShopifyProductSetInput, ShopifyProductFile } from '../platform-adapters/shopify/shopify-api-client.service';
+import { ShopifyProductSetInput, ShopifyProductFile, ShopifyLocationNode } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { ShopifyApiClient } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformProductMappingsService } from '../platform-product-mappings/platform-product-mappings.service';
@@ -268,6 +268,34 @@ export class ProductsController {
                 throw error;
             }
             throw new InternalServerErrorException('Failed to publish product to Shopify');
+        }
+    }
+
+    @Get('shopify/locations')
+    @UseGuards(SupabaseAuthGuard)
+    @Feature('shopify')
+    async getShopifyLocations(
+        @Query('platformConnectionId') platformConnectionId: string,
+        @Request() req: any
+    ): Promise<{ locations: ShopifyLocationNode[] }> {
+        const userId = req.user.id;
+
+        try {
+            // Get the platform connection
+            const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
+            if (!connection || connection.PlatformType !== 'SHOPIFY') {
+                throw new BadRequestException('Invalid Shopify platform connection');
+            }
+
+            // Get locations from Shopify
+            const locations = await this.shopifyApiClient.getAllLocations(connection);
+            return { locations };
+        } catch (error) {
+            this.logger.error(`Failed to fetch Shopify locations: ${error.message}`, error.stack);
+            if (error instanceof HttpException) {
+                throw error;
+            }
+            throw new InternalServerErrorException('Failed to fetch Shopify locations');
         }
     }
 
