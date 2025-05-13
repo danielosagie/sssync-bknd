@@ -11,16 +11,36 @@ import { PlatformConnectionsService } from '../platform-connections/platform-con
 import { ActivityLogService } from '../common/activity-log.service';
 import { ProductVariant } from '../common/types/supabase.types';
 
-// Use the actual ProductVariant type from Supabase types
-type SimpleProductVariant = Pick<ProductVariant, 'Id' | 'ProductId' | 'Sku' | 'Title' | 'Price'>;
+// Export the types
+export type SimpleProductVariant = Pick<ProductVariant, 
+    'Id' | 
+    'ProductId' | 
+    'Sku' | 
+    'Title' | 
+    'Price' | 
+    'Barcode' | 
+    'Weight' | 
+    'WeightUnit' | 
+    'Options' | 
+    'Description' | 
+    'CompareAtPrice' | 
+    'RequiresShipping' | 
+    'IsTaxable' | 
+    'TaxCode' | 
+    'ImageId' | 
+    'PlatformVariantId' | 
+    'PlatformProductId'
+>;
 
-interface SimpleProduct {
+export interface SimpleProduct {
     Id: string;
     UserId: string;
+    Title: string;
+    Description: string | null;
     IsArchived: boolean;
 }
 
-interface SimpleAiGeneratedContent {
+export interface SimpleAiGeneratedContent {
     Id: string;
     ProductId: string;
     ContentType: string;
@@ -29,6 +49,7 @@ interface SimpleAiGeneratedContent {
     Metadata?: any;
     IsActive: boolean;
     CreatedAt: string;
+    UpdatedAt: string;
 }
 
 @Injectable()
@@ -316,14 +337,16 @@ export class ProductsService {
      const aiContentInserts: Omit<SimpleAiGeneratedContent, 'Id' | 'CreatedAt'>[] = [];
      let primaryDetails: any = null; // Store details for the first platform to update the variant
 
+     const now = new Date().toISOString();
      Object.entries(generatedDetails).forEach(([platform, details], index) => {
          aiContentInserts.push({
              ProductId: productId,
-             ContentType: 'groq_maverick_details', // Specific content type
-             SourceApi: 'groq-maverick', // Be specific
+             ContentType: 'groq_maverick_details',
+             SourceApi: 'groq-maverick',
              GeneratedText: JSON.stringify(details),
              Metadata: { platform: platform.toLowerCase(), selectedMatch: selectedMatch ?? null },
-             IsActive: true, // Active generated content
+             IsActive: true,
+             UpdatedAt: new Date().toISOString()
          });
          if (index === 0) { // Use details from the first platform for the main variant record
              primaryDetails = details;
@@ -412,172 +435,102 @@ export class ProductsService {
            variantId, // EntityId
            'UPDATE_CANONICAL_DRAFT', // EventType
            'Success', // Status
-           `Saved draft updates for variant ${variantId}.`, // Message
+           `Saved draft updates for variant ${variantId}.` // Message
         );
 
     } catch (error) {
-         this.logger.error(`Failed to save canonical draft data for variant ${variantId}: ${error.message}`, error.stack);
-         await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, 'UPDATE_CANONICAL_DRAFT', 'Error', `Failed to save draft updates: ${error.message}`);
-         throw new InternalServerErrorException('Failed to save draft data.');
+        this.logger.error(`Error during update of canonical data for variant ${variantId}: ${error.message}`, error.stack);
+        throw new InternalServerErrorException('Failed to update canonical data for product variant.');
     }
-    this.logger.debug(`Canonical data updated for variant ${variantId}`);
-    // --- END: Update Canonical Data ---
-
-    // --- Exit if only saving draft ---
-    if (publishIntent === PublishIntent.SAVE_SSSYNC_DRAFT) {
-      this.logger.log(`Intent is SAVE_SSSYNC_DRAFT, processing finished for variant ${variantId}.`);
-      return;
-    }
-
-    // --- START: Publish to Platforms ---
-    this.logger.log(`Starting platform publish process for variant ${variantId} (Intent: ${publishIntent})`);
-    const platformKeys = Object.keys(platformDetails);
-
-    for (const platformKey of platformKeys) {
-        this.logger.debug(`Processing platform: ${platformKey} for variant ${variantId}`);
-        let connectionId: string | null = null; // To link activity log
-        try {
-            // a. Get Platform Connection
-            // TODO: Need efficient way to get connection based on userId + platformKey
-            // Assuming a method exists or fetching all and filtering:
-            const connections = await this.connectionsService.getConnectionsForUser(userId);
-            const connection = connections.find(c => c.PlatformType.toLowerCase() === platformKey.toLowerCase() && c.IsEnabled);
-
-            if (!connection) {
-                this.logger.warn(`No active connection found for user ${userId} and platform ${platformKey}. Skipping publish.`);
-                await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, `PUBLISH_${platformKey.toUpperCase()}`, 'Skipped', `No active connection found.`, null, platformKey);
-                continue; // Skip to next platform
-            }
-            connectionId = connection.Id;
-
-            // b. Get Adapter
-            const adapter = this.adapterRegistry.getAdapter(platformKey);
-            if (!adapter) {
-                 this.logger.error(`No adapter registered for platform: ${platformKey}. Skipping.`);
-                 await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, `PUBLISH_${platformKey.toUpperCase()}`, 'Error', `No adapter found.`, connectionId, platformKey);
-                 continue;
-            }
-
-            // c. Get API Client & Mapper
-            const apiClient = adapter.getApiClient(connection); // Adapter handles decryption via connection service
-            const mapper = adapter.getMapper();
-
-            // d. TODO: Implement Platform Push Logic
-            this.logger.warn(`PUSH LOGIC FOR PLATFORM ${platformKey} IS NOT YET IMPLEMENTED.`);
-            //  i. Map edited data (platformDetails[platformKey]) using mapper.mapCanonicalVariantToPlatform(...) -> platformApiPayload
-            // ii. Get existing mapping from PlatformProductMappings table (using variantId + connectionId)
-            //iii. If mapping exists (get platformProductId/variantId):
-            //      - Call apiClient.updateProduct(platformProductId, platformApiPayload, publishIntent)
-            //      - Handle media updates via apiClient
-            // iv. If mapping doesn't exist:
-            //      - Call apiClient.createProduct(platformApiPayload, publishIntent) -> get new platformProductId/variantId
-            //      - Handle media uploads via apiClient
-            //      - Insert new row into PlatformProductMappings
-            //  v. Handle API success/failure response from apiClient methods
-
-            // Placeholder success log
-            await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, `PUBLISH_${platformKey.toUpperCase()}`, 'Success', `Placeholder: Publish successful.`, connectionId, platformKey);
-
-
-        } catch (platformError) {
-            const errorMsg = platformError instanceof Error ? platformError.message : 'Unknown platform error';
-            this.logger.error(`Failed to publish variant ${variantId} to platform ${platformKey}: ${errorMsg}`, platformError.stack);
-            await this.activityLogService.logActivity(userId, 'ProductVariant', variantId, `PUBLISH_${platformKey.toUpperCase()}`, 'Error', `Publish failed: ${errorMsg}`, connectionId, platformKey);
-            // Decide: Continue to next platform or stop? Continuing is usually better UX.
-        }
-    }
-    this.logger.log(`Finished platform publish attempts for variant ${variantId}`);
-    // --- END: Publish to Platforms ---
+    // --- End Update Canonical Data ---
   }
 
+  /**
+   * Creates a new product with a variant
+   */
   async createProductWithVariant(
-    userId: string,
-    variantData: Omit<ProductVariant, 'Id' | 'ProductId' | 'UserId' | 'CreatedAt' | 'UpdatedAt'>
+      userId: string,
+      variantInput: Omit<ProductVariant, 'Id' | 'ProductId' | 'UserId' | 'CreatedAt' | 'UpdatedAt'>
   ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
-    const supabase = this.getSupabaseClient();
-    this.logger.log(`Creating product with variant for user ${userId}`);
+      const supabase = this.getSupabaseClient();
+      let productId: string | null = null;
+      let variantId: string | null = null;
 
-    try {
-      // 1. Create Product
-      const { data: productData, error: productError } = await supabase
-        .from('Products')
-        .insert({
-          UserId: userId,
-          IsArchived: false,
-        })
-        .select()
-        .single();
+      try {
+          // 1. Create Product
+          const { data: productData, error: productError } = await supabase
+              .from('Products')
+              .insert({
+                  UserId: userId,
+                  IsArchived: false,
+              })
+              .select()
+              .single();
 
-      if (productError || !productData) {
-        this.logger.error(`Failed to create product: ${productError?.message}`);
-        throw new InternalServerErrorException('Failed to create product');
+          if (productError || !productData) {
+              throw new InternalServerErrorException('Failed to create product');
+          }
+
+          const product = productData as SimpleProduct;
+          productId = product.Id;
+
+          // 2. Create Variant
+          const { data: variantData, error: variantError } = await supabase
+              .from('ProductVariants')
+              .insert({
+                  ...variantInput,
+                  ProductId: productId,
+                  UserId: userId,
+              })
+              .select()
+              .single();
+
+          if (variantError || !variantData) {
+              throw new InternalServerErrorException('Failed to create product variant');
+          }
+
+          const variant = variantData as SimpleProductVariant;
+          return { product, variant };
+
+      } catch (error) {
+          // Cleanup if needed
+          if (productId) {
+              await supabase.from('Products').delete().match({ Id: productId });
+          }
+          throw error;
+      }
+  }
+
+  /**
+   * Gets a product and its variants by ID
+   */
+  async getProduct(productId: string, userId: string): Promise<{ product: SimpleProduct; variants: SimpleProductVariant[] }> {
+      const supabase = this.getSupabaseClient();
+
+      // Get product
+      const { data: product, error: productError } = await supabase
+          .from('Products')
+          .select('*')
+          .match({ Id: productId, UserId: userId })
+          .single();
+
+      if (productError || !product) {
+          throw new NotFoundException(`Product ${productId} not found`);
       }
 
-      const product = productData as SimpleProduct;
+      // Get variants
+      const { data: variants, error: variantsError } = await supabase
+          .from('ProductVariants')
+          .select('*')
+          .match({ ProductId: productId, UserId: userId });
 
-      // 2. Create Variant
-      const { data: createdVariantData, error: variantError } = await supabase
-        .from('ProductVariants')
-        .insert({
-          ...variantData,
-          ProductId: product.Id,
-          UserId: userId,
-        })
-        .select()
-        .single();
-
-      if (variantError || !createdVariantData) {
-        this.logger.error(`Failed to create variant: ${variantError?.message}`);
-        // Cleanup: Delete the product if variant creation fails
-        await supabase.from('Products').delete().match({ Id: product.Id });
-        throw new InternalServerErrorException('Failed to create variant');
+      if (variantsError) {
+          throw new InternalServerErrorException('Failed to fetch product variants');
       }
-
-      const variant = createdVariantData as SimpleProductVariant;
 
       return {
-        product,
-        variant,
+          product: product as SimpleProduct,
+          variants: variants as SimpleProductVariant[]
       };
-    } catch (error) {
-      this.logger.error(`Error in createProductWithVariant: ${error.message}`, error.stack);
-      throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to create product and variant');
-    }
-  }
-
-  async getProduct(productId: string, userId: string): Promise<{ product: SimpleProduct & { Title: string; Description: string | null; }; variants: SimpleProductVariant[]; }> {
-    const supabase = this.getSupabaseClient();
-    this.logger.log(`Fetching product ${productId} for user ${userId}`);
-
-    // Get the product
-    const { data: productData, error: productError } = await supabase
-        .from('Products')
-        .select('Id, UserId, Title, Description, IsArchived')
-        .eq('Id', productId)
-        .eq('UserId', userId)
-        .single();
-
-    if (productError || !productData) {
-        this.logger.error(`Failed to fetch product ${productId}: ${productError?.message}`);
-        throw new NotFoundException(`Product ${productId} not found`);
-    }
-
-    // Get all variants for this product
-    const { data: variantsData, error: variantsError } = await supabase
-        .from('ProductVariants')
-        .select('Id, ProductId, Sku, Title, Price, Barcode, ImageUrl, Weight, Options')
-        .eq('ProductId', productId)
-        .eq('UserId', userId);
-
-    if (variantsError) {
-        this.logger.error(`Failed to fetch variants for product ${productId}: ${variantsError.message}`);
-        throw new InternalServerErrorException('Failed to fetch product variants');
-    }
-
-    return {
-        product: productData as SimpleProduct & { Title: string; Description: string | null; },
-        variants: variantsData as SimpleProductVariant[]
-    };
   }
 }
-

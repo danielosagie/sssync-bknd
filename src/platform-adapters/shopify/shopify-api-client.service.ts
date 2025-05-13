@@ -292,7 +292,7 @@ interface ShopifyProductOption {
     values: ShopifyProductOptionValue[];
 }
 
-interface ShopifyProductFile {
+export interface ShopifyProductFile {
     originalSource: string;
     alt?: string;
     filename: string;
@@ -652,27 +652,27 @@ export class ShopifyApiClient {
         this.logger.log(`Starting location fetch loop for shop: ${shop}`);
         while (hasNextPage) {
             this.logger.debug(`Fetching location page with cursor: ${cursor}`);
-            try {
+        try {
                  const response = await client.request<{ locations: { pageInfo: { hasNextPage: boolean; endCursor: string | null }, edges: { node: ShopifyLocationNode }[] } }>(query, {
                     variables: { cursor },
                 });
 
-                 if (response.errors) {
+                if (response.errors) {
                      this.logger.error(`GraphQL location query errors for shop ${shop}: ${JSON.stringify(response.errors)}`);
                      throw new InternalServerErrorException(`GraphQL location query failed: ${response.errors[0]?.message}`);
-                 }
+                }
 
                  const pageData = response.data?.locations;
-                 if (!pageData) {
+                if (!pageData) {
                      this.logger.error(`Unexpected GraphQL location response structure for shop ${shop}: ${JSON.stringify(response.data)}`);
                      throw new InternalServerErrorException('Invalid data structure in Shopify location response.');
-                 }
+                }
 
                  const locationsOnPage: ShopifyLocationNode[] = pageData.edges.map(edge => edge.node);
                  allShopifyLocations.push(...locationsOnPage);
 
-                 hasNextPage = pageData.pageInfo.hasNextPage;
-                 cursor = pageData.pageInfo.endCursor;
+                hasNextPage = pageData.pageInfo.hasNextPage;
+                cursor = pageData.pageInfo.endCursor;
                  this.logger.debug(`Fetched ${locationsOnPage.length} locations. hasNextPage: ${hasNextPage}`);
             } catch (error) {
                  this.logger.error(`Error fetching locations page for shop ${shop}: ${error.message}`, error.stack);
