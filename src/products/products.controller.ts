@@ -10,16 +10,36 @@ import { FeatureUsageGuard, Feature } from '../common/guards/feature-usage.guard
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard';
 import { PublishProductDto } from './dto/publish-product.dto';
 import { ProductVariant } from '../common/types/supabase.types';
-import { ShopifyProductSetInput, ShopifyProductFile, ShopifyLocationNode } from '../platform-adapters/shopify/shopify-api-client.service';
+import { ShopifyProductSetInput, ShopifyProductFile, ShopifyLocationNode, ShopifyInventoryLevelNode } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { ShopifyApiClient } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformProductMappingsService } from '../platform-product-mappings/platform-product-mappings.service';
 import { SupabaseService } from '../common/supabase.service';
 
+interface LocationProduct {
+    variantId: string;
+    sku: string;
+    title: string;
+    quantity: number;
+    updatedAt: string;
+    productId: string;
+    platformVariantId: string;
+    platformProductId: string;
+}
+
+interface LocationWithProducts {
+    id: string;
+    name: string;
+    isActive: boolean;
+    products: LocationProduct[];
+}
+
 @Controller('products')
 @UseGuards(SupabaseAuthGuard, ThrottlerGuard, FeatureUsageGuard)
 export class ProductsController {
     private readonly logger = new Logger(ProductsController.name);
+    private readonly MAX_RETRIES = 2;
+    private readonly RETRY_DELAY = 1000; // 1 second delay between retries
 
     constructor(
         private readonly productsService: ProductsService,
@@ -29,46 +49,58 @@ export class ProductsController {
         private readonly supabaseService: SupabaseService
     ) {}
 
+    // Helper method for retry logic
+    private async withRetry<T>(operation: () => Promise<T>, operationName: string): Promise<T> {
+        let lastError: any;
+        for (let attempt = 1; attempt <= this.MAX_RETRIES; attempt++) {
+            try {
+                return await operation();
+            } catch (error) {
+                lastError = error;
+                if (attempt < this.MAX_RETRIES) {
+                    this.logger.warn(`${operationName} attempt ${attempt} failed, retrying in ${this.RETRY_DELAY}ms...`);
+                    await new Promise(resolve => setTimeout(resolve, this.RETRY_DELAY));
+                }
+            }
+        }
+        throw lastError;
+    }
+
     /**
      * Endpoint 1 (Revised): Analyzes images, creates draft, saves analysis.
      */
     @Post('analyze')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 10, ttl: 60000 }})
+    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     @HttpCode(HttpStatus.OK)
     async analyzeAndCreateDraft(
         @Request() req,
         @Body() analyzeImagesDto: AnalyzeImagesDto,
     ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
-        const userId = (req.user as any)?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found after authentication.');
-        }
+        return this.withRetry(
+            async () => {
+                const userId = (req.user as any)?.id;
+                if (!userId) {
+                    throw new BadRequestException('User ID not found after authentication.');
+                }
 
-        this.logger.log(`Analyze images request for user: ${userId}`);
-        if (!analyzeImagesDto || !analyzeImagesDto.imageUris || analyzeImagesDto.imageUris.length === 0) {
-            throw new BadRequestException('At least one image URI is required in the request body.');
-        }
+                this.logger.log(`Analyze images request for user: ${userId}`);
+                if (!analyzeImagesDto || !analyzeImagesDto.imageUris || analyzeImagesDto.imageUris.length === 0) {
+                    throw new BadRequestException('At least one image URI is required in the request body.');
+                }
 
-        // Pass the primary image URI to the service for analysis
-        // The service currently only takes one imageUrl for SerpApi
-        const primaryImageUrl = analyzeImagesDto.imageUris[0];
+                const primaryImageUrl = analyzeImagesDto.imageUris[0];
+                const initialData = {};
 
-        // Pass any initial data from the DTO to the service if needed
-        // The service expects an optional object like { title, description, price, sku }
-        const initialData = {
-            // Map fields from analyzeImagesDto if they exist, e.g.:
-            // title: analyzeImagesDto.initialTitle,
-            // sku: analyzeImagesDto.initialSku,
-        };
-
-        // Directly return the result from the service, as its type now matches the declaration
-        return this.productsService.analyzeAndCreateDraft(
-            userId,
-            primaryImageUrl,
-            initialData,
+                return this.productsService.analyzeAndCreateDraft(
+                    userId,
+                    primaryImageUrl,
+                    initialData,
+                );
+            },
+            'analyzeAndCreateDraft'
         );
     }
 
@@ -78,32 +110,37 @@ export class ProductsController {
     @Post('generate-details')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 5, ttl: 60000 }})
+    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
     async generateDetailsForDraft(
-         @Request() req,
-         @Body() generateDetailsDto: GenerateDetailsDto,
+        @Request() req,
+        @Body() generateDetailsDto: GenerateDetailsDto,
     ): Promise<{ generatedDetails: GeneratedDetails | null }> {
-         const userId = (req.user as any)?.id;
-         if (!userId) {
-             throw new BadRequestException('User ID not found after authentication.');
-         }
-         if (!generateDetailsDto.productId || !generateDetailsDto.variantId) {
-             throw new BadRequestException('productId and variantId are required in the request body.');
-         }
-         if (generateDetailsDto.coverImageIndex >= generateDetailsDto.imageUris.length) {
-             throw new BadRequestException('coverImageIndex is out of bounds for the provided imageUris array.');
-         }
+        return this.withRetry(
+            async () => {
+                const userId = (req.user as any)?.id;
+                if (!userId) {
+                    throw new BadRequestException('User ID not found after authentication.');
+                }
+                if (!generateDetailsDto.productId || !generateDetailsDto.variantId) {
+                    throw new BadRequestException('productId and variantId are required in the request body.');
+                }
+                if (generateDetailsDto.coverImageIndex >= generateDetailsDto.imageUris.length) {
+                    throw new BadRequestException('coverImageIndex is out of bounds for the provided imageUris array.');
+                }
 
-         return this.productsService.generateDetailsForDraft(
-            userId,
-            generateDetailsDto.productId,
-            generateDetailsDto.variantId,
-            generateDetailsDto.imageUris,
-            generateDetailsDto.coverImageIndex,
-            generateDetailsDto.selectedPlatforms,
-            generateDetailsDto.selectedMatch,
-         );
+                return this.productsService.generateDetailsForDraft(
+                    userId,
+                    generateDetailsDto.productId,
+                    generateDetailsDto.variantId,
+                    generateDetailsDto.imageUris,
+                    generateDetailsDto.coverImageIndex,
+                    generateDetailsDto.selectedPlatforms,
+                    generateDetailsDto.selectedMatch,
+                );
+            },
+            'generateDetailsForDraft'
+        );
     }
 
     @Post('publish')
@@ -274,29 +311,355 @@ export class ProductsController {
     @Get('shopify/locations')
     @UseGuards(SupabaseAuthGuard)
     @Feature('shopify')
+    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
     async getShopifyLocations(
         @Query('platformConnectionId') platformConnectionId: string,
         @Request() req: any
     ): Promise<{ locations: ShopifyLocationNode[] }> {
-        const userId = req.user.id;
+        return this.withRetry(
+            async () => {
+                const userId = req.user.id;
 
-        try {
-            // Get the platform connection
-            const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
-            if (!connection || connection.PlatformType !== 'SHOPIFY') {
-                throw new BadRequestException('Invalid Shopify platform connection');
-            }
+                // Get the platform connection
+                const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
+                if (!connection || connection.PlatformType !== 'SHOPIFY') {
+                    throw new BadRequestException('Invalid Shopify platform connection');
+                }
 
-            // Get locations from Shopify
-            const locations = await this.shopifyApiClient.getAllLocations(connection);
-            return { locations };
-        } catch (error) {
-            this.logger.error(`Failed to fetch Shopify locations: ${error.message}`, error.stack);
-            if (error instanceof HttpException) {
-                throw error;
-            }
-            throw new InternalServerErrorException('Failed to fetch Shopify locations');
-        }
+                // Get locations from Shopify
+                const locations = await this.shopifyApiClient.getAllLocations(connection);
+                return { locations };
+            },
+            'getShopifyLocations'
+        );
+    }
+
+    @Get('shopify/inventory')
+    @UseGuards(SupabaseAuthGuard)
+    @Feature('shopify')
+    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
+    async getShopifyInventory(
+        @Query('platformConnectionId') platformConnectionId: string,
+        @Query('sync') sync: boolean = false,
+        @Request() req: any
+    ): Promise<{
+        inventory: Array<{
+            variantId: string;
+            sku: string;
+            title: string;
+            locations: Array<{
+                locationId: string;
+                locationName: string;
+                quantity: number;
+                updatedAt: string;
+            }>;
+            productId: string;
+            platformVariantId: string;
+            platformProductId: string;
+        }>;
+        lastSyncedAt: string | null;
+    }> {
+        return this.withRetry(
+            async () => {
+                const userId = req.user.id;
+
+                // Get the platform connection
+                const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
+                if (!connection || connection.PlatformType !== 'SHOPIFY') {
+                    throw new BadRequestException('Invalid Shopify platform connection');
+                }
+
+                const supabase = this.supabaseService.getClient();
+
+                // If sync is requested, fetch latest data from Shopify
+                if (sync) {
+                    // Get all product mappings for this connection
+                    const { data: mappings, error: mappingsError } = await supabase
+                        .from('PlatformProductMappings')
+                        .select(`
+                            Id,
+                            ProductVariantId,
+                            PlatformProductId,
+                            PlatformVariantId,
+                            ProductVariants (
+                                Id,
+                                Sku,
+                                Title
+                            )
+                        `)
+                        .eq('PlatformConnectionId', platformConnectionId)
+                        .eq('IsEnabled', true);
+
+                    if (mappingsError) {
+                        throw new InternalServerErrorException('Failed to fetch product mappings');
+                    }
+
+                    // Fetch inventory levels from Shopify for all variants
+                    const inventoryLevels = await this.shopifyApiClient.getInventoryLevels(
+                        connection,
+                        mappings.map(m => m.PlatformVariantId).filter(Boolean)
+                    );
+
+                    // Update inventory levels in our database
+                    for (const level of inventoryLevels) {
+                        const mapping = mappings.find(m => m.PlatformVariantId === level.variantId);
+                        if (!mapping) continue;
+
+                        const { error: upsertError } = await supabase
+                            .from('InventoryLevels')
+                            .upsert({
+                                ProductVariantId: mapping.ProductVariantId,
+                                PlatformConnectionId: platformConnectionId,
+                                PlatformLocationId: level.locationId,
+                                Quantity: level.quantity,
+                                UpdatedAt: new Date().toISOString()
+                            }, {
+                                onConflict: 'ProductVariantId,PlatformConnectionId,PlatformLocationId'
+                            });
+
+                        if (upsertError) {
+                            this.logger.error(`Failed to update inventory level: ${upsertError.message}`);
+                        }
+                    }
+
+                    // Update last sync timestamp
+                    await supabase
+                        .from('PlatformConnections')
+                        .update({ LastSyncSuccessAt: new Date().toISOString() })
+                        .eq('Id', platformConnectionId);
+                }
+
+                // Fetch current inventory levels from our database
+                const { data: inventory, error: inventoryError } = await supabase
+                    .from('InventoryLevels')
+                    .select(`
+                        ProductVariantId,
+                        PlatformLocationId,
+                        Quantity,
+                        UpdatedAt,
+                        ProductVariants (
+                            Id,
+                            Sku,
+                            Title
+                        ),
+                        PlatformProductMappings (
+                            PlatformProductId,
+                            PlatformVariantId
+                        )
+                    `)
+                    .eq('PlatformConnectionId', platformConnectionId);
+
+                if (inventoryError) {
+                    throw new InternalServerErrorException('Failed to fetch inventory levels');
+                }
+
+                // Get location names from Shopify
+                const locations = await this.shopifyApiClient.getAllLocations(connection);
+                const locationMap = new Map(locations.map(loc => [loc.id, loc]));
+
+                // Group inventory by variant
+                const inventoryByVariant = new Map();
+                for (const item of inventory) {
+                    if (!inventoryByVariant.has(item.ProductVariantId)) {
+                        const variant = item.ProductVariants[0]; // Get first item since it's a single variant
+                        const mapping = item.PlatformProductMappings[0]; // Get first item since it's a single mapping
+                        inventoryByVariant.set(item.ProductVariantId, {
+                            variantId: item.ProductVariantId,
+                            sku: variant.Sku,
+                            title: variant.Title,
+                            locations: [],
+                            productId: mapping?.PlatformProductId,
+                            platformVariantId: mapping?.PlatformVariantId,
+                            platformProductId: mapping?.PlatformProductId
+                        });
+                    }
+
+                    const location = locationMap.get(item.PlatformLocationId);
+                    if (location) {
+                        inventoryByVariant.get(item.ProductVariantId).locations.push({
+                            locationId: item.PlatformLocationId,
+                            locationName: location.name,
+                            quantity: item.Quantity,
+                            updatedAt: item.UpdatedAt
+                        });
+                    }
+                }
+
+                // Get last sync timestamp
+                const { data: connectionData } = await supabase
+                    .from('PlatformConnections')
+                    .select('LastSyncSuccessAt')
+                    .eq('Id', platformConnectionId)
+                    .single();
+
+                return {
+                    inventory: Array.from(inventoryByVariant.values()),
+                    lastSyncedAt: connectionData?.LastSyncSuccessAt || null
+                };
+            },
+            'getShopifyInventory'
+        );
+    }
+
+    @Get('shopify/locations-with-products')
+    @UseGuards(SupabaseAuthGuard)
+    @Feature('shopify')
+    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
+    async getShopifyLocationsWithProducts(
+        @Query('platformConnectionId') platformConnectionId: string,
+        @Query('sync') sync: boolean = false,
+        @Request() req: any
+    ): Promise<{
+        locations: Array<{
+            id: string;
+            name: string;
+            isActive: boolean;
+            products: Array<{
+                variantId: string;
+                sku: string;
+                title: string;
+                quantity: number;
+                updatedAt: string;
+                productId: string;
+                platformVariantId: string;
+                platformProductId: string;
+            }>;
+        }>;
+        lastSyncedAt: string | null;
+    }> {
+        return this.withRetry(
+            async () => {
+                const userId = req.user.id;
+
+                // Get the platform connection
+                const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
+                if (!connection || connection.PlatformType !== 'SHOPIFY') {
+                    throw new BadRequestException('Invalid Shopify platform connection');
+                }
+
+                const supabase = this.supabaseService.getClient();
+
+                // Get all locations from Shopify
+                const locations = await this.shopifyApiClient.getAllLocations(connection);
+                const locationMap = new Map<string, LocationWithProducts>();
+
+                // If sync is requested, fetch latest data from Shopify
+                if (sync) {
+                    // Get all product mappings for this connection
+                    const { data: mappings, error: mappingsError } = await supabase
+                        .from('PlatformProductMappings')
+                        .select(`
+                            Id,
+                            ProductVariantId,
+                            PlatformProductId,
+                            PlatformVariantId,
+                            ProductVariants (
+                                Id,
+                                Sku,
+                                Title
+                            )
+                        `)
+                        .eq('PlatformConnectionId', platformConnectionId)
+                        .eq('IsEnabled', true);
+
+                    if (mappingsError) {
+                        throw new InternalServerErrorException('Failed to fetch product mappings');
+                    }
+
+                    // Fetch inventory levels from Shopify for all variants
+                    const inventoryLevels = await this.shopifyApiClient.getInventoryLevels(
+                        connection,
+                        mappings.map(m => m.PlatformVariantId).filter(Boolean)
+                    );
+
+                    // Update inventory levels in our database
+                    for (const level of inventoryLevels) {
+                        const mapping = mappings.find(m => m.PlatformVariantId === level.variantId);
+                        if (!mapping) continue;
+
+                        const { error: upsertError } = await supabase
+                            .from('InventoryLevels')
+                            .upsert({
+                                ProductVariantId: mapping.ProductVariantId,
+                                PlatformConnectionId: platformConnectionId,
+                                PlatformLocationId: level.locationId,
+                                Quantity: level.quantity,
+                                UpdatedAt: new Date().toISOString()
+                            }, {
+                                onConflict: 'ProductVariantId,PlatformConnectionId,PlatformLocationId'
+                            });
+
+                        if (upsertError) {
+                            this.logger.error(`Failed to update inventory level: ${upsertError.message}`);
+                        }
+                    }
+
+                    // Update last sync timestamp
+                    await supabase
+                        .from('PlatformConnections')
+                        .update({ LastSyncSuccessAt: new Date().toISOString() })
+                        .eq('Id', platformConnectionId);
+                }
+
+                // Fetch current inventory levels from our database
+                const { data: inventory, error: inventoryError } = await supabase
+                    .from('InventoryLevels')
+                    .select(`
+                        ProductVariantId,
+                        PlatformLocationId,
+                        Quantity,
+                        UpdatedAt,
+                        ProductVariants (
+                            Id,
+                            Sku,
+                            Title
+                        ),
+                        PlatformProductMappings (
+                            PlatformProductId,
+                            PlatformVariantId
+                        )
+                    `)
+                    .eq('PlatformConnectionId', platformConnectionId);
+
+                if (inventoryError) {
+                    throw new InternalServerErrorException('Failed to fetch inventory levels');
+                }
+
+                // Group inventory by location
+                for (const item of inventory) {
+                    const location = locationMap.get(item.PlatformLocationId);
+                    if (location) {
+                        const variant = item.ProductVariants[0];
+                        const mapping = item.PlatformProductMappings[0];
+                        if (mapping?.PlatformProductId && mapping?.PlatformVariantId) {
+                            location.products.push({
+                                variantId: item.ProductVariantId,
+                                sku: variant.Sku,
+                                title: variant.Title,
+                                quantity: item.Quantity,
+                                updatedAt: item.UpdatedAt,
+                                productId: mapping.PlatformProductId,
+                                platformVariantId: mapping.PlatformVariantId,
+                                platformProductId: mapping.PlatformProductId
+                            });
+                        }
+                    }
+                }
+
+                // Get last sync timestamp
+                const { data: connectionData } = await supabase
+                    .from('PlatformConnections')
+                    .select('LastSyncSuccessAt')
+                    .eq('Id', platformConnectionId)
+                    .single();
+
+                return {
+                    locations: Array.from(locationMap.values()),
+                    lastSyncedAt: connectionData?.LastSyncSuccessAt || null
+                };
+            },
+            'getShopifyLocationsWithProducts'
+        );
     }
 
     // ... (TODO endpoints) ...

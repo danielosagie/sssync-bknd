@@ -471,6 +471,261 @@ This endpoint may return the following additional error responses:
 }
 ```
 
+### 6. Get Shopify Inventory
+Fetches and optionally syncs inventory levels for all products in a Shopify store.
+
+```http
+GET /products/shopify/inventory?platformConnectionId=<connection-id>&sync=<boolean>
+```
+
+#### Query Parameters
+```typescript
+{
+  "platformConnectionId": string;  // ID of the Shopify platform connection
+  "sync": boolean;                 // Optional: Whether to sync with Shopify (default: false)
+}
+```
+
+#### Response
+```typescript
+{
+  "inventory": Array<{
+    "variantId": string;           // Your internal variant ID
+    "sku": string;                 // Product SKU
+    "title": string;              // Product title
+    "locations": Array<{
+      "locationId": string;        // Shopify location ID
+      "locationName": string;      // Location name
+      "quantity": number;          // Current inventory quantity
+      "updatedAt": string;         // Last update timestamp
+    }>;
+    "productId": string;           // Your internal product ID
+    "platformVariantId": string;   // Shopify variant ID
+    "platformProductId": string;   // Shopify product ID
+  }>;
+  "lastSyncedAt": string | null;   // Timestamp of last successful sync
+}
+```
+
+#### Example
+```typescript
+// Request (without sync)
+const response = await fetch('/products/shopify/inventory?platformConnectionId=conn-123', {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer <token>'
+  }
+});
+
+// Request (with sync)
+const response = await fetch('/products/shopify/inventory?platformConnectionId=conn-123&sync=true', {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer <token>'
+  }
+});
+
+// Response
+{
+  "inventory": [
+    {
+      "variantId": "var-123",
+      "sku": "PROD-123",
+      "title": "Example Product",
+      "locations": [
+        {
+          "locationId": "loc-1",
+          "locationName": "Main Warehouse",
+          "quantity": 10,
+          "updatedAt": "2024-03-20T15:30:00Z"
+        },
+        {
+          "locationId": "loc-2",
+          "locationName": "East Coast Warehouse",
+          "quantity": 5,
+          "updatedAt": "2024-03-20T15:30:00Z"
+        }
+      ],
+      "productId": "prod-123",
+      "platformVariantId": "shopify-var-123",
+      "platformProductId": "shopify-prod-123"
+    }
+  ],
+  "lastSyncedAt": "2024-03-20T15:30:00Z"
+}
+```
+
+#### Error Responses
+This endpoint may return the following additional error responses:
+
+```typescript
+// 400 Bad Request - Invalid platform connection
+{
+  "statusCode": 400,
+  "message": "Invalid Shopify platform connection";
+  "error": "Bad Request";
+}
+
+// 403 Forbidden - Shopify feature not enabled
+{
+  "statusCode": 403,
+  "message": "Feature not enabled for your subscription";
+  "error": "Forbidden";
+}
+
+// 429 Too Many Requests - Rate limit exceeded
+{
+  "statusCode": 429,
+  "message": "Too Many Requests";
+  "error": "Too Many Requests";
+}
+```
+
+#### Notes
+- The endpoint is rate-limited to 1 request per 10 minutes
+- When `sync=true`, the endpoint will:
+  1. Fetch the latest inventory levels from Shopify
+  2. Update the local database with the new levels
+  3. Return the updated inventory data
+- When `sync=false`, the endpoint returns the cached inventory data from the local database
+- The `lastSyncedAt` timestamp indicates when the data was last synchronized with Shopify
+- Inventory levels are tracked per variant and location
+- The endpoint requires the `shopify` feature to be enabled
+
+### 7. Get Shopify Locations with Products
+Fetches all locations and their associated products in a single call. This is the recommended endpoint for displaying location-based inventory management.
+
+```http
+GET /products/shopify/locations-with-products?platformConnectionId=<connection-id>&sync=<boolean>
+```
+
+#### Query Parameters
+```typescript
+{
+  "platformConnectionId": string;  // ID of the Shopify platform connection
+  "sync": boolean;                 // Optional: Whether to sync with Shopify (default: false)
+}
+```
+
+#### Response
+```typescript
+{
+  "locations": Array<{
+    "id": string;           // Shopify location ID
+    "name": string;         // Location name
+    "isActive": boolean;    // Whether the location is active
+    "products": Array<{     // Products available at this location
+      "variantId": string;  // Your internal variant ID
+      "sku": string;        // Product SKU
+      "title": string;      // Product title
+      "quantity": number;   // Current inventory quantity at this location
+      "updatedAt": string;  // Last update timestamp
+      "productId": string;  // Your internal product ID
+      "platformVariantId": string;   // Shopify variant ID
+      "platformProductId": string;   // Shopify product ID
+    }>;
+  }>;
+  "lastSyncedAt": string | null;   // Timestamp of last successful sync
+}
+```
+
+#### Example
+```typescript
+// Request (without sync)
+const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn-123', {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer <token>'
+  }
+});
+
+// Request (with sync)
+const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn-123&sync=true', {
+  method: 'GET',
+  headers: {
+    'Authorization': 'Bearer <token>'
+  }
+});
+
+// Response
+{
+  "locations": [
+    {
+      "id": "gid://shopify/Location/123456789",
+      "name": "Main Warehouse",
+      "isActive": true,
+      "products": [
+        {
+          "variantId": "var-123",
+          "sku": "PROD-123",
+          "title": "Example Product",
+          "quantity": 10,
+          "updatedAt": "2024-03-20T15:30:00Z",
+          "productId": "prod-123",
+          "platformVariantId": "shopify-var-123",
+          "platformProductId": "shopify-prod-123"
+        }
+      ]
+    },
+    {
+      "id": "gid://shopify/Location/987654321",
+      "name": "East Coast Warehouse",
+      "isActive": true,
+      "products": [
+        {
+          "variantId": "var-123",
+          "sku": "PROD-123",
+          "title": "Example Product",
+          "quantity": 5,
+          "updatedAt": "2024-03-20T15:30:00Z",
+          "productId": "prod-123",
+          "platformVariantId": "shopify-var-123",
+          "platformProductId": "shopify-prod-123"
+        }
+      ]
+    }
+  ],
+  "lastSyncedAt": "2024-03-20T15:30:00Z"
+}
+```
+
+#### Error Responses
+This endpoint may return the following error responses:
+
+```typescript
+// 400 Bad Request - Invalid platform connection
+{
+  "statusCode": 400,
+  "message": "Invalid Shopify platform connection";
+  "error": "Bad Request";
+}
+
+// 403 Forbidden - Shopify feature not enabled
+{
+  "statusCode": 403,
+  "message": "Feature not enabled for your subscription";
+  "error": "Forbidden";
+}
+
+// 429 Too Many Requests - Rate limit exceeded
+{
+  "statusCode": 429,
+  "message": "Too Many Requests";
+  "error": "Too Many Requests";
+}
+```
+
+#### Notes
+- The endpoint is rate-limited to 1 request per 10 minutes
+- When `sync=true`, the endpoint will:
+  1. Fetch the latest inventory levels from Shopify
+  2. Update the local database with the new levels
+  3. Return the updated data grouped by location
+- When `sync=false`, the endpoint returns the cached data from the local database
+- The `lastSyncedAt` timestamp indicates when the data was last synchronized with Shopify
+- This endpoint is optimized for location-based inventory management interfaces
+- The endpoint requires the `shopify` feature to be enabled
+
 ## Error Responses
 
 All endpoints may return the following error responses:
@@ -527,4 +782,162 @@ The API will return a 403 Forbidden error if the required feature is not enabled
   "message": "Feature not enabled for your subscription";
   "error": "Forbidden";
 }
-``` 
+```
+
+## Shopify Integration Endpoints
+
+### Get Shopify Locations
+Retrieves all available locations from a Shopify store.
+
+**Endpoint:** `GET /products/shopify/locations?platformConnectionId=<connection-id>`
+
+**Query Parameters:**
+- `platformConnectionId` (required): string - ID of the Shopify platform connection
+
+**Response (200 OK):**
+```json
+{
+  "locations": [
+    {
+      "id": "gid://shopify/Location/123456789",
+      "name": "Main Warehouse",
+      "isActive": true
+    }
+  ]
+}
+```
+
+**Error Responses:**
+- 400 Bad Request: Invalid platform connection ID
+- 403 Forbidden: Shopify feature not enabled
+- 429 Too Many Requests: Rate limit exceeded (1 request per 10 minutes)
+
+### Get Shopify Inventory
+Retrieves inventory levels for all products in a Shopify store.
+
+**Endpoint:** `GET /products/shopify/inventory?platformConnectionId=<connection-id>&sync=<boolean>`
+
+**Query Parameters:**
+- `platformConnectionId` (required): string - ID of the Shopify platform connection
+- `sync` (optional): boolean - Whether to sync with Shopify (default: false)
+
+**Response (200 OK):**
+```json
+{
+  "inventory": [
+    {
+      "variantId": "var-123",
+      "sku": "PROD-123",
+      "title": "Example Product",
+      "locations": [
+        {
+          "locationId": "gid://shopify/Location/123456789",
+          "locationName": "Main Warehouse",
+          "quantity": 10,
+          "updatedAt": "2024-03-20T15:30:00Z"
+        }
+      ],
+      "productId": "prod-123",
+      "platformVariantId": "shopify-var-123",
+      "platformProductId": "shopify-prod-123"
+    }
+  ],
+  "lastSyncedAt": "2024-03-20T15:30:00Z"
+}
+```
+
+**Error Responses:**
+- 400 Bad Request: Invalid platform connection ID
+- 403 Forbidden: Shopify feature not enabled
+- 429 Too Many Requests: Rate limit exceeded (1 request per 10 minutes)
+
+### Get Shopify Locations with Products
+Retrieves all locations along with their associated products and inventory levels in a single call.
+
+**Endpoint:** `GET /products/shopify/locations-with-products?platformConnectionId=<connection-id>&sync=<boolean>`
+
+**Query Parameters:**
+- `platformConnectionId` (required): string - ID of the Shopify platform connection
+- `sync` (optional): boolean - Whether to sync with Shopify (default: false)
+
+**Response (200 OK):**
+```json
+{
+  "locations": [
+    {
+      "id": "gid://shopify/Location/123456789",
+      "name": "Main Warehouse",
+      "isActive": true,
+      "products": [
+        {
+          "variantId": "var-123",
+          "sku": "PROD-123",
+          "title": "Example Product",
+          "quantity": 10,
+          "updatedAt": "2024-03-20T15:30:00Z",
+          "productId": "prod-123",
+          "platformVariantId": "shopify-var-123",
+          "platformProductId": "shopify-prod-123"
+        }
+      ]
+    }
+  ],
+  "lastSyncedAt": "2024-03-20T15:30:00Z"
+}
+```
+
+**Error Responses:**
+- 400 Bad Request: Invalid platform connection ID
+- 403 Forbidden: Shopify feature not enabled
+- 429 Too Many Requests: Rate limit exceeded (1 request per 10 minutes)
+
+**Notes:**
+1. All endpoints are rate-limited to 1 request per 10 minutes
+2. The `sync` parameter determines whether to fetch fresh data from Shopify:
+   - When `sync=true`, the endpoint will fetch the latest data from Shopify and update the local cache
+   - When `sync=false` (default), the endpoint will return cached data if available
+3. The `lastSyncedAt` timestamp indicates when the data was last synchronized with Shopify
+4. All endpoints require a valid Shopify platform connection with the `shopify` feature enabled
+5. The locations-with-products endpoint is optimized for building location-based UIs, as it organizes the data by location first
+
+**Example Usage:**
+```typescript
+// Fetch locations with their products
+const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn_123&sync=true', {
+  headers: {
+    'Authorization': 'Bearer your-token',
+    'Content-Type': 'application/json'
+  }
+});
+
+const data = await response.json();
+// data.locations contains an array of locations, each with its products
+```
+
+**Best Practices:**
+1. Use the locations-with-products endpoint when building location-based UIs
+2. Use the inventory endpoint when you need a flat list of all inventory levels
+3. Use the locations endpoint when you only need location information
+4. Set `sync=true` only when you need fresh data from Shopify
+5. Cache the response data on the client side and use the `lastSyncedAt` timestamp to determine when to refresh
+
+**Example Usage:**
+```typescript
+// Fetch locations with their products
+const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn_123&sync=true', {
+  headers: {
+    'Authorization': 'Bearer your-token',
+    'Content-Type': 'application/json'
+  }
+});
+
+const data = await response.json();
+// data.locations contains an array of locations, each with its products
+```
+
+**Best Practices:**
+1. Use the locations-with-products endpoint when building location-based UIs
+2. Use the inventory endpoint when you need a flat list of all inventory levels
+3. Use the locations endpoint when you only need location information
+4. Set `sync=true` only when you need fresh data from Shopify
+5. Cache the response data on the client side and use the `lastSyncedAt` timestamp to determine when to refresh 

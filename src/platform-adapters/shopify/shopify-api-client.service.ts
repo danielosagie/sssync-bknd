@@ -562,6 +562,31 @@ const UPDATE_INVENTORY_LEVELS_MUTATION = `
   }
 `;
 
+// Add new query for fetching inventory levels
+const GET_INVENTORY_LEVELS_QUERY = `
+  query GetInventoryLevels($inventoryItemIds: [ID!]!) {
+    inventoryItems(first: 50, ids: $inventoryItemIds) {
+      edges {
+        node {
+          id
+          inventoryLevels(first: 10) {
+            edges {
+              node {
+                available
+                location {
+                  id
+                  name
+                  isActive
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
 @Injectable()
 export class ShopifyApiClient {
     private readonly logger = new Logger(ShopifyApiClient.name);
@@ -1103,6 +1128,64 @@ export class ShopifyApiClient {
         } catch (error) {
             this.logger.error(`Error creating product: ${error.message}`, error.stack);
             throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to create product');
+        }
+    }
+
+    async getInventoryLevels(
+        connection: PlatformConnection,
+        variantIds: string[]
+    ): Promise<Array<{
+        variantId: string;
+        locationId: string;
+        quantity: number;
+    }>> {
+        const client = await this.getGraphQLClient(connection);
+        this.logger.log(`Fetching inventory levels for ${variantIds.length} variants`);
+
+        try {
+            // Convert variant IDs to inventory item IDs
+            const inventoryItemIds = variantIds.map(id => 
+                id.startsWith('gid://') ? id : `gid://shopify/ProductVariant/${id}`
+            );
+
+            const response = await client.request(GET_INVENTORY_LEVELS_QUERY, {
+                variables: {
+                    inventoryItemIds
+                }
+            });
+
+            if (response.errors) {
+                this.logger.error(`GraphQL inventory levels fetch errors: ${JSON.stringify(response.errors)}`);
+                throw new InternalServerErrorException(`Failed to fetch inventory levels: ${response.errors[0]?.message}`);
+            }
+
+            const inventoryItems = response.data?.inventoryItems?.edges || [];
+            const results: Array<{
+                variantId: string;
+                locationId: string;
+                quantity: number;
+            }> = [];
+
+            for (const item of inventoryItems) {
+                const inventoryItemId = item.node.id;
+                const variantId = inventoryItemId.split('/').pop() || '';
+                
+                for (const levelEdge of item.node.inventoryLevels.edges) {
+                    const level = levelEdge.node;
+                    if (level.location.isActive) {
+                        results.push({
+                            variantId,
+                            locationId: level.location.id,
+                            quantity: level.available
+                        });
+                    }
+                }
+            }
+
+            return results;
+        } catch (error) {
+            this.logger.error(`Error fetching inventory levels: ${error.message}`, error.stack);
+            throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to fetch inventory levels');
         }
     }
 
