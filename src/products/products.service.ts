@@ -10,6 +10,7 @@ import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { ActivityLogService } from '../common/activity-log.service';
 import { ProductVariant } from '../common/types/supabase.types';
+import * as QueueManager from '../queue-manager';
 
 // Export the types
 export type SimpleProductVariant = Pick<ProductVariant, 
@@ -532,5 +533,13 @@ export class ProductsService {
           product: product as SimpleProduct,
           variants: variants as SimpleProductVariant[]
       };
+  }
+
+  /**
+   * Example: Queue a product sync job using the dynamic queue manager
+   */
+  async queueProductSyncJob(productId: string, userId: string) {
+    const jobData = { type: 'product-sync', productId, userId, timestamp: Date.now() };
+    await QueueManager.enqueueJob(jobData);
   }
 }

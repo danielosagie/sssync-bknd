@@ -5,11 +5,12 @@ import { PlatformConnectionsService, PlatformConnection } from '../platform-conn
 import { MappingService, MappingSuggestion } from './mapping.service';
 import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE } from './sync-engine.constants';
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
+import * as QueueManager from '../queue-manager';
 
 // Define interfaces for return types
 export interface InitialScanResult { countProducts: number; countVariants: number; countLocations: number; analysisId?: string; }
 export interface SyncPreview { actions: Array<{type: string; description: string}>; /* ... */ }
-export interface JobData { connectionId: string; userId: string; platformType: string; } // Type for job data
+export interface JobData { type?: string; connectionId: string; userId: string; platformType: string; }
 
 console.log('[InitialSyncService] Imported INITIAL_SCAN_QUEUE:', INITIAL_SCAN_QUEUE);
 
@@ -18,7 +19,6 @@ export class InitialSyncService {
     private readonly logger = new Logger(InitialSyncService.name);
 
     constructor(
-        @InjectQueue(INITIAL_SCAN_QUEUE) private initialScanQueue: Queue,
         @InjectQueue(INITIAL_SYNC_QUEUE) private initialSyncQueue: Queue,
         private readonly connectionService: PlatformConnectionsService,
         private readonly mappingService: MappingService,
@@ -34,13 +34,21 @@ export class InitialSyncService {
 
     async queueInitialScanJob(connectionId: string, userId: string): Promise<string> {
         const connection = await this.getConnectionAndVerify(connectionId, userId);
-        this.logger.log(`Queueing initial scan job for connection ${connectionId} (${connection.PlatformType})`);
-        await this.connectionService.updateConnectionStatus(connectionId, userId, 'scanning');
-        const jobData: JobData = { connectionId, userId, platformType: connection.PlatformType! };
+        this.logger.log(`Queueing initial scan job via QueueManager for connection ${connectionId} (${connection.PlatformType})`);
 
-        const job = await this.initialScanQueue.add('scan-platform-data', jobData);
-        this.logger.log(`Job ${job.id} added to queue ${INITIAL_SCAN_QUEUE}`);
-        return job.id!;
+        await this.connectionService.updateConnectionStatus(connectionId, userId, 'scanning');
+        
+        const jobData: JobData = { 
+            type: 'initial-scan',
+            connectionId, 
+            userId, 
+            platformType: connection.PlatformType!
+        };
+
+        await QueueManager.enqueueJob(jobData);
+        
+        this.logger.log(`Job for connection ${connectionId} (type: initial-scan) handed to QueueManager.`);
+        return `queued-via-manager:${connectionId}-${Date.now()}`;
     }
 
     async getScanSummary(connectionId: string, userId: string): Promise<InitialScanResult> {
@@ -58,7 +66,6 @@ export class InitialSyncService {
      async getMappingSuggestions(connectionId: string, userId: string): Promise<MappingSuggestion[]> {
           this.logger.log(`Fetching mapping suggestions for ${connectionId}`);
           const connection = await this.getConnectionAndVerify(connectionId, userId);
-          // Retrieve suggestions stored by InitialScanProcessor in PlatformSpecificData
           const suggestions = connection.PlatformSpecificData?.['mappingSuggestions'];
           
           if (!suggestions || !Array.isArray(suggestions)) {
@@ -67,8 +74,7 @@ export class InitialSyncService {
           }
           
           this.logger.debug(`Returning ${suggestions?.length || 0} suggestions for ${connectionId} from PlatformSpecificData`);
-          // TODO: Add validation here if needed (e.g., using class-transformer)
-          return suggestions as MappingSuggestion[]; // Cast as suggestions are stored
+          return suggestions as MappingSuggestion[];
      }
 
      async saveConfirmedMappings(connectionId: string, userId: string, confirmationData: any ): Promise<void> {
@@ -87,9 +93,20 @@ export class InitialSyncService {
     async queueInitialSyncJob(connectionId: string, userId: string): Promise<string> {
         const connection = await this.getConnectionAndVerify(connectionId, userId);
         this.logger.log(`Queueing initial sync execution job for connection ${connectionId} (${connection.PlatformType})`);
-        const jobData: JobData = { connectionId, userId, platformType: connection.PlatformType! };
 
-        const job = await this.initialSyncQueue.add('execute-initial-sync', jobData);
+        const existingJobs = await this.initialSyncQueue.getJobs(['active', 'waiting', 'delayed']);
+        const existingJob = existingJobs.find(job => job.data.connectionId === connectionId);
+        
+        if (existingJob) {
+            this.logger.warn(`Found existing sync job ${existingJob.id} for connection ${connectionId}. Skipping new job creation.`);
+            return existingJob.id!;
+        }
+
+        const jobData: JobData = { type: 'initial-sync', connectionId, userId, platformType: connection.PlatformType! };
+
+        const job = await this.initialSyncQueue.add('execute-initial-sync', jobData, {
+            jobId: `sync-${connectionId}-${Date.now()}`,
+        });
         this.logger.log(`Job ${job.id} added to queue ${INITIAL_SYNC_QUEUE}`);
         return job.id!;
     }

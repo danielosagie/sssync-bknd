@@ -15,6 +15,7 @@ import { PlatformConnectionsService } from '../platform-connections/platform-con
 import { ShopifyApiClient } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformProductMappingsService } from '../platform-product-mappings/platform-product-mappings.service';
 import { SupabaseService } from '../common/supabase.service';
+import * as QueueManager from '../queue-manager';
 
 interface LocationProduct {
     variantId: string;
@@ -72,7 +73,7 @@ export class ProductsController {
     @Post('analyze')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
+    @Throttle({ default: { limit: 5, ttl: 60000 }}) // 5 requests per minute
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     @HttpCode(HttpStatus.OK)
     async analyzeAndCreateDraft(
@@ -110,7 +111,7 @@ export class ProductsController {
     @Post('generate-details')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
+    @Throttle({ default: { limit: 5, ttl: 60000 }}) // 5 requests per minute
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true, transform: true }))
     async generateDetailsForDraft(
         @Request() req,
@@ -311,7 +312,7 @@ export class ProductsController {
     @Get('shopify/locations')
     @UseGuards(SupabaseAuthGuard)
     @Feature('shopify')
-    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
+    @Throttle({ default: { limit: 10, ttl: 60000 }}) // 10 requests per minute
     async getShopifyLocations(
         @Query('platformConnectionId') platformConnectionId: string,
         @Request() req: any
@@ -337,7 +338,7 @@ export class ProductsController {
     @Get('shopify/inventory')
     @UseGuards(SupabaseAuthGuard)
     @Feature('shopify')
-    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
+    @Throttle({ default: { limit: 10, ttl: 60000 }}) // 10 requests per minute
     async getShopifyInventory(
         @Query('platformConnectionId') platformConnectionId: string,
         @Query('sync') sync: boolean = false,
@@ -504,7 +505,7 @@ export class ProductsController {
     @Get('shopify/locations-with-products')
     @UseGuards(SupabaseAuthGuard)
     @Feature('shopify')
-    @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
+    @Throttle({ default: { limit: 10, ttl: 60000 }}) // 10 requests per minute
     async getShopifyLocationsWithProducts(
         @Query('platformConnectionId') platformConnectionId: string,
         @Query('sync') sync: boolean = false,
@@ -660,6 +661,16 @@ export class ProductsController {
             },
             'getShopifyLocationsWithProducts'
         );
+    }
+
+    /**
+     * Example endpoint: Queue a product sync job (demonstrates dynamic queue usage)
+     */
+    @Post('queue-sync')
+    async queueProductSync(@Request() req, @Body('productId') productId: string) {
+        const userId = req.user.id;
+        await QueueManager.enqueueJob({ type: 'product-sync', productId, userId, timestamp: Date.now() });
+        return { success: true, message: 'Product sync job queued.' };
     }
 
     // ... (TODO endpoints) ...

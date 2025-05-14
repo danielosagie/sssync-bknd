@@ -10,24 +10,44 @@ export class UserThrottlerGuard extends ThrottlerGuard {
    * Assumes a preceding AuthGuard has attached `req.user.id`.
    */
   protected async getTracker(req: Record<string, any>): Promise<string> {
-    // Check if user object and user ID exist on the request (populated by AuthGuard)
-    const userId = req.user?.id;
+    const userId = req.user?.id || req.headers['x-user-id'];
+    const ip = req.ip || req.connection.remoteAddress;
+    const tracker = userId || ip;
+    
+    this.logger.debug(
+      `Throttle check for ${req.method} ${req.url}` +
+      `\nUser: ${userId || 'anonymous'}` +
+      `\nIP: ${ip}` +
+      `\nTracker: ${tracker}`
+    );
+    
+    return tracker;
+  }
 
-    if (userId) {
-      // Use the authenticated user's ID as the tracker key
-      // this.logger.verbose(`Rate limiting tracker: User ${userId}`); // Optional: Verbose logging
-      return userId;
-    } else {
-      // For unauthenticated requests, fall back to the default IP address tracking
-      const ip = req.ips?.length ? req.ips[0] : req.ip; // Standard way ThrottlerGuard gets IP
-      // this.logger.verbose(`Rate limiting tracker: IP ${ip}`); // Optional: Verbose logging
-      if (!ip) {
-          // Should rarely happen, but have a fallback
-          this.logger.warn('Could not determine tracker for rate limiting (no userId or IP). Using generic key.');
-          return 'generic-tracker'; // Fallback key
-      }
-      return ip;
+  async canActivate(context: any): Promise<boolean> {
+    const request = context.switchToHttp().getRequest();
+    const handler = context.getHandler();
+    const classRef = context.getClass();
+    
+    this.logger.debug(
+      `Throttle check for ${classRef.name}.${handler.name}` +
+      `\nMethod: ${request.method}` +
+      `\nURL: ${request.url}` +
+      `\nUser: ${request.user?.id || 'anonymous'}`
+    );
+
+    const result = await super.canActivate(context);
+    
+    if (!result) {
+      this.logger.warn(
+        `Throttle limit exceeded for ${classRef.name}.${handler.name}` +
+        `\nMethod: ${request.method}` +
+        `\nURL: ${request.url}` +
+        `\nUser: ${request.user?.id || 'anonymous'}`
+      );
     }
+
+    return result;
   }
 
   // Optional: Override handleRequest for more detailed logging if needed

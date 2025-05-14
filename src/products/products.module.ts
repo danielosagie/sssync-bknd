@@ -21,5 +21,6 @@ import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.m
   ],
   controllers: [ProductsController],
   providers: [ProductsService, ImageRecognitionService, AiGenerationService],
+  exports: [ProductsService],
 })
 export class ProductsModule {}

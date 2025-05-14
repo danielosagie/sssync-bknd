@@ -1,7 +1,8 @@
-import { Module, Global } from '@nestjs/common';
+import { Module, Global, NestModule, MiddlewareConsumer, RequestMethod, Logger } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
+import { BullModule } from '@nestjs/bullmq';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CommonModule } from './common/common.module';
@@ -13,6 +14,8 @@ import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { SupabaseService } from './common/supabase.service';
 import { EncryptionService } from './common/encryption.service';
+import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
+import { QueueModule } from './queue.module';
 
 @Global()
 @Module({
@@ -25,51 +28,36 @@ import { EncryptionService } from './common/encryption.service';
       imports: [ConfigModule],
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
-        console.log('[ThrottlerFactory] Starting configuration...');
-
+        const logger = new Logger('ThrottlerFactory');
+        logger.log('Starting configuration...');
         const redisUrl = configService.get<string>('REDIS_URL');
-
-        console.log(`[ThrottlerFactory] Read REDIS_URL from ConfigService. Value is: ${redisUrl ? '*** (Exists)' : '!!! NOT FOUND / UNDEFINED !!!'}`);
-        if (redisUrl) {
-          try {
-            const urlObject = new URL(redisUrl);
-            console.log(`[ThrottlerFactory] Parsed REDIS_URL - Protocol: ${urlObject.protocol}, Hostname: ${urlObject.hostname}, Port: ${urlObject.port}, Username: ${urlObject.username}`);
-          } catch (e) {
-            console.error(`[ThrottlerFactory] FAILED TO PARSE REDIS_URL: ${redisUrl}`, e);
-          }
-        }
-
-        const throttlerConfig = [{
-          ttl: 120,
-          limit: 2,
-        }];
+        logger.log(`Read REDIS_URL from ConfigService. Value is: ${redisUrl ? '*** (Exists)' : 'Not found'}`);
 
         if (!redisUrl) {
-          console.warn('[ThrottlerFactory] REDIS_URL is missing or invalid. Throttler falling back to IN-MEMORY storage.');
-          return { throttlers: throttlerConfig };
-        } else {
-          console.log('[ThrottlerFactory] REDIS_URL found. Configuring Throttler with Redis storage...');
-          try {
-            const storage = new ThrottlerStorageRedisService(redisUrl);
-            console.log('[ThrottlerFactory] ThrottlerStorageRedisService instantiated successfully.');
-
-            if (storage && typeof (storage as any).client?.on === 'function') {
-               (storage as any).client.on('error', (err) => {
-                   console.error('[Throttler Storage Redis Client Error]', err);
-               });
-               console.log('[ThrottlerFactory] Added error listener to Redis client.');
-            }
-
-            return {
-              throttlers: throttlerConfig,
-              storage: storage,
-            };
-          } catch (initError) {
-            console.error('[ThrottlerFactory] CRITICAL ERROR Instantiating ThrottlerStorageRedisService:', initError);
-            console.warn('[ThrottlerFactory] Falling back to IN-MEMORY due to Redis storage init error.');
-            return { throttlers: throttlerConfig };
-          }
+          logger.warn('REDIS_URL not found. Throttler will use in-memory storage.');
+          return [{
+            ttl: 60,    // 1 minute
+            limit: 60,  // 60 requests per minute (default)
+          }];
         }
+
+        try {
+          const url = new URL(redisUrl);
+          logger.log(`Parsed REDIS_URL - Protocol: ${url.protocol}, Hostname: ${url.hostname}, Port: ${url.port}, Username: ${url.username}`);
+        } catch (e) {
+          logger.error(`Failed to parse REDIS_URL: ${e.message}`);
+          throw new Error ('Invalid REDIS_URL for Throttler configuration');
+        }
+        
+        logger.log('REDIS_URL found. Configuring Throttler with Redis storage...');
+        const throttlerStorage = new ThrottlerStorageRedisService(redisUrl);
+        logger.log('ThrottlerStorageRedisService instantiated successfully.');
+
+        return [{
+          ttl: 60,    // 1 minute
+          limit: 60,  // 60 requests per minute
+          storage: throttlerStorage,
+        }];
       },
     }),
     CommonModule,
@@ -77,6 +65,7 @@ import { EncryptionService } from './common/encryption.service';
     UsersModule,
     PlatformsModule,
     ProductsModule,
+    QueueModule,
   ],
   controllers: [AppController],
   providers: [
@@ -89,4 +78,10 @@ import { EncryptionService } from './common/encryption.service';
   exports: [
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer
+      .apply(RequestLoggerMiddleware)
+      .forRoutes({ path: '*', method: RequestMethod.ALL });
+  }
+}

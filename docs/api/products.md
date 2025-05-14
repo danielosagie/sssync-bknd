@@ -940,4 +940,288 @@ const data = await response.json();
 2. Use the inventory endpoint when you need a flat list of all inventory levels
 3. Use the locations endpoint when you only need location information
 4. Set `sync=true` only when you need fresh data from Shopify
-5. Cache the response data on the client side and use the `lastSyncedAt` timestamp to determine when to refresh 
+5. Cache the response data on the client side and use the `lastSyncedAt` timestamp to determine when to refresh
+
+# Shopify Integration Documentation
+
+## Critical: Throttling and Rate Limiting Issues
+
+### Current Implementation
+- All Shopify endpoints are currently throttled to 1 request per 10 minutes (600,000ms) using NestJS's ThrottlerGuard
+- This is causing issues with legitimate use cases (e.g., initial app load) while still allowing excessive requests
+- We're seeing ~30 requests/minute despite the throttling, indicating a potential issue with the throttling implementation
+
+### Immediate Actions Required
+1. **Throttling Adjustment**
+   ```typescript
+   // Current implementation (too restrictive):
+   @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
+   
+   // Recommended implementation:
+   @Throttle({ default: { limit: 5, ttl: 60000 }}) // 5 requests per minute
+   ```
+
+2. **Request Logging Implementation**
+   Add this middleware to `src/common/middleware/request-logger.middleware.ts`:
+   ```typescript
+   import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
+   import { Request, Response, NextFunction } from 'express';
+
+   @Injectable()
+   export class RequestLoggerMiddleware implements NestMiddleware {
+     private readonly logger = new Logger('RequestLogger');
+
+     use(req: Request, res: Response, next: NextFunction) {
+       const { method, originalUrl, query, body, headers } = req;
+       const userAgent = headers['user-agent'];
+       const userId = headers['x-user-id']; // Adjust based on your auth header
+
+       this.logger.log(
+         `[${method}] ${originalUrl} - User: ${userId} - UA: ${userAgent}` +
+         `\nQuery: ${JSON.stringify(query)}` +
+         `\nBody: ${JSON.stringify(body)}`
+       );
+
+       // Log response
+       const originalSend = res.send;
+       res.send = function (body) {
+         this.logger.log(
+           `[${method}] ${originalUrl} - Status: ${res.statusCode}` +
+           `\nResponse: ${typeof body === 'string' ? body : JSON.stringify(body)}`
+         );
+         return originalSend.call(this, body);
+       };
+
+       next();
+     }
+   }
+   ```
+
+3. **Apply Middleware**
+   In `src/app.module.ts`:
+   ```typescript
+   export class AppModule implements NestModule {
+     configure(consumer: MiddlewareConsumer) {
+       consumer
+         .apply(RequestLoggerMiddleware)
+         .forRoutes('*');
+     }
+   }
+   ```
+
+### Debugging Steps
+1. **Identify Source of Requests**
+   ```bash
+   # Using the request logger, monitor requests:
+   tail -f your-app.log | grep "GET /products/shopify"
+   
+   # Or use a more specific pattern:
+   tail -f your-app.log | grep "GET /products/shopify/locations"
+   ```
+
+2. **Check Frontend Implementation**
+   - Review all components that fetch Shopify data
+   - Look for:
+     - Uncontrolled `useEffect` hooks
+     - Missing dependency arrays
+     - Multiple components fetching the same data
+     - Polling intervals that are too frequent
+
+3. **Common Frontend Issues to Fix**
+   ```typescript
+   // BAD: Polling every second
+   useEffect(() => {
+     const interval = setInterval(() => {
+       fetchShopifyData();
+     }, 1000);
+     return () => clearInterval(interval);
+   }, []);
+
+   // GOOD: Poll every minute, with proper cleanup
+   useEffect(() => {
+     const fetchData = async () => {
+       try {
+         const data = await fetchShopifyData();
+         setInventoryData(data);
+       } catch (error) {
+         if (error.status === 429) {
+           // Handle rate limit - maybe show a message
+           console.warn('Rate limited, will retry in 1 minute');
+         }
+       }
+     };
+
+     fetchData(); // Initial fetch
+     const interval = setInterval(fetchData, 60000); // Poll every minute
+     return () => clearInterval(interval);
+   }, [fetchShopifyData]); // Proper dependency
+   ```
+
+4. **Implement Caching**
+   ```typescript
+   // In your frontend service:
+   private cache = new Map<string, { data: any; timestamp: number }>();
+   private CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+   async getShopifyData(connectionId: string, forceSync = false) {
+     const cacheKey = `shopify-${connectionId}`;
+     const cached = this.cache.get(cacheKey);
+     
+     if (!forceSync && cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
+       return cached.data;
+     }
+
+     const data = await this.api.get(`/products/shopify/inventory?platformConnectionId=${connectionId}&sync=${forceSync}`);
+     this.cache.set(cacheKey, { data, timestamp: Date.now() });
+     return data;
+   }
+   ```
+
+## API Endpoints
+
+[Previous endpoint documentation remains the same...]
+
+## Best Practices for Frontend Implementation
+
+1. **Data Fetching Strategy**
+   - Use a single source of truth (e.g., React Query, Redux) for Shopify data
+   - Implement proper caching with TTL
+   - Use optimistic updates for inventory changes
+   - Implement proper error handling for 429 responses
+
+2. **Component Structure**
+   ```typescript
+   // Example of a well-structured inventory component
+   const ShopifyInventory: React.FC = () => {
+     const [isLoading, setIsLoading] = useState(false);
+     const [error, setError] = useState<Error | null>(null);
+     const { data, refetch } = useQuery(
+       'shopify-inventory',
+       () => fetchShopifyData(),
+       {
+         staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+         cacheTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
+         retry: (failureCount, error) => {
+           if (error.status === 429) return false; // Don't retry on rate limit
+           return failureCount < 3;
+         }
+       }
+     );
+
+     // Manual refresh handler
+     const handleRefresh = async () => {
+       try {
+         setIsLoading(true);
+         await refetch();
+       } catch (error) {
+         setError(error);
+       } finally {
+         setIsLoading(false);
+       }
+     };
+
+     return (
+       <div>
+         <button onClick={handleRefresh} disabled={isLoading}>
+           Refresh Inventory
+         </button>
+         {error?.status === 429 && (
+           <div className="error">
+             Rate limited. Please wait before trying again.
+           </div>
+         )}
+         {/* Render inventory data */}
+       </div>
+     );
+   };
+   ```
+
+3. **Error Handling**
+   - Implement proper error boundaries
+   - Show user-friendly messages for rate limits
+   - Provide manual refresh options
+   - Log errors for debugging
+
+4. **Performance Optimization**
+   - Use pagination for large datasets
+   - Implement virtual scrolling for long lists
+   - Use proper memoization
+   - Implement proper loading states
+
+## Monitoring and Maintenance
+
+1. **Logging Strategy**
+   - Use the provided RequestLoggerMiddleware
+   - Monitor rate limit hits
+   - Track sync operations
+   - Log all Shopify API calls
+
+2. **Alerting**
+   - Set up alerts for:
+     - High rate of 429 responses
+     - Failed sync operations
+     - Unusual request patterns
+     - API errors from Shopify
+
+3. **Regular Maintenance**
+   - Review and adjust throttling limits
+   - Monitor cache hit rates
+   - Review and update error handling
+   - Check for unused or duplicate API calls
+
+## Next Steps for Backend Dev
+
+1. **Immediate Actions**
+   - Implement the RequestLoggerMiddleware
+   - Adjust throttling limits
+   - Review and update error handling
+   - Add proper monitoring
+
+2. **Technical Debt**
+   - Consider implementing a proper caching layer
+   - Add more comprehensive logging
+   - Implement proper rate limiting per user/connection
+   - Add metrics collection
+
+3. **Future Improvements**
+   - Consider implementing WebSocket for real-time updates
+   - Add bulk operations for inventory updates
+   - Implement proper retry mechanisms
+   - Add more comprehensive testing
+
+Queue Responsiveness (Ultra-Low Queue)
+You're correct. The ultra-low-queue (which uses simple Redis lists) is designed for on-demand processing.
+No Polling: It does not have a background worker that constantly polls Redis. This means zero Redis commands when it's idle.
+Instant Enqueue: When QueueManager.enqueueJob(jobData) is called, it's a direct LPUSH to Redis – very fast.
+Processing Delay: The delay comes from when you decide to process jobs.
+If you call QueueManager.processNextJob() or QueueManager.processAllJobs() immediately after an HTTP request that needs a job done (or in response to a webhook), the processing will start almost instantly.
+If you set up a cron job to call processAllJobs() (e.g., every few seconds or minutes), then jobs will wait until the cron triggers.
+In your current setup with the QueueManager:
+The recordRequest() function is called on every enqueueJob.
+The checkAndSwitchQueue() function then decides if it should switch to the BullMQ (higher throughput) queue based on your defined thresholds (more than 5 requests/second for more than 15 seconds).
+When NOT in high-throughput mode (i.e., using ultra-low-queue), jobs are simply added to the Redis list. They will only be processed when something in your application explicitly calls QueueManager.processNextJob() or QueueManager.processAllJobs().
+To ensure "basically instant" processing for the low-traffic queue, you need to decide when to trigger the processing.
+For example, if a customer action queues a job and they need to see the result quickly, the controller handling that action might call QueueManager.processNextJob() right after QueueManager.enqueueJob().
+Throttling and User Experience
+Your current throttling setup:
+Global Throttler (AppModule):
+ttl: 60 (1 minute)
+limit: 60 (60 requests per minute)
+This is a general safety net.
+ProductsController Throttling:
+analyze endpoint: @Throttle({ default: { limit: 5, ttl: 60000 }}) (5 requests per minute)
+generate-details endpoint: @Throttle({ default: { limit: 5, ttl: 60000 }}) (5 requests per minute)
+shopify/locations: @Throttle({ default: { limit: 10, ttl: 60000 }}) (10 requests per minute)
+shopify/inventory: @Throttle({ default: { limit: 10, ttl: 60000 }}) (10 requests per minute)
+shopify/locations-with-products: @Throttle({ default: { limit: 10, ttl: 60000 }}) (10 requests per minute)
+Other endpoints in ProductsController use the global default (60 reqs/min).
+Will normal people be throttled?
+For most actions, the 60 requests/minute global limit is quite generous for a single user. It's unlikely a normal user would hit this.
+For the specific product analysis and Shopify endpoints, the limits are lower (5 or 10 per minute).
+If a user is rapidly clicking a button that calls "analyze" five times within a minute, their sixth request in that minute would be throttled.
+This is generally reasonable to prevent abuse or accidental repeated submissions. "10 times in less than 4 ms" would definitely be blocked, as it should be.
+Considerations:
+UserThrottlerGuard: You also have a UserThrottlerGuard which uses User ID or IP for rate limiting. This is good because it makes the limits per-user.
+Frontend Experience: When a 429 (Too Many Requests) error occurs, your frontend should ideally handle this gracefully (e.g., disable the button for a short period, show a message "Please wait a moment before trying again").
+Specific Endpoints: Review if 5 requests/minute for analyze or generate-details is appropriate for your user flow. If a user legitimately needs to do these actions more frequently, you might consider slightly increasing those specific limits or making the "per minute" window a bit longer (e.g., 10 requests per 2 minutes).
+The QueueManager itself doesn't directly impact API request throttling. The API throttling happens before a job would even be enqueued by QueueManager.enqueueJob(). The queue system manages how background jobs are processed, not how incoming API requests are accepted.
