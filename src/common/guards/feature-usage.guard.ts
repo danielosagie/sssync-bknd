@@ -39,25 +39,30 @@ export class FeatureUsageGuard implements CanActivate {
             limitColumn = 'AiScans'; // Column name in SubscriptionTiers
         } else if (featureKey === 'shopify') {
             // For shopify feature, we'll check if the user has a valid Shopify connection
-            const { data: connectionData, error: connectionError } = await supabase
+            const { data: shopifyConnections, error: connectionError } = await supabase
                 .from('PlatformConnections')
-                .select('Id')
+                .select('Id, Status, IsEnabled') // Select Status and IsEnabled
                 .eq('UserId', userId)
                 .eq('PlatformType', 'SHOPIFY')
-                .eq('IsEnabled', true)
-                .maybeSingle();
+                .eq('IsEnabled', true); // Still check for IsEnabled
 
             if (connectionError) {
-                this.logger.error(`FeatureUsageGuard: Error checking Shopify connection for user ${userId}: ${connectionError.message}`, connectionError);
+                this.logger.error(`FeatureUsageGuard: Error fetching Shopify connections for user ${userId}: ${connectionError.message}`, connectionError);
                 throw new HttpException('Internal Server Error checking Shopify connection', HttpStatus.INTERNAL_SERVER_ERROR);
             }
 
-            if (!connectionData) {
-                this.logger.warn(`FeatureUsageGuard: User ${userId} has no active Shopify connection. Denying access.`);
-                throw new HttpException('Feature not enabled for your subscription', HttpStatus.FORBIDDEN);
+            // Check if any of the enabled Shopify connections have a valid status
+            const hasValidShopifyConnection = shopifyConnections && shopifyConnections.some(conn =>
+                ['connected', 'active', 'needs_review', 'syncing', 'active_sync', 'ready'].includes(conn.Status)
+            );
+
+            if (!hasValidShopifyConnection) {
+                const statusesFound = shopifyConnections?.map(c => c.Status).join(', ') || 'none';
+                this.logger.warn(`FeatureUsageGuard: User ${userId} has no Shopify connection in an activatable state (e.g., connected, active, needs_review, syncing). Statuses found: ${statusesFound}. Denying access to 'shopify' feature.`);
+                throw new HttpException('A Shopify connection in a valid state (e.g., connected, needs_review, active) is required for this feature.', HttpStatus.FORBIDDEN);
             }
 
-            // User has an active Shopify connection, allow access
+            this.logger.debug(`FeatureUsageGuard: User ${userId} has a valid Shopify connection. Access granted to 'shopify' feature.`);
             return true;
         } else {
             // Add other feature keys and their corresponding column names here

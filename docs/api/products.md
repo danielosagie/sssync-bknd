@@ -8,14 +8,15 @@ All endpoints require authentication using a Supabase Auth token provided in the
 ```
 Authorization: Bearer <supabase-auth-token>
 ```
+The base path for all product-related endpoints is `/api`. For example, an endpoint documented as `POST /products/analyze` should be called as `POST /api/products/analyze`.
 
 ## Rate Limiting
 Specific rate limits apply to certain endpoints to ensure fair usage and system stability. Exceeding these limits will result in a `429 Too Many Requests` error.
-- **`/products/analyze`**: 5 requests per minute per user.
-- **`/products/generate-details`**: 5 requests per minute per user.
-- **`/products/shopify/locations`**: 10 requests per minute per user.
-- **`/products/shopify/inventory`**: 10 requests per minute per user.
-- **`/products/shopify/locations-with-products`**: 10 requests per minute per user.
+- **`/api/products/analyze`**: 5 requests per minute per user.
+- **`/api/products/generate-details`**: 5 requests per minute per user.
+- **`/api/products/shopify/locations`**: 10 requests per minute per user.
+- **`/api/products/shopify/inventory`**: 10 requests per minute per user.
+- **`/api/products/shopify/locations-with-products`**: 10 requests per minute per user.
 - **Other product endpoints**: Governed by a global rate limit (e.g., 60 requests per minute per user).
 
 ## Core Product Workflow
@@ -23,30 +24,30 @@ Specific rate limits apply to certain endpoints to ensure fair usage and system 
 The typical workflow for creating and listing a product involves:
 
 1.  **Image Analysis (Optional but Recommended):**
-    *   Use `POST /products/analyze` with image URIs.
+    *   Use `POST /api/products/analyze` with image URIs. The user associated with the request is identified via the authentication token.
     *   The system analyzes the primary image using AI (e.g., Google Lens via SerpApi) and creates a draft `Product` and `ProductVariant` with initial details derived from the analysis.
     *   The analysis results are stored in `AiGeneratedContent`.
     *   This step consumes an `aiScan` from the user's subscription.
 2.  **Detail Generation (Optional):**
-    *   Use `POST /products/generate-details` with the `productId`, `variantId` from the previous step, along with image URIs, a cover image index, target platforms, and optionally a selected visual match from the analysis.
+    *   Use `POST /api/products/generate-details` with the `productId`, `variantId` from the previous step, along with image URIs, a cover image index, target platforms, and optionally a selected visual match from the analysis.
     *   The system uses a generative AI model (e.g., Groq Maverick) to create richer product titles, descriptions, and other platform-specific details.
     *   These generated details are also stored in `AiGeneratedContent` and can be used to update the draft `ProductVariant`.
     *   This step also consumes an `aiScan`.
 3.  **Saving/Publishing the Listing:**
-    *   Use `POST /products/publish` to save the curated product details (title, description, price, images, etc.) to the canonical `Product` and `ProductVariant` records.
-    *   If `publishIntent` includes publishing to a platform (e.g., Shopify), this endpoint will also trigger the necessary platform-specific publishing actions asynchronously via the queueing system. *(Further details on direct platform publishing API calls are TBD/can be added here as they are finalized, for now, the example is `POST /products/:id/publish/shopify`)*.
+    *   Use `POST /api/products/publish` to save the curated product details (title, description, price, images, etc.) to the canonical `Product` and `ProductVariant` records.
+    *   If `publishIntent` includes publishing to a platform (e.g., Shopify), this endpoint will also trigger the necessary platform-specific publishing actions asynchronously via the queueing system. *(Further details on direct platform publishing API calls are TBD/can be added here as they are finalized, for now, the example is `POST /api/products/:id/publish/shopify`)*.
 
 Alternatively, products can be created directly without AI assistance:
 
-*   **Direct Product Creation:** Use `POST /products` to create a `Product` and `ProductVariant` with manually provided data.
+*   **Direct Product Creation:** Use `POST /api/products` to create a `Product` and `ProductVariant` with manually provided data.
 
 ## Endpoints
 
 ### 1. Analyze Images and Create Draft Product
-Analyzes product images using AI (e.g., Google Lens) and creates a draft `Product` and `ProductVariant` with initial details. The analysis result is stored. This endpoint consumes an `aiScan` credit.
+Analyzes product images using AI (e.g., Google Lens) and creates a draft `Product` and `ProductVariant` with initial details. The analysis result is stored. This endpoint consumes an `aiScan` credit. User identification is derived from the `Authorization` token.
 
 ```http
-POST /products/analyze
+POST /api/products/analyze
 ```
 
 **Feature Flag:** `aiScans`
@@ -111,7 +112,7 @@ POST /products/analyze
 #### Example
 ```typescript
 // Request
-const response = await fetch('/products/analyze', {
+const response = await fetch('/api/products/analyze', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
@@ -173,7 +174,7 @@ const data = await response.json();
 Generates enhanced product details (title, description, platform-specific attributes) for an existing draft product using AI. This endpoint consumes an `aiScan` credit.
 
 ```http
-POST /products/generate-details
+POST /api/products/generate-details
 ```
 
 **Feature Flag:** `aiScans`
@@ -233,7 +234,7 @@ The generated details are also saved to the `AiGeneratedContent` table and can b
 #### Example
 ```typescript
 // Request
-const response = await fetch('/products/generate-details', {
+const response = await fetch('/api/products/generate-details', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
@@ -269,7 +270,7 @@ const data = await response.json();
 Saves the final curated product details to the canonical `Product` and `ProductVariant` records. If the `publishIntent` includes platform publishing, it queues the necessary background jobs.
 
 ```http
-POST /products/publish
+POST /api/products/publish
 ```
 
 **Status:** `202 Accepted` - The request is accepted for processing. The actual saving and publishing happens asynchronously.
@@ -280,12 +281,25 @@ POST /products/publish
   "productId": string;
   "variantId": string;
   "publishIntent": "SAVE_DRAFT" | "PUBLISH_TO_PLATFORMS"; // Determines if publishing jobs are queued
-  "platformDetails": {
-    [platformSlug: string]: { // Platform-specific curated details
+  "platformDetails": { // Contains the final, curated data for each specified platform.
+                       // The backend will use this data to update the canonical record
+                       // and as the source of truth when publishing to the respective platform.
+    [platformSlug: string]: { // Platform-specific curated details (e.g., "shopify", "amazon")
       "title": string;
-      "description": string;
+      "description": string; // Can be plain text or HTML, depending on platform
       "price": number;
-      // ... other common and platform-specific fields (e.g., SKU, barcode, options, categories, vendor, tags)
+      "sku"?: string;
+      "barcode"?: string;
+      "vendor"?: string;
+      "productType"?: string;
+      "tags"?: string[]; // Array of tags
+      "status"?: "active" | "draft" | "archived"; // Platform-specific status
+      "weight"?: number;
+      "weightUnit"?: "lb" | "kg" | "oz" | "g"; // Or other platform-supported units
+      // ... other common and platform-specific fields
+      // For complex structures like multi-variant options, consult specific platform endpoint
+      // documentation (e.g., /api/products/:id/publish/shopify) or how the backend
+      // expects this generic structure to be mapped.
     };
   };
   "media": {
@@ -304,12 +318,20 @@ POST /products/publish
   // or "PUBLISH_TO_PLATFORMS request received and processing started."
 }
 ```
-This endpoint updates the canonical `Product` and `ProductVariant` tables. If `publishIntent` is `PUBLISH_TO_PLATFORMS`, jobs are enqueued (e.g., via `QueueManager.enqueueJob({ type: 'product-publish', ... })`) to handle platform-specific API calls.
+This endpoint updates the canonical `Product` and `ProductVariant` tables with the details provided primarily from the first key under `platformDetails` or a "canonical" key if present. If `publishIntent` is `PUBLISH_TO_PLATFORMS`, jobs are enqueued (e.g., via `QueueManager.enqueueJob({ type: 'product-publish', ... })`) to handle platform-specific API calls.
+
+**Asynchronous Publishing & Initial Inventory:**
+Publishing to external platforms (like Shopify) is an asynchronous process. This endpoint queues the task, and the actual creation/update on the platform happens in the background.
+
+*   **For setting initial inventory precisely on Shopify (by location):**
+    1.  After this `/api/products/publish` call returns `202 Accepted`, the product creation process on Shopify will begin.
+    2.  Once the product is available on Shopify (this may take a few moments), retrieve the Shopify Location GIDs using `GET /api/products/shopify/locations`.
+    3.  Then, make a call to `POST /api/products/:id/publish/shopify` (where `:id` is your canonical `productId`) providing the `platformConnectionId`, and the `locations` array with specific quantities for each `locationId`. This ensures accurate initial stock levels.
 
 #### Example
 ```typescript
-// Request to save draft
-const response = await fetch('/products/publish', {
+// Request to save draft and initiate publish to Shopify
+const response = await fetch('/api/products/publish', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
@@ -340,7 +362,7 @@ const data = await response.json(); // { "message": "SAVE_DRAFT request received
 Creates a new `Product` and `ProductVariant` directly with user-provided data, bypassing AI analysis and generation.
 
 ```http
-POST /products
+POST /api/products
 ```
 
 #### Request Body
@@ -366,7 +388,7 @@ POST /products
 ```
 
 #### Response (200 OK)
-The response structure is similar to the `/products/analyze` endpoint, but the `analysis` field will typically be `null`.
+The response structure is similar to the `/api/products/analyze` endpoint, but the `analysis` field will typically be `null`.
 ```typescript
 {
   "product": { /* ... SimpleProduct structure ... */ };
@@ -378,7 +400,7 @@ The response structure is similar to the `/products/analyze` endpoint, but the `
 #### Example
 ```typescript
 // Request
-const response = await fetch('/products', {
+const response = await fetch('/api/products', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
@@ -402,10 +424,10 @@ These endpoints are dedicated to managing product data and inventory related to 
 **Feature Flag:** Most Shopify endpoints require the `shopify` feature to be enabled for the user's subscription.
 
 ### 5. Publish Product to Shopify
-Directly creates or updates a product on Shopify. This is a more direct way to publish compared to the general `/products/publish` if Shopify is the explicit target.
+Directly creates or updates a product on Shopify. This is a more direct way to publish compared to the general `/api/products/publish` if Shopify is the explicit target, and is recommended for setting detailed initial inventory.
 
 ```http
-POST /products/:id/publish/shopify
+POST /api/products/:id/publish/shopify
 ```
 Where `:id` is the canonical **Product ID**.
 
@@ -442,7 +464,7 @@ This endpoint will take the canonical product data associated with the given `:i
 #### Example
 ```typescript
 // Request
-const response = await fetch('/products/prod_abc123/publish/shopify', {
+const response = await fetch('/api/products/prod_abc123/publish/shopify', {
   method: 'POST',
   headers: {
     'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
@@ -467,11 +489,17 @@ const data = await response.json();
 Retrieves a list of all physical and online locations configured for a connected Shopify store.
 
 ```http
-GET /products/shopify/locations?platformConnectionId=<platformConnectionId_value>
+GET /api/products/shopify/locations?platformConnectionId=<platformConnectionId_value>
 ```
 
 **Feature Flag:** `shopify`
 **Rate Limit:** 10 requests per minute
+
+#### Purpose
+This endpoint is crucial for managing Shopify inventory accurately. It provides the necessary Shopify Location GIDs (e.g., `"gid://shopify/Location/12345"`). These GIDs are required when:
+- Setting initial inventory quantities for specific locations when publishing a new product using the `POST /api/products/:id/publish/shopify` endpoint.
+- Updating inventory levels for existing products at specific Shopify locations via API calls.
+- Displaying location-based inventory information in your user interface.
 
 #### Query Parameters
 - `platformConnectionId` (required): string - The ID of the Shopify `PlatformConnection`.
@@ -493,7 +521,7 @@ GET /products/shopify/locations?platformConnectionId=<platformConnectionId_value
 #### Example
 ```typescript
 // Request
-const response = await fetch('/products/shopify/locations?platformConnectionId=conn_shopify_123', {
+const response = await fetch('/api/products/shopify/locations?platformConnectionId=conn_shopify_123', {
   method: 'GET',
   headers: { 'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>' }
 });
@@ -504,7 +532,7 @@ const data = await response.json();
 Fetches current inventory levels for products from a connected Shopify store. Can optionally trigger a fresh sync from Shopify before returning data.
 
 ```http
-GET /products/shopify/inventory?platformConnectionId=<platformConnectionId_value>&sync=<true_or_false>
+GET /api/products/shopify/inventory?platformConnectionId=<platformConnectionId_value>&sync=<true_or_false>
 ```
 
 **Feature Flag:** `shopify`
@@ -549,14 +577,14 @@ GET /products/shopify/inventory?platformConnectionId=<platformConnectionId_value
 #### Example
 ```typescript
 // Request (fetch cached inventory)
-const response = await fetch('/products/shopify/inventory?platformConnectionId=conn_shopify_123', {
+const response = await fetch('/api/products/shopify/inventory?platformConnectionId=conn_shopify_123', {
   method: 'GET',
   headers: { 'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>' }
 });
 const data = await response.json();
 
 // Request (force sync then fetch inventory)
-const responseSync = await fetch('/products/shopify/inventory?platformConnectionId=conn_shopify_123&sync=true', {
+const responseSync = await fetch('/api/products/shopify/inventory?platformConnectionId=conn_shopify_123&sync=true', {
   method: 'GET',
   headers: { 'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>' }
 });
@@ -567,7 +595,7 @@ const dataSync = await responseSync.json();
 Provides a convenient aggregated view of Shopify locations, each with a list of products and their inventory quantities at that specific location. Useful for UIs displaying inventory by location.
 
 ```http
-GET /products/shopify/locations-with-products?platformConnectionId=<platformConnectionId_value>&sync=<true_or_false>
+GET /api/products/shopify/locations-with-products?platformConnectionId=<platformConnectionId_value>&sync=<true_or_false>
 ```
 
 **Feature Flag:** `shopify`
@@ -598,12 +626,12 @@ GET /products/shopify/locations-with-products?platformConnectionId=<platformConn
   "lastSyncedAt": string | null; // ISO 8601 timestamp of the last successful sync
 }
 ```
-The `sync` behavior is identical to the `/products/shopify/inventory` endpoint.
+The `sync` behavior is identical to the `/api/products/shopify/inventory` endpoint.
 
 #### Example
 ```typescript
 // Request
-const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn_shopify_123&sync=false', {
+const response = await fetch('/api/products/shopify/locations-with-products?platformConnectionId=conn_shopify_123&sync=false', {
   method: 'GET',
   headers: { 'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>' }
 });
@@ -614,7 +642,7 @@ const data = await response.json();
 This is an example endpoint demonstrating how a product sync job could be queued using the dynamic queue manager. The actual implementation for triggering syncs for specific products or connections would depend on the evolving `SyncEngine` requirements.
 
 ```http
-POST /products/queue-sync
+POST /api/products/queue-sync
 ```
 
 #### Request Body
@@ -665,7 +693,7 @@ In addition to specific errors mentioned per endpoint, the API may return common
   ```json
   {
     "statusCode": 404,
-    "message": "Product with ID prod_nonexistent not found.",
+    "message": "Cannot POST /api/products/analyze. Ensure the URL is correct and includes the /api prefix if applicable.",
     "error": "Not Found"
   }
   ```
@@ -688,5 +716,6 @@ In addition to specific errors mentioned per endpoint, the API may return common
 
 ## Notes on Asynchronous Operations
 Several operations, particularly those involving AI processing or third-party platform interactions (like publishing to Shopify), may be handled asynchronously.
-- Endpoints like `POST /products/publish` might return a `202 Accepted` status, indicating the request has been queued for processing.
+- Endpoints like `POST /api/products/publish` might return a `202 Accepted` status, indicating the request has been queued for processing.
 - The status of these background jobs can be tracked through other means (e.g., webhook notifications, polling a job status endpoint - TBD).
+- For precise control over initial inventory settings on platforms like Shopify, it's often recommended to use platform-specific endpoints (e.g., `POST /api/products/:id/publish/shopify`) after the main publish request has been accepted and the product shell is created on the platform. Refer to the documentation for `/api/products/publish` and `/api/products/shopify/locations` for more details on this flow.
