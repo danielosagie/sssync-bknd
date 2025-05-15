@@ -94,6 +94,9 @@ export class InitialSyncService {
         const connection = await this.getConnectionAndVerify(connectionId, userId);
         this.logger.log(`Queueing initial sync execution job for connection ${connectionId} (${connection.PlatformType})`);
 
+        await this.connectionService.updateConnectionStatus(connectionId, userId, 'syncing');
+        this.logger.log(`Updated connection ${connectionId} status to 'syncing' before queueing job.`);
+
         const existingJobs = await this.initialSyncQueue.getJobs(['active', 'waiting', 'delayed']);
         const existingJob = existingJobs.find(job => job.data.connectionId === connectionId);
         
