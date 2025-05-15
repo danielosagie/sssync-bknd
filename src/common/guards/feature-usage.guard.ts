@@ -31,7 +31,7 @@ export class FeatureUsageGuard implements CanActivate {
         }
 
         const userId = user.id;
-        const supabase = this.supabaseService.getClient();
+        const supabase = this.supabaseService.getServiceClient();
 
         // Determine the limit column name based on featureKey
         let limitColumn: string;
