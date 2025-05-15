@@ -12,8 +12,11 @@ export class RequestLoggerMiddleware implements NestMiddleware {
     const userId = headers['x-user-id'] || 'unknown';
     const requestId = Math.random().toString(36).substring(7);
 
-    // Log request
-    this.logger.log(
+    // Capture the logger instance from the middleware class
+    const middlewareLogger = this.logger;
+
+    // Log request details
+    middlewareLogger.log(
       `[${requestId}] [${method}] ${originalUrl}` +
       `\nUser: ${userId}` +
       `\nUA: ${userAgent}` +
@@ -27,17 +30,19 @@ export class RequestLoggerMiddleware implements NestMiddleware {
       })}`
     );
 
-    // Log response
+    // Monkey-patch res.send to log response details
     const originalSend = res.send;
-    res.send = function (body) {
+    res.send = function (responseBody) { // Renamed `body` to `responseBody` for clarity
       const duration = Date.now() - startTime;
-      this.logger.log(
+      // Use the captured logger instance
+      middlewareLogger.log(
         `[${requestId}] [${method}] ${originalUrl} - Status: ${res.statusCode} - Duration: ${duration}ms` +
-        `\nResponse: ${typeof body === 'string' ? body : JSON.stringify(body)}`
+        `\nResponse: ${typeof responseBody === 'string' ? responseBody : JSON.stringify(responseBody)}`
       );
-      return originalSend.call(this, body);
+      // Call the original res.send method with the correct context and arguments
+      return originalSend.call(this, responseBody);
     };
 
     next();
   }
-} 
+}

@@ -1,72 +1,110 @@
 # Products API Documentation
 
+## Overview
+This document outlines the API endpoints available for managing products, including AI-powered analysis and generation, and integration with platforms like Shopify.
+
 ## Authentication
-All endpoints require authentication using the Supabase Auth token in the Authorization header:
+All endpoints require authentication using a Supabase Auth token provided in the `Authorization` header:
 ```
 Authorization: Bearer <supabase-auth-token>
 ```
 
 ## Rate Limiting
-- `analyze` endpoint: 10 requests per minute
-- `generate-details` endpoint: 5 requests per minute
-- Other endpoints: Standard rate limits apply
+Specific rate limits apply to certain endpoints to ensure fair usage and system stability. Exceeding these limits will result in a `429 Too Many Requests` error.
+- **`/products/analyze`**: 5 requests per minute per user.
+- **`/products/generate-details`**: 5 requests per minute per user.
+- **`/products/shopify/locations`**: 10 requests per minute per user.
+- **`/products/shopify/inventory`**: 10 requests per minute per user.
+- **`/products/shopify/locations-with-products`**: 10 requests per minute per user.
+- **Other product endpoints**: Governed by a global rate limit (e.g., 60 requests per minute per user).
+
+## Core Product Workflow
+
+The typical workflow for creating and listing a product involves:
+
+1.  **Image Analysis (Optional but Recommended):**
+    *   Use `POST /products/analyze` with image URIs.
+    *   The system analyzes the primary image using AI (e.g., Google Lens via SerpApi) and creates a draft `Product` and `ProductVariant` with initial details derived from the analysis.
+    *   The analysis results are stored in `AiGeneratedContent`.
+    *   This step consumes an `aiScan` from the user's subscription.
+2.  **Detail Generation (Optional):**
+    *   Use `POST /products/generate-details` with the `productId`, `variantId` from the previous step, along with image URIs, a cover image index, target platforms, and optionally a selected visual match from the analysis.
+    *   The system uses a generative AI model (e.g., Groq Maverick) to create richer product titles, descriptions, and other platform-specific details.
+    *   These generated details are also stored in `AiGeneratedContent` and can be used to update the draft `ProductVariant`.
+    *   This step also consumes an `aiScan`.
+3.  **Saving/Publishing the Listing:**
+    *   Use `POST /products/publish` to save the curated product details (title, description, price, images, etc.) to the canonical `Product` and `ProductVariant` records.
+    *   If `publishIntent` includes publishing to a platform (e.g., Shopify), this endpoint will also trigger the necessary platform-specific publishing actions asynchronously via the queueing system. *(Further details on direct platform publishing API calls are TBD/can be added here as they are finalized, for now, the example is `POST /products/:id/publish/shopify`)*.
+
+Alternatively, products can be created directly without AI assistance:
+
+*   **Direct Product Creation:** Use `POST /products` to create a `Product` and `ProductVariant` with manually provided data.
 
 ## Endpoints
 
-### 1. Analyze Images and Create Draft
-Analyzes product images using AI and creates a draft product with initial details.
+### 1. Analyze Images and Create Draft Product
+Analyzes product images using AI (e.g., Google Lens) and creates a draft `Product` and `ProductVariant` with initial details. The analysis result is stored. This endpoint consumes an `aiScan` credit.
 
 ```http
 POST /products/analyze
 ```
 
+**Feature Flag:** `aiScans`
+
+**Rate Limit:** 5 requests per minute
+
 #### Request Body
 ```typescript
 {
-  "imageUris": string[];  // Array of image URLs to analyze
+  "imageUris": string[];  // Array of image URLs to analyze. The first image is considered primary.
 }
 ```
 
-#### Response
+#### Response (200 OK)
 ```typescript
 {
-  "product": {
+  "product": { // The created draft Product
     "Id": string;
     "UserId": string;
-    "Title": string;
-    "Description": string | null;
-    "IsArchived": boolean;
+    "Title": string;        // Initially derived from analysis or "Untitled Product"
+    "Description": string | null; // Initially derived from analysis
+    "IsArchived": boolean;  // Default: false
   };
-  "variant": {
+  "variant": { // The created draft ProductVariant
     "Id": string;
     "ProductId": string;
-    "Sku": string;
-    "Title": string;
-    "Price": number;
+    "Sku": string;          // Generated based on ProductId or from analysis
+    "Title": string;        // Initially derived from analysis or "Untitled Product"
+    "Price": number;        // Derived from analysis or 0.00
     "Barcode": string | null;
     "Weight": number | null;
     "WeightUnit": string | null;
     "Options": any | null;
-    "Description": string | null;
+    "Description": string | null; // Matches product description initially
     "CompareAtPrice": number | null;
     "RequiresShipping": boolean | null;
     "IsTaxable": boolean | null;
     "TaxCode": string | null;
-    "ImageId": string | null;
+    "ImageId": string | null;      // Image associations are handled separately
     "PlatformVariantId": string | null;
     "PlatformProductId": string | null;
   };
-  "analysis": {
+  "analysis": { // The stored AI analysis content (if successful)
     "Id": string;
     "ProductId": string;
-    "ContentType": string;
-    "SourceApi": string;
-    "GeneratedText": string;
-    "Metadata": any;
-    "IsActive": boolean;
-    "CreatedAt": string;
-    "UpdatedAt": string;
-  } | null;
+    "ContentType": string;     // e.g., "product_analysis"
+    "SourceApi": string;       // e.g., "serpapi_google_lens"
+    "GeneratedText": string;   // JSON string of the raw SerpApiLensResponse
+    "Metadata": {
+        "searchUrl": string;
+        "searchEngine": string;
+        "topMatchTitle"?: string;
+        "topMatchSource"?: string;
+    };
+    "IsActive": boolean;       // Typically true for the latest analysis
+    "CreatedAt": string;       // ISO 8601 timestamp
+    "UpdatedAt": string;       // ISO 8601 timestamp
+  } | null; // Null if analysis failed or was skipped (e.g., SerpApi not configured)
 }
 ```
 
@@ -76,34 +114,35 @@ POST /products/analyze
 const response = await fetch('/products/analyze', {
   method: 'POST',
   headers: {
-    'Authorization': 'Bearer <token>',
+    'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    imageUris: ['https://example.com/product-image.jpg']
+    imageUris: ['https://example.com/your-product-image.jpg']
   })
 });
+const data = await response.json();
 
-// Response
+// Example Response (Success)
 {
   "product": {
-    "Id": "550e8400-e29b-41d4-a716-446655440000",
-    "UserId": "user-123",
-    "Title": "Untitled Product",
-    "Description": null,
+    "Id": "prod_abc123",
+    "UserId": "user_xyz789",
+    "Title": "Stylish Red Scarf",
+    "Description": "A beautiful red scarf, perfect for all occasions.",
     "IsArchived": false
   },
   "variant": {
-    "Id": "550e8400-e29b-41d4-a716-446655440001",
-    "ProductId": "550e8400-e29b-41d4-a716-446655440000",
-    "Sku": "DRAFT-550e8400",
-    "Title": "Untitled Product",
-    "Price": 0.00,
+    "Id": "var_def456",
+    "ProductId": "prod_abc123",
+    "Sku": "DRAFT-prod_ab",
+    "Title": "Stylish Red Scarf",
+    "Price": 19.99,
     "Barcode": null,
     "Weight": null,
     "WeightUnit": null,
     "Options": null,
-    "Description": null,
+    "Description": "A beautiful red scarf, perfect for all occasions.",
     "CompareAtPrice": null,
     "RequiresShipping": null,
     "IsTaxable": null,
@@ -112,50 +151,84 @@ const response = await fetch('/products/analyze', {
     "PlatformVariantId": null,
     "PlatformProductId": null
   },
-  "analysis": null
+  "analysis": {
+    "Id": "ai_ghi789",
+    "ProductId": "prod_abc123",
+    "ContentType": "product_analysis",
+    "SourceApi": "serpapi_google_lens",
+    "GeneratedText": "{\"visual_matches\":[{\"title\":\"Red Wool Scarf\", ...}]}",
+    "Metadata": {
+        "searchUrl": "https://example.com/your-product-image.jpg",
+        "searchEngine": "google_lens",
+        "topMatchTitle": "Red Wool Scarf"
+    },
+    "IsActive": true,
+    "CreatedAt": "2024-07-30T10:00:00Z",
+    "UpdatedAt": "2024-07-30T10:00:00Z"
+  }
 }
 ```
 
-### 2. Generate Details for Draft
-Generates AI-powered product details for an existing draft product.
+### 2. Generate Product Details for Draft
+Generates enhanced product details (title, description, platform-specific attributes) for an existing draft product using AI. This endpoint consumes an `aiScan` credit.
 
 ```http
 POST /products/generate-details
 ```
 
+**Feature Flag:** `aiScans`
+
+**Rate Limit:** 5 requests per minute
+
 #### Request Body
 ```typescript
 {
-  "productId": string;
-  "variantId": string;
-  "imageUris": string[];  // Array of image URLs to use for generation
-  "coverImageIndex": number;  // Index of the cover image in imageUris array
-  "selectedPlatforms": string[];  // Array of target platforms (e.g., ['shopify', 'amazon'])
-  "selectedMatch": {  // Optional: Selected visual match from analysis
+  "productId": string;            // ID of the Product created in Step 1
+  "variantId": string;            // ID of the ProductVariant created in Step 1
+  "imageUris": string[];          // Array of image URLs to provide context for generation
+  "coverImageIndex": number;      // Index of the primary image in imageUris array
+  "selectedPlatforms": string[];  // Array of target platform slugs (e.g., ["shopify", "amazon"])
+  "selectedMatch": {            // Optional: A specific visual match from the initial analysis to guide generation
     "title": string;
     "source": string;
-    "price": {
+    "price"?: {
       "value": string;
       "currency": string;
     };
-    "snippet": string;
+    "snippet"?: string;
+    // ... other fields from VisualMatch type
   } | null;
 }
 ```
 
-#### Response
+#### Response (200 OK)
 ```typescript
 {
-  "generatedDetails": {
-    [platform: string]: {  // e.g., 'shopify', 'amazon'
-      title: string;
-      description: string;
-      price: number;
-      // Platform-specific fields
-    };
-  } | null;
+  "generatedDetails": { // Object where keys are platform slugs
+    // Example for "shopify"
+    "shopify": {
+      "title": string;
+      "description": string;
+      "price": number;
+      "vendor"?: string;
+      "productType"?: string;
+      "tags"?: string[];
+      // ... other Shopify specific fields
+    },
+    // Example for "amazon"
+    "amazon": {
+      "title": string;
+      "description": string;
+      "price": number;
+      "bulletPoints"?: string[];
+      "category"?: string;
+      // ... other Amazon specific fields
+    }
+    // ... other platforms
+  } | null; // Null if generation failed
 }
 ```
+The generated details are also saved to the `AiGeneratedContent` table and can be used to update the `ProductVariant`.
 
 #### Example
 ```typescript
@@ -163,115 +236,108 @@ POST /products/generate-details
 const response = await fetch('/products/generate-details', {
   method: 'POST',
   headers: {
-    'Authorization': 'Bearer <token>',
+    'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    productId: "550e8400-e29b-41d4-a716-446655440000",
-    variantId: "550e8400-e29b-41d4-a716-446655440001",
-    imageUris: ["https://example.com/product-1.jpg", "https://example.com/product-2.jpg"],
+    productId: "prod_abc123",
+    variantId: "var_def456",
+    imageUris: ["https://example.com/image1.jpg", "https://example.com/image2.jpg"],
     coverImageIndex: 0,
-    selectedPlatforms: ["shopify", "amazon"],
-    selectedMatch: {
-      title: "Example Product",
-      source: "example.com",
-      price: {
-        value: "29.99",
-        currency: "USD"
-      },
-      snippet: "Example product description"
-    }
+    selectedPlatforms: ["shopify"],
+    selectedMatch: null // or provide a selected match from /analyze response
   })
 });
+const data = await response.json();
 
-// Response
+// Example Response (Success)
 {
   "generatedDetails": {
     "shopify": {
-      "title": "Premium Example Product",
-      "description": "High-quality example product...",
-      "price": 29.99,
-      "vendor": "Your Brand",
-      "productType": "Example Category"
-    },
-    "amazon": {
-      "title": "Premium Example Product",
-      "description": "High-quality example product...",
-      "price": 29.99,
-      "bulletPoints": ["Feature 1", "Feature 2"],
-      "category": "Example Category"
+      "title": "Elegant Red Wool Scarf - Limited Edition",
+      "description": "Wrap yourself in luxury with our Elegant Red Wool Scarf. Made from the finest merino wool, this scarf offers unparalleled softness and warmth. Its vibrant red hue makes a bold statement, perfect for elevating any outfit. Limited edition design.",
+      "price": 24.99,
+      "vendor": "YourBrandName",
+      "productType": "Apparel & Accessories > Scarves",
+      "tags": ["wool", "scarf", "red", "luxury", "limited edition"]
     }
   }
 }
 ```
 
-### 3. Publish to Shopify
-Publishes a product to Shopify with inventory management.
+### 3. Save or Publish Product Listing
+Saves the final curated product details to the canonical `Product` and `ProductVariant` records. If the `publishIntent` includes platform publishing, it queues the necessary background jobs.
 
 ```http
-POST /products/:id/publish/shopify
+POST /products/publish
 ```
+
+**Status:** `202 Accepted` - The request is accepted for processing. The actual saving and publishing happens asynchronously.
 
 #### Request Body
 ```typescript
 {
-  "platformConnectionId": string;  // ID of the Shopify platform connection
-  "locations": Array<{
-    "locationId": string;  // Shopify location ID
-    "quantity": number;    // Initial inventory quantity
-  }>;
-  "options": {
-    "status"?: "ACTIVE" | "DRAFT" | "ARCHIVED";  // Default: "ACTIVE"
-    "vendor"?: string;
-    "productType"?: string;
-    "tags"?: string[];
+  "productId": string;
+  "variantId": string;
+  "publishIntent": "SAVE_DRAFT" | "PUBLISH_TO_PLATFORMS"; // Determines if publishing jobs are queued
+  "platformDetails": {
+    [platformSlug: string]: { // Platform-specific curated details
+      "title": string;
+      "description": string;
+      "price": number;
+      // ... other common and platform-specific fields (e.g., SKU, barcode, options, categories, vendor, tags)
+    };
   };
+  "media": {
+    "imageUris": string[];         // Final list of image URLs in desired order
+    "coverImageIndex": number;   // Index of the cover image
+    // Potentially video URLs, 3D model URIs in the future
+  };
+  "selectedPlatformsToPublish": string[] | null; // Array of platform slugs to publish to if intent is PUBLISH_TO_PLATFORMS
 }
 ```
 
-#### Response
+#### Response (202 Accepted)
 ```typescript
 {
-  "success": boolean;
-  "productId": string;  // Shopify product ID
-  "operationId": string;  // Operation ID for tracking
+  "message": "SAVE_DRAFT request received and processing started." 
+  // or "PUBLISH_TO_PLATFORMS request received and processing started."
 }
 ```
+This endpoint updates the canonical `Product` and `ProductVariant` tables. If `publishIntent` is `PUBLISH_TO_PLATFORMS`, jobs are enqueued (e.g., via `QueueManager.enqueueJob({ type: 'product-publish', ... })`) to handle platform-specific API calls.
 
 #### Example
 ```typescript
-// Request
-const response = await fetch('/products/550e8400-e29b-41d4-a716-446655440000/publish/shopify', {
+// Request to save draft
+const response = await fetch('/products/publish', {
   method: 'POST',
   headers: {
-    'Authorization': 'Bearer <token>',
+    'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    platformConnectionId: "conn-123",
-    locations: [
-      { locationId: "loc-1", quantity: 10 },
-      { locationId: "loc-2", quantity: 5 }
-    ],
-    options: {
-      status: "ACTIVE",
-      vendor: "Your Brand",
-      productType: "Example Category",
-      tags: ["new", "featured"]
-    }
+    productId: "prod_abc123",
+    variantId: "var_def456",
+    publishIntent: "SAVE_DRAFT",
+    platformDetails: {
+      "canonical": { // Or a specific platform like "shopify" if that's the primary source of truth for this save
+        "title": "Final Product Title",
+        "description": "Final product description.",
+        "price": 22.50
+      }
+    },
+    media: {
+      imageUris: ["https://example.com/final_image1.jpg"],
+      coverImageIndex: 0
+    },
+    selectedPlatformsToPublish: null
   })
 });
-
-// Response
-{
-  "success": true,
-  "productId": "shopify-product-123",
-  "operationId": "op-123"
-}
+const data = await response.json(); // { "message": "SAVE_DRAFT request received and processing started." }
 ```
 
-### 4. Create Product
-Creates a new product with a variant directly.
+### 4. Direct Product Creation (Manual)
+Creates a new `Product` and `ProductVariant` directly with user-provided data, bypassing AI analysis and generation.
 
 ```http
 POST /products
@@ -280,26 +346,34 @@ POST /products
 #### Request Body
 ```typescript
 {
-  "userId": string;
-  "variantData": {
+  "userId": string; // The ID of the user creating the product
+  "variantData": {  // Data for the initial ProductVariant
     "Sku": string;
     "Title": string;
     "Description"?: string;
     "Price": number;
     "Barcode"?: string;
     "Weight"?: number;
-    "WeightUnit"?: string;
-    "Options"?: any;
+    "WeightUnit"?: "POUNDS" | "KILOGRAMS" | "OUNCES" | "GRAMS"; // Example units
+    "Options"?: any; // e.g., { "color": ["Red", "Blue"], "size": ["S", "M"] }
     "CompareAtPrice"?: number;
     "RequiresShipping"?: boolean;
     "IsTaxable"?: boolean;
     "TaxCode"?: string;
-  };
+    // ... any other relevant fields for ProductVariant
+  }
 }
 ```
 
-#### Response
-Same as the analyze endpoint response.
+#### Response (200 OK)
+The response structure is similar to the `/products/analyze` endpoint, but the `analysis` field will typically be `null`.
+```typescript
+{
+  "product": { /* ... SimpleProduct structure ... */ };
+  "variant": { /* ... SimpleProductVariant structure ... */ };
+  "analysis": null;
+}
+```
 
 #### Example
 ```typescript
@@ -307,92 +381,111 @@ Same as the analyze endpoint response.
 const response = await fetch('/products', {
   method: 'POST',
   headers: {
-    'Authorization': 'Bearer <token>',
+    'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
     'Content-Type': 'application/json'
   },
   body: JSON.stringify({
-    userId: "user-123",
+    userId: "user_xyz789",
     variantData: {
-      Sku: "PROD-123",
-      Title: "Example Product",
-      Description: "Product description",
-      Price: 29.99,
-      Barcode: "123456789",
-      Weight: 1.5,
-      WeightUnit: "POUNDS",
-      Options: { size: ["S", "M", "L"] },
-      RequiresShipping: true,
-      IsTaxable: true
+      Sku: "MANUAL-SKU-001",
+      Title: "Manually Created Product",
+      Price: 49.99
     }
   })
 });
-
-// Response
-{
-  "product": {
-    "Id": "550e8400-e29b-41d4-a716-446655440000",
-    "UserId": "user-123",
-    "Title": "Example Product",
-    "Description": null,
-    "IsArchived": false
-  },
-  "variant": {
-    "Id": "550e8400-e29b-41d4-a716-446655440001",
-    "ProductId": "550e8400-e29b-41d4-a716-446655440000",
-    "Sku": "PROD-123",
-    "Title": "Example Product",
-    "Price": 29.99,
-    "Barcode": "123456789",
-    "Weight": 1.5,
-    "WeightUnit": "POUNDS",
-    "Options": { "size": ["S", "M", "L"] },
-    "Description": "Product description",
-    "CompareAtPrice": null,
-    "RequiresShipping": true,
-    "IsTaxable": true,
-    "TaxCode": null,
-    "ImageId": null,
-    "PlatformVariantId": null,
-    "PlatformProductId": null
-  }
-}
+const data = await response.json();
 ```
 
-### 5. Get Shopify Locations
-Fetches all available locations for a Shopify store.
+## Shopify Specific Endpoints
+These endpoints are dedicated to managing product data and inventory related to a connected Shopify store.
+
+**Feature Flag:** Most Shopify endpoints require the `shopify` feature to be enabled for the user's subscription.
+
+### 5. Publish Product to Shopify
+Directly creates or updates a product on Shopify. This is a more direct way to publish compared to the general `/products/publish` if Shopify is the explicit target.
 
 ```http
-GET /products/shopify/locations?platformConnectionId=<connection-id>
+POST /products/:id/publish/shopify
 ```
+Where `:id` is the canonical **Product ID**.
 
-#### Query Parameters
+**Feature Flag:** `shopify`
+
+#### Request Body
 ```typescript
 {
-  "platformConnectionId": string;  // ID of the Shopify platform connection
+  "platformConnectionId": string;  // ID of the specific Shopify PlatformConnection
+  "locations": Array<{             // Inventory levels for Shopify locations
+    "locationId": string;          // Shopify Location GID (e.g., "gid://shopify/Location/12345")
+    "quantity": number;
+  }>;
+  "options"?: {                    // Optional Shopify product settings
+    "status"?: "ACTIVE" | "DRAFT" | "ARCHIVED"; // Default: "ACTIVE"
+    "vendor"?: string;
+    "productType"?: string;
+    "tags"?: string[];
+  };
+}
+```
+This endpoint will take the canonical product data associated with the given `:id`, map it to Shopify's format (including variants and images), and then create/update it on Shopify using the `ShopifyApiClient`. Inventory is set according to the `locations` array.
+
+#### Response (200 OK or 202 Accepted)
+```typescript
+{
+  "success": boolean;
+  "productId": string;      // The Product ID on Shopify (e.g., "gid://shopify/Product/78901")
+  "operationId"?: string;   // If the creation is asynchronous on Shopify's side
+  "status"?: string;        // Status of the operation
 }
 ```
 
-#### Response
+#### Example
+```typescript
+// Request
+const response = await fetch('/products/prod_abc123/publish/shopify', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>',
+    'Content-Type': 'application/json'
+  },
+  body: JSON.stringify({
+    platformConnectionId: "conn_shopify_123",
+    locations: [
+      { locationId: "gid://shopify/Location/11111", quantity: 10 },
+      { locationId: "gid://shopify/Location/22222", quantity: 5 }
+    ],
+    options: {
+      status: "ACTIVE",
+      vendor: "MyBrand"
+    }
+  })
+});
+const data = await response.json();
+```
+
+### 6. Get Shopify Locations
+Retrieves a list of all physical and online locations configured for a connected Shopify store.
+
+```http
+GET /products/shopify/locations?platformConnectionId=<platformConnectionId_value>
+```
+
+**Feature Flag:** `shopify`
+**Rate Limit:** 10 requests per minute
+
+#### Query Parameters
+- `platformConnectionId` (required): string - The ID of the Shopify `PlatformConnection`.
+
+#### Response (200 OK)
 ```typescript
 {
-  "locations": Array<{
-    "id": string;           // Shopify location ID
-    "name": string;         // Location name
-    "address1": string;     // Street address
-    "address2": string | null;
-    "city": string;
-    "province": string;
-    "country": string;
-    "zip": string;
-    "phone": string | null;
-    "provinceCode": string;
-    "countryCode": string;
-    "countryName": string;
-    "legacy": boolean;      // Whether this is a legacy location
-    "active": boolean;      // Whether this location is active
-    "adminGraphqlApiId": string;  // GraphQL API ID
-    "localizedCountryName": string;
-    "localizedProvinceName": string;
+  "locations": Array<{ // Array of ShopifyLocationNode
+    "id": string;           // Shopify Location GID (e.g., "gid://shopify/Location/12345")
+    "name": string;
+    "isActive": boolean;
+    "shipsInventory": boolean;
+    "fulfillsOnlineOrders": boolean;
+    // ... other fields from ShopifyLocationNode like address details
   }>;
 }
 ```
@@ -400,828 +493,200 @@ GET /products/shopify/locations?platformConnectionId=<connection-id>
 #### Example
 ```typescript
 // Request
-const response = await fetch('/products/shopify/locations?platformConnectionId=conn-123', {
+const response = await fetch('/products/shopify/locations?platformConnectionId=conn_shopify_123', {
   method: 'GET',
-  headers: {
-    'Authorization': 'Bearer <token>'
-  }
+  headers: { 'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>' }
 });
-
-// Response
-{
-  "locations": [
-    {
-      "id": "loc-1",
-      "name": "Main Warehouse",
-      "address1": "123 Main St",
-      "address2": null,
-      "city": "San Francisco",
-      "province": "California",
-      "country": "United States",
-      "zip": "94105",
-      "phone": "+1-555-0123",
-      "provinceCode": "CA",
-      "countryCode": "US",
-      "countryName": "United States",
-      "legacy": false,
-      "active": true,
-      "adminGraphqlApiId": "gid://shopify/Location/123456789",
-      "localizedCountryName": "United States",
-      "localizedProvinceName": "California"
-    },
-    {
-      "id": "loc-2",
-      "name": "East Coast Warehouse",
-      "address1": "456 East Ave",
-      "address2": "Suite 100",
-      "city": "New York",
-      "province": "New York",
-      "country": "United States",
-      "zip": "10001",
-      "phone": "+1-555-0124",
-      "provinceCode": "NY",
-      "countryCode": "US",
-      "countryName": "United States",
-      "legacy": false,
-      "active": true,
-      "adminGraphqlApiId": "gid://shopify/Location/987654321",
-      "localizedCountryName": "United States",
-      "localizedProvinceName": "New York"
-    }
-  ]
-}
+const data = await response.json();
 ```
 
-#### Error Responses
-This endpoint may return the following additional error responses:
-
-```typescript
-// 400 Bad Request - Invalid platform connection
-{
-  "statusCode": 400,
-  "message": "Invalid Shopify platform connection";
-  "error": "Bad Request";
-}
-
-// 403 Forbidden - Shopify feature not enabled
-{
-  "statusCode": 403,
-  "message": "Feature not enabled for your subscription";
-  "error": "Forbidden";
-}
-```
-
-### 6. Get Shopify Inventory
-Fetches and optionally syncs inventory levels for all products in a Shopify store.
+### 7. Get Shopify Inventory Levels
+Fetches current inventory levels for products from a connected Shopify store. Can optionally trigger a fresh sync from Shopify before returning data.
 
 ```http
-GET /products/shopify/inventory?platformConnectionId=<connection-id>&sync=<boolean>
+GET /products/shopify/inventory?platformConnectionId=<platformConnectionId_value>&sync=<true_or_false>
 ```
+
+**Feature Flag:** `shopify`
+**Rate Limit:** 10 requests per minute
 
 #### Query Parameters
-```typescript
-{
-  "platformConnectionId": string;  // ID of the Shopify platform connection
-  "sync": boolean;                 // Optional: Whether to sync with Shopify (default: false)
-}
-```
+- `platformConnectionId` (required): string - The ID of the Shopify `PlatformConnection`.
+- `sync` (optional): boolean - If `true`, forces a fresh data fetch from Shopify before returning. Defaults to `false`.
 
-#### Response
+#### Response (200 OK)
 ```typescript
 {
   "inventory": Array<{
-    "variantId": string;           // Your internal variant ID
-    "sku": string;                 // Product SKU
-    "title": string;              // Product title
+    "variantId": string;           // Canonical (sssync) ProductVariant ID
+    "sku": string;
+    "title": string;               // Canonical variant title
     "locations": Array<{
-      "locationId": string;        // Shopify location ID
-      "locationName": string;      // Location name
-      "quantity": number;          // Current inventory quantity
-      "updatedAt": string;         // Last update timestamp
+      "locationId": string;        // Shopify Location GID
+      "locationName": string;
+      "quantity": number;
+      "updatedAt": string;         // ISO 8601 timestamp of last update for this level
     }>;
-    "productId": string;           // Your internal product ID
-    "platformVariantId": string;   // Shopify variant ID
-    "platformProductId": string;   // Shopify product ID
+    "productId": string;           // Canonical (sssync) Product ID
+    "platformVariantId": string;   // Shopify Variant GID
+    "platformProductId": string;   // Shopify Product GID
   }>;
-  "lastSyncedAt": string | null;   // Timestamp of last successful sync
+  "lastSyncedAt": string | null;   // ISO 8601 timestamp of the last successful sync with Shopify for this connection
 }
 ```
+
+#### Notes on Syncing:
+- When `sync=true`:
+    1.  The system fetches product mappings for the connection.
+    2.  It calls Shopify API to get current inventory levels for mapped variants.
+    3.  Updates `InventoryLevels` table in the local database.
+    4.  Updates `PlatformConnections.LastSyncSuccessAt`.
+    5.  Returns the freshly aggregated data.
+- When `sync=false` (or omitted):
+    1.  The system queries the local `InventoryLevels` table.
+    2.  Returns data based on the last known sync.
 
 #### Example
 ```typescript
-// Request (without sync)
-const response = await fetch('/products/shopify/inventory?platformConnectionId=conn-123', {
+// Request (fetch cached inventory)
+const response = await fetch('/products/shopify/inventory?platformConnectionId=conn_shopify_123', {
   method: 'GET',
-  headers: {
-    'Authorization': 'Bearer <token>'
-  }
+  headers: { 'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>' }
 });
+const data = await response.json();
 
-// Request (with sync)
-const response = await fetch('/products/shopify/inventory?platformConnectionId=conn-123&sync=true', {
+// Request (force sync then fetch inventory)
+const responseSync = await fetch('/products/shopify/inventory?platformConnectionId=conn_shopify_123&sync=true', {
   method: 'GET',
-  headers: {
-    'Authorization': 'Bearer <token>'
-  }
+  headers: { 'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>' }
 });
-
-// Response
-{
-  "inventory": [
-    {
-      "variantId": "var-123",
-      "sku": "PROD-123",
-      "title": "Example Product",
-      "locations": [
-        {
-          "locationId": "loc-1",
-          "locationName": "Main Warehouse",
-          "quantity": 10,
-          "updatedAt": "2024-03-20T15:30:00Z"
-        },
-        {
-          "locationId": "loc-2",
-          "locationName": "East Coast Warehouse",
-          "quantity": 5,
-          "updatedAt": "2024-03-20T15:30:00Z"
-        }
-      ],
-      "productId": "prod-123",
-      "platformVariantId": "shopify-var-123",
-      "platformProductId": "shopify-prod-123"
-    }
-  ],
-  "lastSyncedAt": "2024-03-20T15:30:00Z"
-}
+const dataSync = await responseSync.json();
 ```
 
-#### Error Responses
-This endpoint may return the following additional error responses:
-
-```typescript
-// 400 Bad Request - Invalid platform connection
-{
-  "statusCode": 400,
-  "message": "Invalid Shopify platform connection";
-  "error": "Bad Request";
-}
-
-// 403 Forbidden - Shopify feature not enabled
-{
-  "statusCode": 403,
-  "message": "Feature not enabled for your subscription";
-  "error": "Forbidden";
-}
-
-// 429 Too Many Requests - Rate limit exceeded
-{
-  "statusCode": 429,
-  "message": "Too Many Requests";
-  "error": "Too Many Requests";
-}
-```
-
-#### Notes
-- The endpoint is rate-limited to 1 request per 10 minutes
-- When `sync=true`, the endpoint will:
-  1. Fetch the latest inventory levels from Shopify
-  2. Update the local database with the new levels
-  3. Return the updated inventory data
-- When `sync=false`, the endpoint returns the cached inventory data from the local database
-- The `lastSyncedAt` timestamp indicates when the data was last synchronized with Shopify
-- Inventory levels are tracked per variant and location
-- The endpoint requires the `shopify` feature to be enabled
-
-### 7. Get Shopify Locations with Products
-Fetches all locations and their associated products in a single call. This is the recommended endpoint for displaying location-based inventory management.
+### 8. Get Shopify Locations with Products (Aggregated View)
+Provides a convenient aggregated view of Shopify locations, each with a list of products and their inventory quantities at that specific location. Useful for UIs displaying inventory by location.
 
 ```http
-GET /products/shopify/locations-with-products?platformConnectionId=<connection-id>&sync=<boolean>
+GET /products/shopify/locations-with-products?platformConnectionId=<platformConnectionId_value>&sync=<true_or_false>
 ```
+
+**Feature Flag:** `shopify`
+**Rate Limit:** 10 requests per minute
 
 #### Query Parameters
-```typescript
-{
-  "platformConnectionId": string;  // ID of the Shopify platform connection
-  "sync": boolean;                 // Optional: Whether to sync with Shopify (default: false)
-}
-```
+- `platformConnectionId` (required): string - The ID of the Shopify `PlatformConnection`.
+- `sync` (optional): boolean - If `true`, forces a fresh data fetch from Shopify before returning. Defaults to `false`.
 
-#### Response
+#### Response (200 OK)
 ```typescript
 {
   "locations": Array<{
-    "id": string;           // Shopify location ID
-    "name": string;         // Location name
-    "isActive": boolean;    // Whether the location is active
-    "products": Array<{     // Products available at this location
-      "variantId": string;  // Your internal variant ID
-      "sku": string;        // Product SKU
-      "title": string;      // Product title
-      "quantity": number;   // Current inventory quantity at this location
-      "updatedAt": string;  // Last update timestamp
-      "productId": string;  // Your internal product ID
-      "platformVariantId": string;   // Shopify variant ID
-      "platformProductId": string;   // Shopify product ID
+    "id": string;           // Shopify Location GID
+    "name": string;
+    "isActive": boolean;
+    "products": Array<{
+      "variantId": string;  // Canonical (sssync) ProductVariant ID
+      "sku": string;
+      "title": string;      // Canonical variant title
+      "quantity": number;
+      "updatedAt": string;  // ISO 8601 timestamp of last update for this level
+      "productId": string;  // Canonical (sssync) Product ID
+      "platformVariantId": string; // Shopify Variant GID
+      "platformProductId": string; // Shopify Product GID
     }>;
   }>;
-  "lastSyncedAt": string | null;   // Timestamp of last successful sync
+  "lastSyncedAt": string | null; // ISO 8601 timestamp of the last successful sync
 }
 ```
+The `sync` behavior is identical to the `/products/shopify/inventory` endpoint.
 
 #### Example
 ```typescript
-// Request (without sync)
-const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn-123', {
+// Request
+const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn_shopify_123&sync=false', {
   method: 'GET',
-  headers: {
-    'Authorization': 'Bearer <token>'
-  }
+  headers: { 'Authorization': 'Bearer <YOUR_SUPABASE_TOKEN>' }
 });
-
-// Request (with sync)
-const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn-123&sync=true', {
-  method: 'GET',
-  headers: {
-    'Authorization': 'Bearer <token>'
-  }
-});
-
-// Response
-{
-  "locations": [
-    {
-      "id": "gid://shopify/Location/123456789",
-      "name": "Main Warehouse",
-      "isActive": true,
-      "products": [
-        {
-          "variantId": "var-123",
-          "sku": "PROD-123",
-          "title": "Example Product",
-          "quantity": 10,
-          "updatedAt": "2024-03-20T15:30:00Z",
-          "productId": "prod-123",
-          "platformVariantId": "shopify-var-123",
-          "platformProductId": "shopify-prod-123"
-        }
-      ]
-    },
-    {
-      "id": "gid://shopify/Location/987654321",
-      "name": "East Coast Warehouse",
-      "isActive": true,
-      "products": [
-        {
-          "variantId": "var-123",
-          "sku": "PROD-123",
-          "title": "Example Product",
-          "quantity": 5,
-          "updatedAt": "2024-03-20T15:30:00Z",
-          "productId": "prod-123",
-          "platformVariantId": "shopify-var-123",
-          "platformProductId": "shopify-prod-123"
-        }
-      ]
-    }
-  ],
-  "lastSyncedAt": "2024-03-20T15:30:00Z"
-}
-```
-
-#### Error Responses
-This endpoint may return the following error responses:
-
-```typescript
-// 400 Bad Request - Invalid platform connection
-{
-  "statusCode": 400,
-  "message": "Invalid Shopify platform connection";
-  "error": "Bad Request";
-}
-
-// 403 Forbidden - Shopify feature not enabled
-{
-  "statusCode": 403,
-  "message": "Feature not enabled for your subscription";
-  "error": "Forbidden";
-}
-
-// 429 Too Many Requests - Rate limit exceeded
-{
-  "statusCode": 429,
-  "message": "Too Many Requests";
-  "error": "Too Many Requests";
-}
-```
-
-#### Notes
-- The endpoint is rate-limited to 1 request per 10 minutes
-- When `sync=true`, the endpoint will:
-  1. Fetch the latest inventory levels from Shopify
-  2. Update the local database with the new levels
-  3. Return the updated data grouped by location
-- When `sync=false`, the endpoint returns the cached data from the local database
-- The `lastSyncedAt` timestamp indicates when the data was last synchronized with Shopify
-- This endpoint is optimized for location-based inventory management interfaces
-- The endpoint requires the `shopify` feature to be enabled
-
-## Error Responses
-
-All endpoints may return the following error responses:
-
-```typescript
-// 400 Bad Request
-{
-  "statusCode": 400,
-  "message": string;
-  "error": "Bad Request";
-}
-
-// 401 Unauthorized
-{
-  "statusCode": 401,
-  "message": "Unauthorized";
-  "error": "Unauthorized";
-}
-
-// 404 Not Found
-{
-  "statusCode": 404,
-  "message": string;
-  "error": "Not Found";
-}
-
-// 429 Too Many Requests
-{
-  "statusCode": 429,
-  "message": "Too Many Requests";
-  "error": "Too Many Requests";
-}
-
-// 500 Internal Server Error
-{
-  "statusCode": 500,
-  "message": string;
-  "error": "Internal Server Error";
-}
-```
-
-## Feature Usage
-
-Some endpoints require specific feature flags to be enabled for the user's subscription:
-
-- `analyze` and `generate-details` endpoints require the `aiScans` feature
-- `publish/shopify` endpoint requires the `shopify` feature
-
-The API will return a 403 Forbidden error if the required feature is not enabled:
-
-```typescript
-{
-  "statusCode": 403,
-  "message": "Feature not enabled for your subscription";
-  "error": "Forbidden";
-}
-```
-
-## Shopify Integration Endpoints
-
-### Get Shopify Locations
-Retrieves all available locations from a Shopify store.
-
-**Endpoint:** `GET /products/shopify/locations?platformConnectionId=<connection-id>`
-
-**Query Parameters:**
-- `platformConnectionId` (required): string - ID of the Shopify platform connection
-
-**Response (200 OK):**
-```json
-{
-  "locations": [
-    {
-      "id": "gid://shopify/Location/123456789",
-      "name": "Main Warehouse",
-      "isActive": true
-    }
-  ]
-}
-```
-
-**Error Responses:**
-- 400 Bad Request: Invalid platform connection ID
-- 403 Forbidden: Shopify feature not enabled
-- 429 Too Many Requests: Rate limit exceeded (1 request per 10 minutes)
-
-### Get Shopify Inventory
-Retrieves inventory levels for all products in a Shopify store.
-
-**Endpoint:** `GET /products/shopify/inventory?platformConnectionId=<connection-id>&sync=<boolean>`
-
-**Query Parameters:**
-- `platformConnectionId` (required): string - ID of the Shopify platform connection
-- `sync` (optional): boolean - Whether to sync with Shopify (default: false)
-
-**Response (200 OK):**
-```json
-{
-  "inventory": [
-    {
-      "variantId": "var-123",
-      "sku": "PROD-123",
-      "title": "Example Product",
-      "locations": [
-        {
-          "locationId": "gid://shopify/Location/123456789",
-          "locationName": "Main Warehouse",
-          "quantity": 10,
-          "updatedAt": "2024-03-20T15:30:00Z"
-        }
-      ],
-      "productId": "prod-123",
-      "platformVariantId": "shopify-var-123",
-      "platformProductId": "shopify-prod-123"
-    }
-  ],
-  "lastSyncedAt": "2024-03-20T15:30:00Z"
-}
-```
-
-**Error Responses:**
-- 400 Bad Request: Invalid platform connection ID
-- 403 Forbidden: Shopify feature not enabled
-- 429 Too Many Requests: Rate limit exceeded (1 request per 10 minutes)
-
-### Get Shopify Locations with Products
-Retrieves all locations along with their associated products and inventory levels in a single call.
-
-**Endpoint:** `GET /products/shopify/locations-with-products?platformConnectionId=<connection-id>&sync=<boolean>`
-
-**Query Parameters:**
-- `platformConnectionId` (required): string - ID of the Shopify platform connection
-- `sync` (optional): boolean - Whether to sync with Shopify (default: false)
-
-**Response (200 OK):**
-```json
-{
-  "locations": [
-    {
-      "id": "gid://shopify/Location/123456789",
-      "name": "Main Warehouse",
-      "isActive": true,
-      "products": [
-        {
-          "variantId": "var-123",
-          "sku": "PROD-123",
-          "title": "Example Product",
-          "quantity": 10,
-          "updatedAt": "2024-03-20T15:30:00Z",
-          "productId": "prod-123",
-          "platformVariantId": "shopify-var-123",
-          "platformProductId": "shopify-prod-123"
-        }
-      ]
-    }
-  ],
-  "lastSyncedAt": "2024-03-20T15:30:00Z"
-}
-```
-
-**Error Responses:**
-- 400 Bad Request: Invalid platform connection ID
-- 403 Forbidden: Shopify feature not enabled
-- 429 Too Many Requests: Rate limit exceeded (1 request per 10 minutes)
-
-**Notes:**
-1. All endpoints are rate-limited to 1 request per 10 minutes
-2. The `sync` parameter determines whether to fetch fresh data from Shopify:
-   - When `sync=true`, the endpoint will fetch the latest data from Shopify and update the local cache
-   - When `sync=false` (default), the endpoint will return cached data if available
-3. The `lastSyncedAt` timestamp indicates when the data was last synchronized with Shopify
-4. All endpoints require a valid Shopify platform connection with the `shopify` feature enabled
-5. The locations-with-products endpoint is optimized for building location-based UIs, as it organizes the data by location first
-
-**Example Usage:**
-```typescript
-// Fetch locations with their products
-const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn_123&sync=true', {
-  headers: {
-    'Authorization': 'Bearer your-token',
-    'Content-Type': 'application/json'
-  }
-});
-
 const data = await response.json();
-// data.locations contains an array of locations, each with its products
 ```
 
-**Best Practices:**
-1. Use the locations-with-products endpoint when building location-based UIs
-2. Use the inventory endpoint when you need a flat list of all inventory levels
-3. Use the locations endpoint when you only need location information
-4. Set `sync=true` only when you need fresh data from Shopify
-5. Cache the response data on the client side and use the `lastSyncedAt` timestamp to determine when to refresh
+### 9. Queue Product Sync Job (Example)
+This is an example endpoint demonstrating how a product sync job could be queued using the dynamic queue manager. The actual implementation for triggering syncs for specific products or connections would depend on the evolving `SyncEngine` requirements.
 
-**Example Usage:**
+```http
+POST /products/queue-sync
+```
+
+#### Request Body
 ```typescript
-// Fetch locations with their products
-const response = await fetch('/products/shopify/locations-with-products?platformConnectionId=conn_123&sync=true', {
-  headers: {
-    'Authorization': 'Bearer your-token',
-    'Content-Type': 'application/json'
-  }
-});
-
-const data = await response.json();
-// data.locations contains an array of locations, each with its products
+{
+  "productId": string; // The ID of the product to sync
+}
 ```
+The `userId` is typically derived from the authentication token.
 
-**Best Practices:**
-1. Use the locations-with-products endpoint when building location-based UIs
-2. Use the inventory endpoint when you need a flat list of all inventory levels
-3. Use the locations endpoint when you only need location information
-4. Set `sync=true` only when you need fresh data from Shopify
-5. Cache the response data on the client side and use the `lastSyncedAt` timestamp to determine when to refresh
+#### Response (200 OK)
+```typescript
+{
+  "success": boolean;
+  "message": "Product sync job queued."
+}
+```
+This endpoint would call `QueueManager.enqueueJob({ type: 'product-sync', productId, userId, timestamp: Date.now() });`
 
-# Shopify Integration Documentation
+## General Error Responses
+In addition to specific errors mentioned per endpoint, the API may return common HTTP status codes:
 
-## Critical: Throttling and Rate Limiting Issues
+- **400 Bad Request:** The request was malformed (e.g., missing required fields, invalid data types). The response body usually contains a `message` detailing the error.
+  ```json
+  {
+    "statusCode": 400,
+    "message": "Invalid image URI provided.",
+    "error": "Bad Request"
+  }
+  ```
+- **401 Unauthorized:** Authentication token is missing, invalid, or expired.
+  ```json
+  {
+    "statusCode": 401,
+    "message": "Unauthorized",
+    "error": "Unauthorized"
+  }
+  ```
+- **403 Forbidden:** The authenticated user does not have permission to perform the action (e.g., feature not enabled for their subscription).
+  ```json
+  {
+    "statusCode": 403,
+    "message": "Feature 'aiScans' not enabled for your subscription.",
+    "error": "Forbidden"
+  }
+  ```
+- **404 Not Found:** The requested resource (e.g., product, variant, connection) could not be found.
+  ```json
+  {
+    "statusCode": 404,
+    "message": "Product with ID prod_nonexistent not found.",
+    "error": "Not Found"
+  }
+  ```
+- **429 Too Many Requests:** The user has exceeded the rate limit for the endpoint.
+  ```json
+  {
+    "statusCode": 429,
+    "message": "Too Many Requests",
+    "error": "Too Many Requests"
+  }
+  ```
+- **500 Internal Server Error:** An unexpected error occurred on the server.
+  ```json
+  {
+    "statusCode": 500,
+    "message": "Internal server error",
+    "error": "Internal Server Error"
+  }
+  ```
 
-### Current Implementation
-- All Shopify endpoints are currently throttled to 1 request per 10 minutes (600,000ms) using NestJS's ThrottlerGuard
-- This is causing issues with legitimate use cases (e.g., initial app load) while still allowing excessive requests
-- We're seeing ~30 requests/minute despite the throttling, indicating a potential issue with the throttling implementation
-
-### Immediate Actions Required
-1. **Throttling Adjustment**
-   ```typescript
-   // Current implementation (too restrictive):
-   @Throttle({ default: { limit: 1, ttl: 600000 }}) // 1 request per 10 minutes
-   
-   // Recommended implementation:
-   @Throttle({ default: { limit: 5, ttl: 60000 }}) // 5 requests per minute
-   ```
-
-2. **Request Logging Implementation**
-   Add this middleware to `src/common/middleware/request-logger.middleware.ts`:
-   ```typescript
-   import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
-   import { Request, Response, NextFunction } from 'express';
-
-   @Injectable()
-   export class RequestLoggerMiddleware implements NestMiddleware {
-     private readonly logger = new Logger('RequestLogger');
-
-     use(req: Request, res: Response, next: NextFunction) {
-       const { method, originalUrl, query, body, headers } = req;
-       const userAgent = headers['user-agent'];
-       const userId = headers['x-user-id']; // Adjust based on your auth header
-
-       this.logger.log(
-         `[${method}] ${originalUrl} - User: ${userId} - UA: ${userAgent}` +
-         `\nQuery: ${JSON.stringify(query)}` +
-         `\nBody: ${JSON.stringify(body)}`
-       );
-
-       // Log response
-       const originalSend = res.send;
-       res.send = function (body) {
-         this.logger.log(
-           `[${method}] ${originalUrl} - Status: ${res.statusCode}` +
-           `\nResponse: ${typeof body === 'string' ? body : JSON.stringify(body)}`
-         );
-         return originalSend.call(this, body);
-       };
-
-       next();
-     }
-   }
-   ```
-
-3. **Apply Middleware**
-   In `src/app.module.ts`:
-   ```typescript
-   export class AppModule implements NestModule {
-     configure(consumer: MiddlewareConsumer) {
-       consumer
-         .apply(RequestLoggerMiddleware)
-         .forRoutes('*');
-     }
-   }
-   ```
-
-### Debugging Steps
-1. **Identify Source of Requests**
-   ```bash
-   # Using the request logger, monitor requests:
-   tail -f your-app.log | grep "GET /products/shopify"
-   
-   # Or use a more specific pattern:
-   tail -f your-app.log | grep "GET /products/shopify/locations"
-   ```
-
-2. **Check Frontend Implementation**
-   - Review all components that fetch Shopify data
-   - Look for:
-     - Uncontrolled `useEffect` hooks
-     - Missing dependency arrays
-     - Multiple components fetching the same data
-     - Polling intervals that are too frequent
-
-3. **Common Frontend Issues to Fix**
-   ```typescript
-   // BAD: Polling every second
-   useEffect(() => {
-     const interval = setInterval(() => {
-       fetchShopifyData();
-     }, 1000);
-     return () => clearInterval(interval);
-   }, []);
-
-   // GOOD: Poll every minute, with proper cleanup
-   useEffect(() => {
-     const fetchData = async () => {
-       try {
-         const data = await fetchShopifyData();
-         setInventoryData(data);
-       } catch (error) {
-         if (error.status === 429) {
-           // Handle rate limit - maybe show a message
-           console.warn('Rate limited, will retry in 1 minute');
-         }
-       }
-     };
-
-     fetchData(); // Initial fetch
-     const interval = setInterval(fetchData, 60000); // Poll every minute
-     return () => clearInterval(interval);
-   }, [fetchShopifyData]); // Proper dependency
-   ```
-
-4. **Implement Caching**
-   ```typescript
-   // In your frontend service:
-   private cache = new Map<string, { data: any; timestamp: number }>();
-   private CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-   async getShopifyData(connectionId: string, forceSync = false) {
-     const cacheKey = `shopify-${connectionId}`;
-     const cached = this.cache.get(cacheKey);
-     
-     if (!forceSync && cached && Date.now() - cached.timestamp < this.CACHE_TTL) {
-       return cached.data;
-     }
-
-     const data = await this.api.get(`/products/shopify/inventory?platformConnectionId=${connectionId}&sync=${forceSync}`);
-     this.cache.set(cacheKey, { data, timestamp: Date.now() });
-     return data;
-   }
-   ```
-
-## API Endpoints
-
-[Previous endpoint documentation remains the same...]
-
-## Best Practices for Frontend Implementation
-
-1. **Data Fetching Strategy**
-   - Use a single source of truth (e.g., React Query, Redux) for Shopify data
-   - Implement proper caching with TTL
-   - Use optimistic updates for inventory changes
-   - Implement proper error handling for 429 responses
-
-2. **Component Structure**
-   ```typescript
-   // Example of a well-structured inventory component
-   const ShopifyInventory: React.FC = () => {
-     const [isLoading, setIsLoading] = useState(false);
-     const [error, setError] = useState<Error | null>(null);
-     const { data, refetch } = useQuery(
-       'shopify-inventory',
-       () => fetchShopifyData(),
-       {
-         staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
-         cacheTime: 30 * 60 * 1000, // Keep in cache for 30 minutes
-         retry: (failureCount, error) => {
-           if (error.status === 429) return false; // Don't retry on rate limit
-           return failureCount < 3;
-         }
-       }
-     );
-
-     // Manual refresh handler
-     const handleRefresh = async () => {
-       try {
-         setIsLoading(true);
-         await refetch();
-       } catch (error) {
-         setError(error);
-       } finally {
-         setIsLoading(false);
-       }
-     };
-
-     return (
-       <div>
-         <button onClick={handleRefresh} disabled={isLoading}>
-           Refresh Inventory
-         </button>
-         {error?.status === 429 && (
-           <div className="error">
-             Rate limited. Please wait before trying again.
-           </div>
-         )}
-         {/* Render inventory data */}
-       </div>
-     );
-   };
-   ```
-
-3. **Error Handling**
-   - Implement proper error boundaries
-   - Show user-friendly messages for rate limits
-   - Provide manual refresh options
-   - Log errors for debugging
-
-4. **Performance Optimization**
-   - Use pagination for large datasets
-   - Implement virtual scrolling for long lists
-   - Use proper memoization
-   - Implement proper loading states
-
-## Monitoring and Maintenance
-
-1. **Logging Strategy**
-   - Use the provided RequestLoggerMiddleware
-   - Monitor rate limit hits
-   - Track sync operations
-   - Log all Shopify API calls
-
-2. **Alerting**
-   - Set up alerts for:
-     - High rate of 429 responses
-     - Failed sync operations
-     - Unusual request patterns
-     - API errors from Shopify
-
-3. **Regular Maintenance**
-   - Review and adjust throttling limits
-   - Monitor cache hit rates
-   - Review and update error handling
-   - Check for unused or duplicate API calls
-
-## Next Steps for Backend Dev
-
-1. **Immediate Actions**
-   - Implement the RequestLoggerMiddleware
-   - Adjust throttling limits
-   - Review and update error handling
-   - Add proper monitoring
-
-2. **Technical Debt**
-   - Consider implementing a proper caching layer
-   - Add more comprehensive logging
-   - Implement proper rate limiting per user/connection
-   - Add metrics collection
-
-3. **Future Improvements**
-   - Consider implementing WebSocket for real-time updates
-   - Add bulk operations for inventory updates
-   - Implement proper retry mechanisms
-   - Add more comprehensive testing
-
-Queue Responsiveness (Ultra-Low Queue)
-You're correct. The ultra-low-queue (which uses simple Redis lists) is designed for on-demand processing.
-No Polling: It does not have a background worker that constantly polls Redis. This means zero Redis commands when it's idle.
-Instant Enqueue: When QueueManager.enqueueJob(jobData) is called, it's a direct LPUSH to Redis – very fast.
-Processing Delay: The delay comes from when you decide to process jobs.
-If you call QueueManager.processNextJob() or QueueManager.processAllJobs() immediately after an HTTP request that needs a job done (or in response to a webhook), the processing will start almost instantly.
-If you set up a cron job to call processAllJobs() (e.g., every few seconds or minutes), then jobs will wait until the cron triggers.
-In your current setup with the QueueManager:
-The recordRequest() function is called on every enqueueJob.
-The checkAndSwitchQueue() function then decides if it should switch to the BullMQ (higher throughput) queue based on your defined thresholds (more than 5 requests/second for more than 15 seconds).
-When NOT in high-throughput mode (i.e., using ultra-low-queue), jobs are simply added to the Redis list. They will only be processed when something in your application explicitly calls QueueManager.processNextJob() or QueueManager.processAllJobs().
-To ensure "basically instant" processing for the low-traffic queue, you need to decide when to trigger the processing.
-For example, if a customer action queues a job and they need to see the result quickly, the controller handling that action might call QueueManager.processNextJob() right after QueueManager.enqueueJob().
-Throttling and User Experience
-Your current throttling setup:
-Global Throttler (AppModule):
-ttl: 60 (1 minute)
-limit: 60 (60 requests per minute)
-This is a general safety net.
-ProductsController Throttling:
-analyze endpoint: @Throttle({ default: { limit: 5, ttl: 60000 }}) (5 requests per minute)
-generate-details endpoint: @Throttle({ default: { limit: 5, ttl: 60000 }}) (5 requests per minute)
-shopify/locations: @Throttle({ default: { limit: 10, ttl: 60000 }}) (10 requests per minute)
-shopify/inventory: @Throttle({ default: { limit: 10, ttl: 60000 }}) (10 requests per minute)
-shopify/locations-with-products: @Throttle({ default: { limit: 10, ttl: 60000 }}) (10 requests per minute)
-Other endpoints in ProductsController use the global default (60 reqs/min).
-Will normal people be throttled?
-For most actions, the 60 requests/minute global limit is quite generous for a single user. It's unlikely a normal user would hit this.
-For the specific product analysis and Shopify endpoints, the limits are lower (5 or 10 per minute).
-If a user is rapidly clicking a button that calls "analyze" five times within a minute, their sixth request in that minute would be throttled.
-This is generally reasonable to prevent abuse or accidental repeated submissions. "10 times in less than 4 ms" would definitely be blocked, as it should be.
-Considerations:
-UserThrottlerGuard: You also have a UserThrottlerGuard which uses User ID or IP for rate limiting. This is good because it makes the limits per-user.
-Frontend Experience: When a 429 (Too Many Requests) error occurs, your frontend should ideally handle this gracefully (e.g., disable the button for a short period, show a message "Please wait a moment before trying again").
-Specific Endpoints: Review if 5 requests/minute for analyze or generate-details is appropriate for your user flow. If a user legitimately needs to do these actions more frequently, you might consider slightly increasing those specific limits or making the "per minute" window a bit longer (e.g., 10 requests per 2 minutes).
-The QueueManager itself doesn't directly impact API request throttling. The API throttling happens before a job would even be enqueued by QueueManager.enqueueJob(). The queue system manages how background jobs are processed, not how incoming API requests are accepted.
+## Notes on Asynchronous Operations
+Several operations, particularly those involving AI processing or third-party platform interactions (like publishing to Shopify), may be handled asynchronously.
+- Endpoints like `POST /products/publish` might return a `202 Accepted` status, indicating the request has been queued for processing.
+- The status of these background jobs can be tracked through other means (e.g., webhook notifications, polling a job status endpoint - TBD).
