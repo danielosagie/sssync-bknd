@@ -522,14 +522,14 @@ export class ProductsService {
                     // Attempt to extract URL up to a known image extension, optionally including query params
                     // Regex explanation:
                     // ^                   - Start of the string
-                    // ([^?#]+?             - Group 1: Match any character except ? or #, one or more times, non-greedy
+                    // ([^?#;]+?            - Group 1: Match any char except ?, #, or ;, one or more times, non-greedy (MODIFIED to exclude ;)
                     //  \.                 - followed by a literal dot
                     //  (?:jpg|jpeg|png|webp) - followed by jpg, jpeg, png, or webp (non-capturing group)
                     // )
                     // ([?#].*)?           - Group 2 (optional): Match ? or # followed by any characters to the end
                     // $                   - End of the string
                     // i                   - Case-insensitive
-                    const imageExtensionMatch = cleanedUrl.match(/^([^?#]+?\.(?:jpg|jpeg|png|webp))([?#].*)?$/i);
+                    const imageExtensionMatch = cleanedUrl.match(/^([^?#;]+?\.(?:jpg|jpeg|png|webp))([?#].*)?$/i);
 
                     if (imageExtensionMatch && imageExtensionMatch[1]) {
                         cleanedUrl = imageExtensionMatch[1] + (imageExtensionMatch[2] || '');
