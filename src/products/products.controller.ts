@@ -198,10 +198,12 @@ export class ProductsController {
         },
         @Req() req: AuthenticatedRequest
     ) {
+        this.logger.log(`[publishToShopify] Entered method for productId: ${productId}, user: ${req.user.id}`);
         const userId = req.user.id;
         const { platformConnectionId, locations, options } = publishData;
 
         try {
+            this.logger.log(`[publishToShopify] Inside try block for productId: ${productId}`);
             const { product, variants } = await this.productsService.getProduct(productId, userId);
             if (!product) {
                 throw new NotFoundException(`Product ${productId} not found`);
