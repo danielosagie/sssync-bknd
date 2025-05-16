@@ -514,18 +514,26 @@ export class ProductsService {
             // 2. Insert new images (using the already cleaned dto.media.imageUris)
             if (cleanedImageUris.length > 0) { // Use cleanedImageUris directly here
                 const imagesToInsert = cleanedImageUris.map((url, index) => {
-                    const cleanedUrl = typeof url === 'string' ? url.replace(/;+$/, '') : url;
-                    // Log the URL specifically before it's added to the insert object
-                    this.logger.log(`[saveOrPublishListing] Preparing to insert image URL: "${cleanedUrl}" (Original from cleanedImageUris: "${url}")`);
+                    let processedUrl = typeof url === 'string' ? url : ''; // Start with the string or empty if not
+                    this.logger.log(`[saveOrPublishListing] URI [${index}] - Initial from DTO: "${url}"`);
+                    
+                    // Step 1: Remove leading/trailing actual double quotes if they are part of the string data
+                    processedUrl = processedUrl.replace(/^"|"$/g, '');
+                    this.logger.log(`[saveOrPublishListing] URI [${index}] - After quote removal: "${processedUrl}"`);
+                    
+                    // Step 2: Remove trailing semicolons
+                    processedUrl = processedUrl.replace(/;+$/, '');
+                    this.logger.log(`[saveOrPublishListing] URI [${index}] - After semicolon removal: "${processedUrl}" (This is the final URL to be saved)`);
+
                     return {
                         ProductVariantId: variantId,
-                        ImageUrl: cleanedUrl, // Use the directly cleaned URL
+                        ImageUrl: processedUrl, // Use the fully processed URL
                         AltText: canonicalDetails?.title || 'Product image', 
                         Position: index,
                     };
                 });
 
-                this.logger.debug(`[saveOrPublishListing] ProductImages to be inserted: ${JSON.stringify(imagesToInsert)}`); // Log the array to be inserted
+                this.logger.debug(`[saveOrPublishListing] ProductImages to be inserted: ${JSON.stringify(imagesToInsert)}`);
 
                 const { error: insertError } = await supabase
                     .from('ProductImages')
