@@ -113,6 +113,21 @@ export enum PublishIntent {
   PUBLISH_PLATFORM_LIVE = 'PUBLISH_PLATFORM_LIVE',
 }
 
+// Moved PlatformDetailsContainerDto before PublishProductDto
+class PlatformDetailsContainerDto {
+  @ValidateNested()
+  @Type(() => CanonicalPlatformDetailDto)
+  @IsDefined({ message: 'platformDetails.canonical is required.'})
+  canonical: CanonicalPlatformDetailDto;
+
+  // For other dynamic keys like 'shopify', 'square'
+  // No direct validation here with class-validator for dynamic keys,
+  // but Type(() => OtherPlatformDetailDto) would apply if you had a fixed list
+  // or a more complex setup. For truly dynamic keys, NestJS validation is limited.
+  // The controller/service might need to do additional checks if necessary.
+  [platformSlug: string]: CanonicalPlatformDetailDto | OtherPlatformDetailDto;
+}
+
 export class PublishProductDto {
   @IsUUID()
   @IsNotEmpty({ message: 'productId is required.' })
@@ -143,19 +158,4 @@ export class PublishProductDto {
   @IsString({ each: true, message: 'Each platform in selectedPlatformsToPublish must be a string.'})
   @IsOptional() // Publishing to platforms is optional on this call
   selectedPlatformsToPublish?: string[] | null; // Allow null as per API doc
-}
-
-// Helper DTO for Type transformation due to mixed types in platformDetails
-class PlatformDetailsContainerDto {
-  @ValidateNested()
-  @Type(() => CanonicalPlatformDetailDto)
-  @IsDefined({ message: 'platformDetails.canonical is required.'})
-  canonical: CanonicalPlatformDetailDto;
-
-  // For other dynamic keys like 'shopify', 'square'
-  // No direct validation here with class-validator for dynamic keys,
-  // but Type(() => OtherPlatformDetailDto) would apply if you had a fixed list
-  // or a more complex setup. For truly dynamic keys, NestJS validation is limited.
-  // The controller/service might need to do additional checks if necessary.
-  [platformSlug: string]: CanonicalPlatformDetailDto | OtherPlatformDetailDto;
 }
