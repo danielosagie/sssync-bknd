@@ -44,7 +44,7 @@ class CanonicalPlatformDetailDto {
 
   @IsString({ message: 'Canonical barcode must be a string.' })
   @IsOptional()
-  @Length(1, 100, { message: 'Barcode must be between 1 and 100 characters.'})
+  // @Length(1, 100, { message: 'Barcode must be between 1 and 100 characters.'}) // Making barcode optional, so length constraint only if provided
   barcode?: string;
   
   @IsNumber({}, { message: 'Canonical weight must be a number.' })

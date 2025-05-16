@@ -1089,6 +1089,9 @@ export class ShopifyApiClient {
         productId?: string;
         userErrors: Array<{ field: string; message: string; code: string }>;
     }> {
+        this.logger.log(`[createProductAsync] Attempting to create product on Shopify. Shop: ${connection.DisplayName}`);
+        this.logger.debug(`[createProductAsync] Full productInput for Shopify: ${JSON.stringify(productInput, null, 2)}`);
+
         const client = await this.getGraphQLClient(connection);
         this.logger.log(`Creating product asynchronously in Shopify for connection ${connection.Id}`);
 

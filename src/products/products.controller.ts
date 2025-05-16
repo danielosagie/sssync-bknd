@@ -206,6 +206,15 @@ export class ProductsController {
             if (!product) {
                 throw new NotFoundException(`Product ${productId} not found`);
             }
+            this.logger.log(`[publishToShopify] Fetched product: ${JSON.stringify(product)}`);
+            this.logger.log(`[publishToShopify] Fetched variants: ${JSON.stringify(variants)}`);
+
+            if (!variants || variants.length === 0) {
+                this.logger.error(`[publishToShopify] No variants found for product ${productId}. Cannot publish to Shopify.`);
+                throw new InternalServerErrorException('No product variants found to publish.');
+            }
+
+            const primaryVariant = variants[0];
 
             const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
             if (!connection || connection.PlatformType !== 'shopify') {
@@ -238,8 +247,8 @@ export class ProductsController {
             );
 
             const productInput: ShopifyProductSetInput = {
-                title: product.Title,
-                descriptionHtml: product.Description || undefined,
+                title: primaryVariant.Title,
+                descriptionHtml: primaryVariant.Description || undefined,
                 status: options?.status || 'ACTIVE',
                 vendor: options?.vendor,
                 productType: options?.productType,
