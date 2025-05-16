@@ -512,13 +512,20 @@ export class ProductsService {
             }
 
             // 2. Insert new images (using the already cleaned dto.media.imageUris)
-            if (dto.media.imageUris.length > 0) {
-                const imagesToInsert = dto.media.imageUris.map((url, index) => ({
-                    ProductVariantId: variantId,
-                    ImageUrl: url, // These are already cleaned
-                    AltText: canonicalDetails?.title || 'Product image', // Basic AltText
-                    Position: index,
-                }));
+            if (cleanedImageUris.length > 0) { // Use cleanedImageUris directly here
+                const imagesToInsert = cleanedImageUris.map((url, index) => {
+                    const cleanedUrl = typeof url === 'string' ? url.replace(/;+$/, '') : url;
+                    // Log the URL specifically before it's added to the insert object
+                    this.logger.log(`[saveOrPublishListing] Preparing to insert image URL: "${cleanedUrl}" (Original from cleanedImageUris: "${url}")`);
+                    return {
+                        ProductVariantId: variantId,
+                        ImageUrl: cleanedUrl, // Use the directly cleaned URL
+                        AltText: canonicalDetails?.title || 'Product image', 
+                        Position: index,
+                    };
+                });
+
+                this.logger.debug(`[saveOrPublishListing] ProductImages to be inserted: ${JSON.stringify(imagesToInsert)}`); // Log the array to be inserted
 
                 const { error: insertError } = await supabase
                     .from('ProductImages')
