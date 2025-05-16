@@ -195,7 +195,7 @@ export class ProductsController {
 
             // Get the platform connection
             const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
-            if (!connection || connection.PlatformType !== 'SHOPIFY') {
+            if (!connection || connection.PlatformType !== 'shopify') {
                 throw new BadRequestException('Invalid Shopify platform connection');
             }
 
@@ -323,7 +323,7 @@ export class ProductsController {
 
                 // Get the platform connection
                 const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
-                if (!connection || connection.PlatformType !== 'SHOPIFY') {
+                if (!connection || connection.PlatformType !== 'shopify') {
                     throw new BadRequestException('Invalid Shopify platform connection');
                 }
 
@@ -366,7 +366,7 @@ export class ProductsController {
 
                 // Get the platform connection
                 const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
-                if (!connection || connection.PlatformType !== 'SHOPIFY') {
+                if (!connection || connection.PlatformType !== 'shopify') {
                     throw new BadRequestException('Invalid Shopify platform connection');
                 }
 
@@ -534,7 +534,7 @@ export class ProductsController {
 
                 // Get the platform connection
                 const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
-                if (!connection || connection.PlatformType !== 'SHOPIFY') {
+                if (!connection || connection.PlatformType !== 'shopify') {
                     throw new BadRequestException('Invalid Shopify platform connection');
                 }
 
