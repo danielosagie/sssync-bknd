@@ -397,27 +397,29 @@ export class ProductsService {
     const { productId, variantId, publishIntent, platformDetails, media } = dto;
 
     this.logger.log(`Processing ${publishIntent} for variant ${variantId}, user ${userId}`);
-    this.logger.log(`Received media object in DTO: ${JSON.stringify(media)}`);
 
-    if (media && media.imageUris && Array.isArray(media.imageUris)) {
+    const canonicalDetails = platformDetails.canonical;
+    const mediaDetails = media;
+
+    this.logger.log(`Received media object in DTO: ${JSON.stringify(mediaDetails)}`);
+
+    let cleanedImageUris: string[] = [];
+    if (mediaDetails?.imageUris && Array.isArray(mediaDetails.imageUris)) {
       this.logger.log('Raw imageUris from DTO before cleaning attempt:');
-      media.imageUris.forEach((url, index) => {
-        this.logger.log(`  [${index}]: "${url}" (length: ${url.length})`);
+      mediaDetails.imageUris.forEach((uri, index) => {
+        this.logger.log(`  [${index}]: "${uri}" (length: ${uri?.length})`);
       });
 
-      // Attempt to clean semicolons
-      const cleanedImageUris = media.imageUris.map(url => url.replace(/;$/, ''));
-      
+      cleanedImageUris = mediaDetails.imageUris.map(uri => 
+        typeof uri === 'string' ? uri.replace(/;+$/, '') : uri
+      ).filter(uri => typeof uri === 'string' && uri.length > 0); // Ensure it's still a non-empty string
+
       this.logger.log('Cleaned imageUris attempt in service:');
-      cleanedImageUris.forEach((url, index) => {
-        this.logger.log(`  [${index}]: "${url}"`);
+      cleanedImageUris.forEach((uri, index) => {
+        this.logger.log(`  [${index}]: "${uri}"`);
       });
-      // Replace the DTO's media with cleaned URLs for further processing within this method
-      // Note: This modifies the 'media' object in the 'dto' for the scope of this function.
-      // The original 'req.body' is not changed by this.
-      dto.media.imageUris = cleanedImageUris;
     } else {
-      this.logger.warn('Media object or imageUris array is missing or not an array in DTO.');
+      this.logger.log('No imageUris found in DTO or not an array.');
     }
 
     // 1. Verify user ownership/existence (optional but recommended)
@@ -436,8 +438,6 @@ export class ProductsService {
     this.logger.debug(`Updating canonical data for variant ${variantId}`);
     try {
         // Extract primary canonical details from the DTO
-        const canonicalDetails = dto.platformDetails?.canonical;
-
         if (!canonicalDetails) {
             this.logger.warn(`Canonical details missing in DTO for variant ${variantId}. Only UpdatedAt will be set.`);
             const updatePayload = {
@@ -548,14 +548,14 @@ export class ProductsService {
         this.logger.error(`Error during update of canonical data for variant ${variantId}: ${error.message}`, error.stack);
         // Check for PostgreSQL unique violation error (code 23505)
         if (error.code === '23505' && error.constraint === 'ProductVariants_UserId_Sku_key') {
-            this.logger.warn(`SKU unique constraint violation for variant ${variantId}, user ${userId}. SKU: ${dto.platformDetails?.canonical?.sku}`);
+            this.logger.warn(`SKU unique constraint violation for variant ${variantId}, user ${userId}. SKU: ${platformDetails?.canonical?.sku}`);
             throw new HttpException(
                 {
                     statusCode: HttpStatus.CONFLICT,
                     message: 'The provided SKU is already in use for another of your products.',
                     error: 'Conflict',
                     details: {
-                        sku: dto.platformDetails?.canonical?.sku,
+                        sku: platformDetails?.canonical?.sku,
                     }
                 },
                 HttpStatus.CONFLICT,

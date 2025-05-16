@@ -265,7 +265,7 @@ export class ProductsController {
                     const imageUrl = variantImageMap.get(variant.Id);
                     const file: ShopifyProductFile | undefined = imageUrl ? {
                         originalSource: imageUrl,
-                        alt: `${product.Title} - ${variant.Title}`,
+                        alt: `${primaryVariant.Title} - ${variant.Title}`,
                         filename: `${variant.Sku}.jpg`,
                         contentType: 'IMAGE'
                     } : undefined;
