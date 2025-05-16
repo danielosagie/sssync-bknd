@@ -38,7 +38,7 @@ export class InitialScanProcessor extends WorkerHost {
         this.isIdle = false;
         
         this.logger.log(`[ACTIVE JOB] Processing job ${job.id} for connection ${connectionId} (${platformType})`);
-        
+
         try {
             // Get the connection object first
             const connection = await this.connectionService.getConnectionById(connectionId, userId);
@@ -72,7 +72,7 @@ export class InitialScanProcessor extends WorkerHost {
 
             // Save to database
             this.logger.log(`[ACTIVE JOB] Saving ${canonicalProducts.length} products, ${canonicalVariants.length} variants for connection ${connectionId}`);
-            
+
             // 1. Fetch Data
             this.logger.log(`Job ${job.id}: Fetching data from ${platformType}...`);
             if (!platformData || !platformData.products) {
@@ -231,7 +231,7 @@ export class InitialScanProcessor extends WorkerHost {
             await this.connectionService.updateConnectionStatus(connectionId, userId, 'error').catch(e => 
                 this.logger.error(`Failed to update status to error: ${e.message}`)
             );
-            throw error;
+            throw error; 
         }
     }
 

@@ -28,14 +28,14 @@ export const INITIAL_SYNC_QUEUE = 'initial-sync';
     ShopifyAdapterModule,
     SquareAdapterModule,
     BullModule.forRootAsync({
-      imports: [ConfigModule],
+        imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => {
-        const redisUrl = configService.get<string>('REDIS_URL');
-        if (!redisUrl) {
+            const redisUrl = configService.get<string>('REDIS_URL');
+            if (!redisUrl) {
           throw new Error('REDIS_URL is not defined in environment variables');
-        }
-        return {
-          connection: {
+            }
+            return {
+                connection: { 
             url: redisUrl,
             // For BullMQ, you might want to pass more specific ioredis options here
             // especially if using TLS/SSL with Upstash, e.g., tls: { rejectUnauthorized: false } if needed
@@ -59,8 +59,8 @@ export const INITIAL_SYNC_QUEUE = 'initial-sync';
             duration: 300000, 
             groupKey: 'connection', 
           }, */
-        };
-      },
+            };
+        },
       inject: [ConfigService],
     }),
     BullModule.registerQueue(

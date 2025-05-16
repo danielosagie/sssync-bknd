@@ -44,7 +44,7 @@ import { QueueModule } from './queue.module';
         try {
           const url = new URL(redisUrl);
           logger.log(`Parsed REDIS_URL - Protocol: ${url.protocol}, Hostname: ${url.hostname}, Port: ${url.port}, Username: ${url.username}`);
-        } catch (e) {
+          } catch (e) {
           logger.error(`Failed to parse REDIS_URL: ${e.message}`);
           throw new Error ('Invalid REDIS_URL for Throttler configuration');
         }

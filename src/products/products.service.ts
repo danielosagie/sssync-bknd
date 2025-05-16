@@ -432,25 +432,86 @@ export class ProductsService {
     // --- START: Update Canonical Data ---
     this.logger.debug(`Updating canonical data for variant ${variantId}`);
     try {
-        // TODO: Extract primary data from dto.platformDetails (e.g., first platform, or a dedicated 'canonical' section if added)
-        // For now, let's just update the UpdatedAt timestamp
-        const updatePayload = {
-            UpdatedAt: new Date().toISOString(),
-            // Title: primaryDetails.title,
-            // Description: primaryDetails.description,
-            // Price: primaryDetails.price,
-            // Potentially update Sku, Barcode, Options based on DTO if needed
-        };
-        const { error: updateError } = await supabase
-            .from('ProductVariants')
-            .update(updatePayload)
-            .match({ Id: variantId });
-        if (updateError) throw updateError;
+        // Extract primary canonical details from the DTO
+        const canonicalDetails = dto.platformDetails?.canonical;
 
-        // TODO: Update ProductImages based on dto.media (handle order changes, deletions, additions if possible, cover image)
-        // This is complex, requires comparing existing images with dto.media.imageUris
-        // For now, log that it needs implementation
-        this.logger.warn(`Update of ProductImages based on media payload is not yet implemented for variant ${variantId}.`);
+        if (!canonicalDetails) {
+            this.logger.warn(`Canonical details missing in DTO for variant ${variantId}. Only UpdatedAt will be set.`);
+            const updatePayload = {
+                UpdatedAt: new Date().toISOString(),
+            };
+            const { error: updateError } = await supabase
+                .from('ProductVariants')
+                .update(updatePayload)
+                .match({ Id: variantId });
+            if (updateError) throw updateError;
+        } else {
+            const updatePayload: Partial<ProductVariant> = {
+                UpdatedAt: new Date().toISOString(),
+                Title: canonicalDetails.title,
+                Description: canonicalDetails.description,
+                Price: canonicalDetails.price,
+                CompareAtPrice: canonicalDetails.compareAtPrice,
+                Sku: canonicalDetails.sku, // Assuming SKU might be updated
+                Barcode: canonicalDetails.barcode, // Assuming Barcode might be updated
+                Weight: canonicalDetails.weight,
+                WeightUnit: canonicalDetails.weightUnit,
+                // Options might need more complex handling if they are structured in platformDetails
+                // For now, assuming direct fields like Brand, Condition, Vendor, ProductType are not on ProductVariants directly
+                // but could be if your schema evolves or you map them to e.g. a JSONB options field.
+            };
+
+            // Remove undefined properties from payload to avoid overwriting with null if not provided
+            Object.keys(updatePayload).forEach(key => updatePayload[key] === undefined && delete updatePayload[key]);
+
+            const { error: updateError } = await supabase
+                .from('ProductVariants')
+                .update(updatePayload)
+                .match({ Id: variantId });
+            if (updateError) {
+                this.logger.error(`Error updating ProductVariants for ${variantId}: ${updateError.message}`);
+                throw updateError;
+            }
+            this.logger.log(`Successfully updated ProductVariants for ${variantId} with canonical details.`);
+        }
+
+        // Update ProductImages based on dto.media (delete existing, add new)
+        if (media && media.imageUris && Array.isArray(media.imageUris)) {
+            this.logger.log(`Updating ProductImages for variant ${variantId}. Found ${media.imageUris.length} new images.`);
+            // 1. Delete existing images for this variant
+            const { error: deleteError } = await supabase
+                .from('ProductImages')
+                .delete()
+                .match({ ProductVariantId: variantId });
+
+            if (deleteError) {
+                this.logger.error(`Failed to delete existing images for variant ${variantId}: ${deleteError.message}`);
+                // Decide if this is a fatal error or if we can proceed
+            }
+
+            // 2. Insert new images (using the already cleaned dto.media.imageUris)
+            if (dto.media.imageUris.length > 0) {
+                const imagesToInsert = dto.media.imageUris.map((url, index) => ({
+                    ProductVariantId: variantId,
+                    ImageUrl: url, // These are already cleaned
+                    AltText: canonicalDetails?.title || 'Product image', // Basic AltText
+                    Position: index,
+                }));
+
+                const { error: insertError } = await supabase
+                    .from('ProductImages')
+                    .insert(imagesToInsert);
+
+                if (insertError) {
+                    this.logger.error(`Failed to insert new images for variant ${variantId}: ${insertError.message}`);
+                    // Decide if this is a fatal error
+                } else {
+                    this.logger.log(`Successfully inserted ${imagesToInsert.length} new images for variant ${variantId}.`);
+                }
+            }
+        } else {
+            this.logger.warn(`No media.imageUris found in DTO for variant ${variantId}, skipping image update.`);
+        }
 
         await this.activityLogService.logActivity(
            userId,

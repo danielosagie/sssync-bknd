@@ -1146,7 +1146,7 @@ export class ShopifyApiClient {
             return {
                 operationId: productSetOperation.id,
                 status: productSetOperation.status,
-                productId: productSet.product?.id, 
+                productId: productSet.product?.id,
                 userErrors: allUserErrors
             };
         } catch (error) {
