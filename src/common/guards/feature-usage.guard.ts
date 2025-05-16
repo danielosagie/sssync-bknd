@@ -43,7 +43,7 @@ export class FeatureUsageGuard implements CanActivate {
                 .from('PlatformConnections')
                 .select('Id, Status, IsEnabled') // Select Status and IsEnabled
                 .eq('UserId', userId)
-                .eq('PlatformType', 'SHOPIFY')
+                .eq('PlatformType', 'shopify')
                 .eq('IsEnabled', true);
 
             // <<< DETAILED LOGGING START >>>
