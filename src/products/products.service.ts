@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException, HttpException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, InternalServerErrorException, HttpException, HttpStatus } from '@nestjs/common';
 import { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../common/supabase.service';
 import { ImageRecognitionService, SerpApiLensResponse, VisualMatch } from './image-recognition/image-recognition.service';
@@ -13,6 +13,9 @@ import { ProductVariant } from '../common/types/supabase.types';
 import * as QueueManager from '../queue-manager';
 
 // Export the types
+export type { SerpApiLensResponse, VisualMatch } from './image-recognition/image-recognition.service';
+export type { GeneratedDetails } from './ai-generation/ai-generation.service';
+
 export type SimpleProductVariant = Pick<ProductVariant, 
     'Id' | 
     'ProductId' | 
@@ -452,17 +455,36 @@ export class ProductsService {
                 Description: canonicalDetails.description,
                 Price: canonicalDetails.price,
                 CompareAtPrice: canonicalDetails.compareAtPrice,
-                Sku: canonicalDetails.sku, // Assuming SKU might be updated
-                Barcode: canonicalDetails.barcode, // Assuming Barcode might be updated
-                Weight: canonicalDetails.weight,
-                WeightUnit: canonicalDetails.weightUnit,
+                // Sku: canonicalDetails.sku, // Assuming SKU might be updated - Handled below
+                // Barcode: canonicalDetails.barcode, // Assuming Barcode might be updated - Handled below
+                // Weight: canonicalDetails.weight, // Handled below
+                // WeightUnit: canonicalDetails.weightUnit, // Handled below
                 // Options might need more complex handling if they are structured in platformDetails
                 // For now, assuming direct fields like Brand, Condition, Vendor, ProductType are not on ProductVariants directly
                 // but could be if your schema evolves or you map them to e.g. a JSONB options field.
             };
 
-            // Remove undefined properties from payload to avoid overwriting with null if not provided
-            Object.keys(updatePayload).forEach(key => updatePayload[key] === undefined && delete updatePayload[key]);
+            // Conditionally add SKU to updatePayload
+            if (canonicalDetails.sku !== "" && canonicalDetails.sku !== undefined) {
+                updatePayload.Sku = canonicalDetails.sku;
+            } else if (canonicalDetails.sku === "") {
+                this.logger.warn(`Received empty SKU for variant ${variantId} from user ${userId}. SKU will not be updated to an empty string to avoid potential unique constraint errors. The existing SKU for this variant will be preserved.`);
+            }
+
+            // Conditionally add Barcode to updatePayload
+            if (canonicalDetails.barcode !== undefined) {
+                updatePayload.Barcode = canonicalDetails.barcode;
+            }
+
+            // Conditionally add Weight to updatePayload
+            if (canonicalDetails.weight !== undefined) {
+                updatePayload.Weight = canonicalDetails.weight;
+            }
+
+            // Conditionally add WeightUnit to updatePayload
+            if (canonicalDetails.weightUnit !== undefined) {
+                updatePayload.WeightUnit = canonicalDetails.weightUnit;
+            }
 
             const { error: updateError } = await supabase
                 .from('ProductVariants')
@@ -524,7 +546,27 @@ export class ProductsService {
 
     } catch (error) {
         this.logger.error(`Error during update of canonical data for variant ${variantId}: ${error.message}`, error.stack);
-        throw new InternalServerErrorException('Failed to update canonical data for product variant.');
+        // Check for PostgreSQL unique violation error (code 23505)
+        if (error.code === '23505' && error.constraint === 'ProductVariants_UserId_Sku_key') {
+            this.logger.warn(`SKU unique constraint violation for variant ${variantId}, user ${userId}. SKU: ${dto.platformDetails?.canonical?.sku}`);
+            throw new HttpException(
+                {
+                    statusCode: HttpStatus.CONFLICT,
+                    message: 'The provided SKU is already in use for another of your products.',
+                    error: 'Conflict',
+                    details: {
+                        sku: dto.platformDetails?.canonical?.sku,
+                    }
+                },
+                HttpStatus.CONFLICT,
+            );
+        }
+        // Re-throw other specific HTTP errors if they were thrown by our logic
+        if (error instanceof HttpException) {
+            throw error;
+        }
+        // For other database errors or unexpected issues, throw a generic 500
+        throw new InternalServerErrorException('Failed to update canonical data for product variant due to a server error.');
     }
     // --- End Update Canonical Data ---
   }
@@ -624,5 +666,43 @@ export class ProductsService {
   async queueProductSyncJob(productId: string, userId: string) {
     const jobData = { type: 'product-sync', productId, userId, timestamp: Date.now() };
     await QueueManager.enqueueJob(jobData);
+  }
+
+  /**
+   * Checks if a given SKU is unique for a specific user.
+   */
+  async isSkuUniqueForUser(userId: string, sku: string): Promise<boolean> {
+    if (!sku || sku.trim() === '') {
+      // Technically, an empty SKU might be caught by DTO validation earlier,
+      // but good to have a service-level check too. 
+      // An empty SKU is not typically considered "taken" but rather invalid.
+      // Depending on strictness, you could throw BadRequestException here.
+      this.logger.warn(`isSkuUniqueForUser called with empty or whitespace SKU for user ${userId}. Returning true as it's not specifically 'taken'.`);
+      return true; 
+    }
+
+    const supabase = this.getSupabaseClient();
+    this.logger.debug(`Checking SKU uniqueness for user ${userId}, SKU: '${sku}'`);
+
+    const { data, error } = await supabase
+      .from('ProductVariants')
+      .select('Id') // Select a minimal field just to check existence
+      .match({ UserId: userId, Sku: sku })
+      .maybeSingle(); // Use maybeSingle to get null if not found, or one row if found
+
+    if (error) {
+      this.logger.error(`Database error while checking SKU uniqueness for user ${userId}, SKU: '${sku}': ${error.message}`, error.stack);
+      // Depending on how critical this check is, you might re-throw or return a default
+      // For a live check, failing open (isUnique: true) might be risky if DB is down.
+      // Failing closed (isUnique: false) prevents user from using SKU but is safer.
+      // Or throw an error to indicate the check failed.
+      throw new InternalServerErrorException('Failed to verify SKU uniqueness due to a database error.');
+    }
+
+    // If data is null, it means no record was found with that UserId and Sku -> SKU is unique
+    // If data is not null, a record was found -> SKU is NOT unique
+    const isUnique = data === null;
+    this.logger.debug(`SKU '${sku}' for user ${userId} is unique: ${isUnique}`);
+    return isUnique;
   }
 }
