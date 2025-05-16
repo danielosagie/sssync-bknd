@@ -21,8 +21,9 @@ class PlatformDetailDto {
 
 class MediaDto {
   @IsArray()
-  @IsUrl({}, { each: true })
-  imageUrls: string[];
+  // @IsUrl({}, { each: true }) // Temporarily remove strict URL validation to inspect raw values
+  @IsString({ each: true }) // Ensure it's an array of strings
+  imageUris: string[];
 
   @IsNumber()
   @Min(0)

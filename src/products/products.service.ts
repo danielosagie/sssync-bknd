@@ -394,6 +394,28 @@ export class ProductsService {
     const { productId, variantId, publishIntent, platformDetails, media } = dto;
 
     this.logger.log(`Processing ${publishIntent} for variant ${variantId}, user ${userId}`);
+    this.logger.log(`Received media object in DTO: ${JSON.stringify(media)}`);
+
+    if (media && media.imageUrls && Array.isArray(media.imageUrls)) {
+      this.logger.log('Raw imageUrls from DTO before cleaning attempt:');
+      media.imageUrls.forEach((url, index) => {
+        this.logger.log(`  [${index}]: "${url}" (length: ${url.length})`);
+      });
+
+      // Attempt to clean semicolons
+      const cleanedImageUrls = media.imageUrls.map(url => url.replace(/;$/, ''));
+      
+      this.logger.log('Cleaned imageUrls attempt in service:');
+      cleanedImageUrls.forEach((url, index) => {
+        this.logger.log(`  [${index}]: "${url}"`);
+      });
+      // Replace the DTO's media with cleaned URLs for further processing within this method
+      // Note: This modifies the 'media' object in the 'dto' for the scope of this function.
+      // The original 'req.body' is not changed by this.
+      dto.media.imageUrls = cleanedImageUrls; 
+    } else {
+      this.logger.warn('Media object or imageUrls array is missing or not an array in DTO.');
+    }
 
     // 1. Verify user ownership/existence (optional but recommended)
     const { data: variantCheck, error: checkError } = await supabase
