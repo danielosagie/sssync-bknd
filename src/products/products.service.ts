@@ -514,20 +514,40 @@ export class ProductsService {
             // 2. Insert new images (using the already cleaned dto.media.imageUris)
             if (cleanedImageUris.length > 0) { // Use cleanedImageUris directly here
                 const imagesToInsert = cleanedImageUris.map((url, index) => {
-                    let processedUrl = typeof url === 'string' ? url : ''; // Start with the string or empty if not
-                    this.logger.log(`[saveOrPublishListing] URI [${index}] - Initial from DTO: "${url}"`);
+                    let originalUrl = typeof url === 'string' ? url : '';
+                    this.logger.log(`[saveOrPublishListing] URI [${index}] - Initial from DTO: "${originalUrl}"`);
+
+                    let cleanedUrl = originalUrl;
+
+                    // Attempt to extract URL up to a known image extension, optionally including query params
+                    // Regex explanation:
+                    // ^                   - Start of the string
+                    // ([^?#]+?             - Group 1: Match any character except ? or #, one or more times, non-greedy
+                    //  \.                 - followed by a literal dot
+                    //  (?:jpg|jpeg|png|webp) - followed by jpg, jpeg, png, or webp (non-capturing group)
+                    // )
+                    // ([?#].*)?           - Group 2 (optional): Match ? or # followed by any characters to the end
+                    // $                   - End of the string
+                    // i                   - Case-insensitive
+                    const imageExtensionMatch = cleanedUrl.match(/^([^?#]+?\.(?:jpg|jpeg|png|webp))([?#].*)?$/i);
+
+                    if (imageExtensionMatch && imageExtensionMatch[1]) {
+                        cleanedUrl = imageExtensionMatch[1] + (imageExtensionMatch[2] || '');
+                        this.logger.log(`[saveOrPublishListing] URI [${index}] - After extension-based cleaning: "${cleanedUrl}"`);
+                    } else {
+                        this.logger.warn(`[saveOrPublishListing] URI [${index}] - Could not match common image extension. Falling back to generic cleaning for: "${originalUrl}"`);
+                        cleanedUrl = cleanedUrl.replace(/^"|"$/g, ''); // Remove literal quotes
+                        this.logger.log(`[saveOrPublishListing] URI [${index}] - After quote removal (fallback): "${cleanedUrl}"`);
+                        cleanedUrl = cleanedUrl.replace(/;+$/, '');    // Remove trailing semicolons
+                        this.logger.log(`[saveOrPublishListing] URI [${index}] - After semicolon removal (fallback): "${cleanedUrl}"`);
+                        // Optional aggressive fallback: cleanedUrl = cleanedUrl.replace(/[^a-zA-Z0-9\/:._\-?&=%#]/g, '');
+                    }
                     
-                    // Step 1: Remove leading/trailing actual double quotes if they are part of the string data
-                    processedUrl = processedUrl.replace(/^"|"$/g, '');
-                    this.logger.log(`[saveOrPublishListing] URI [${index}] - After quote removal: "${processedUrl}"`);
-                    
-                    // Step 2: Remove trailing semicolons
-                    processedUrl = processedUrl.replace(/;+$/, '');
-                    this.logger.log(`[saveOrPublishListing] URI [${index}] - After semicolon removal: "${processedUrl}" (This is the final URL to be saved)`);
+                    this.logger.log(`[saveOrPublishListing] URI [${index}] - Final URL to be saved: "${cleanedUrl}"`);
 
                     return {
                         ProductVariantId: variantId,
-                        ImageUrl: processedUrl, // Use the fully processed URL
+                        ImageUrl: cleanedUrl, // Use the fully processed URL
                         AltText: canonicalDetails?.title || 'Product image', 
                         Position: index,
                     };
