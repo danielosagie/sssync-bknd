@@ -1107,23 +1107,47 @@ export class ShopifyApiClient {
                 }
             });
 
-            if (response.errors) {
+            // <<< DETAILED LOGGING OF SHOPIFY'S RESPONSE >>>
+            this.logger.debug(`Shopify createProductAsync raw response for connection ${connection.Id}: ${JSON.stringify(response, null, 2)}`);
+
+            // Refined error checking for response.errors
+            if (response.errors && Object.keys(response.errors).length > 0 && Array.isArray((response.errors as any).graphQLErrors) && (response.errors as any).graphQLErrors.length > 0) {
                 this.logger.error(`GraphQL product creation errors: ${JSON.stringify(response.errors)}`);
-                throw new InternalServerErrorException(`Failed to create product: ${response.errors[0]?.message}`);
+                const firstError = (response.errors as any).graphQLErrors[0];
+                throw new InternalServerErrorException(`Failed to create product on Shopify: ${firstError.message || 'Unknown GraphQL error'}`);
+            } else if (response.errors && !Array.isArray((response.errors as any).graphQLErrors)) {
+                 // Handle cases where errors is an object but not structured as expected (e.g. network errors)
+                this.logger.error(`GraphQL product creation returned non-array errors object: ${JSON.stringify(response.errors)}`);
+                // Attempt to get a general message if possible, otherwise generic error
+                const errorMessage = (response.errors as any).message || 'Unknown GraphQL error object';
+                throw new InternalServerErrorException(`Failed to create product on Shopify: ${errorMessage}`);
             }
 
-            if (!response.data?.productSet) {
-                throw new InternalServerErrorException('Invalid response structure from Shopify product creation');
+            // Check if response.data or response.data.productSet is null/undefined
+            if (!response.data || !response.data.productSet) {
+                this.logger.error(`Invalid or missing productSet in Shopify response. Data: ${JSON.stringify(response.data)}`);
+                throw new InternalServerErrorException('Invalid response structure from Shopify product creation: productSet missing.');
             }
 
             const { productSet } = response.data;
-            const { productSetOperation, userErrors } = productSet;
+            const { productSetOperation, userErrors: topLevelUserErrors } = productSet;
+
+            if (!productSetOperation) {
+                this.logger.error(`Shopify productSetOperation is null/undefined. ProductSet: ${JSON.stringify(productSet)}`);
+                if (topLevelUserErrors && topLevelUserErrors.length > 0) {
+                    this.logger.error(`Top-level user errors from Shopify: ${JSON.stringify(topLevelUserErrors)}`);
+                    throw new InternalServerErrorException(`Shopify product creation failed with user errors: ${topLevelUserErrors.map(e => e.message).join(', ')}`);
+                }
+                throw new InternalServerErrorException('Shopify productSetOperation was not returned, cannot get operation ID.');
+            }
+            
+            const allUserErrors = [...(topLevelUserErrors || []), ...(productSetOperation.userErrors || [])];
 
             return {
                 operationId: productSetOperation.id,
                 status: productSetOperation.status,
-                productId: productSet.product?.id,
-                userErrors: [...userErrors, ...productSetOperation.userErrors]
+                productId: productSet.product?.id, 
+                userErrors: allUserErrors
             };
         } catch (error) {
             this.logger.error(`Error creating product: ${error.message}`, error.stack);

@@ -501,8 +501,30 @@ This endpoint is crucial for managing Shopify inventory accurately. It provides 
 - Updating inventory levels for existing products at specific Shopify locations via API calls.
 - Displaying location-based inventory information in your user interface.
 
+#### Important Prerequisites - How to Get `platformConnectionId` and Ensure Validity:
+Before calling this endpoint, you **must** first:
+
+1.  **Fetch Platform Connections:**
+    *   Call `GET /api/platform-connections` (this endpoint is documented separately, typically under a "Platform Connections API" section if available, or your backend engineer can provide its details).
+    *   This will return an array of all connections for the authenticated user.
+2.  **Identify and Verify the Shopify Connection:**
+    *   From the array, find the desired Shopify connection (e.g., by `PlatformType: "shopify"`).
+    *   Note its `Id` – this is the `platformConnectionId` required for this `/api/products/shopify/locations` endpoint.
+    *   **Crucially, verify the connection's status:**
+        *   The `IsEnabled` field for the connection **must be `true`**.
+        *   The `Status` field should be one of the following "activatable" states:
+            *   `'connected'`
+            *   `'active'`
+            *   `'needs_review'`
+            *   `'syncing'`
+            *   `'active_sync'`
+            *   `'ready'`
+    *   If `IsEnabled` is `false` or the `Status` is not one of the above (e.g., it's `'error'` or `'disconnected'`), do **not** proceed to call `/api/products/shopify/locations`. Instead, guide the user to check their connection settings or re-authenticate the Shopify connection.
+
+Only after successfully obtaining a `platformConnectionId` for an **enabled** Shopify connection with a **valid status** should you proceed to call this endpoint.
+
 #### Query Parameters
-- `platformConnectionId` (required): string - The ID of the Shopify `PlatformConnection`.
+- `platformConnectionId` (required): string - The `Id` of the Shopify `PlatformConnection` obtained and verified as described in "Important Prerequisites".
 
 #### Response (200 OK)
 ```typescript
