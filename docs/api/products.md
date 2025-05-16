@@ -280,7 +280,7 @@ POST /api/products/publish
 {
   "productId": string;
   "variantId": string;
-  "publishIntent": "SAVE_DRAFT" | "PUBLISH_TO_PLATFORMS"; // Determines if publishing jobs are queued
+  "publishIntent": "SAVE_SSSYNC_DRAFT" | "PUBLISH_PLATFORM_DRAFT" | "PUBLISH_PLATFORM_LIVE"; // Determines if publishing jobs are queued
   "platformDetails": { // Contains the final, curated data for each specified platform.
                        // The backend will use this data to update the canonical record
                        // and as the source of truth when publishing to the respective platform.
@@ -290,8 +290,8 @@ POST /api/products/publish
       "price": number;
       "sku"?: string;
       "barcode"?: string;
-      "vendor"?: string;
-      "productType"?: string;
+    "vendor"?: string;
+    "productType"?: string;
       "tags"?: string[]; // Array of tags
       "status"?: "active" | "draft" | "archived"; // Platform-specific status
       "weight"?: number;
@@ -314,11 +314,11 @@ POST /api/products/publish
 #### Response (202 Accepted)
 ```typescript
 {
-  "message": "SAVE_DRAFT request received and processing started." 
-  // or "PUBLISH_TO_PLATFORMS request received and processing started."
+  "message": "SAVE_SSSYNC_DRAFT request received and processing started." 
+  // or "PUBLISH_PLATFORM_DRAFT request received and processing started."
 }
 ```
-This endpoint updates the canonical `Product` and `ProductVariant` tables with the details provided primarily from the first key under `platformDetails` or a "canonical" key if present. If `publishIntent` is `PUBLISH_TO_PLATFORMS`, jobs are enqueued (e.g., via `QueueManager.enqueueJob({ type: 'product-publish', ... })`) to handle platform-specific API calls.
+This endpoint updates the canonical `Product` and `ProductVariant` tables with the details provided primarily from the first key under `platformDetails` or a "canonical" key if present. If `publishIntent` is `PUBLISH_PLATFORM_DRAFT`, jobs are enqueued (e.g., via `QueueManager.enqueueJob({ type: 'product-publish', ... })`) to handle platform-specific API calls.
 
 **Asynchronous Publishing & Initial Inventory:**
 Publishing to external platforms (like Shopify) is an asynchronous process. This endpoint queues the task, and the actual creation/update on the platform happens in the background.
@@ -340,7 +340,7 @@ const response = await fetch('/api/products/publish', {
   body: JSON.stringify({
     productId: "prod_abc123",
     variantId: "var_def456",
-    publishIntent: "SAVE_DRAFT",
+    publishIntent: "SAVE_SSSYNC_DRAFT",
     platformDetails: {
       "canonical": { // Or a specific platform like "shopify" if that's the primary source of truth for this save
         "title": "Final Product Title",
@@ -355,7 +355,7 @@ const response = await fetch('/api/products/publish', {
     selectedPlatformsToPublish: null
   })
 });
-const data = await response.json(); // { "message": "SAVE_DRAFT request received and processing started." }
+const data = await response.json(); // { "message": "SAVE_SSSYNC_DRAFT request received and processing started." }
 ```
 
 ### 4. Direct Product Creation (Manual)
@@ -429,7 +429,14 @@ Directly creates or updates a product on Shopify. This is a more direct way to p
 ```http
 POST /api/products/:id/publish/shopify
 ```
-Where `:id` is the canonical **Product ID**.
+Where `:id` is the canonical **Product ID** from your system (e.g., obtained after creating/analyzing a product).
+
+**Important Note on Product Content (Title, Description, etc.):**
+This endpoint publishes the product identified by `:id` to Shopify. The core content of the product (like its title, main description, SKU, price, images) is taken from the **existing canonical `Product` and `ProductVariant` records stored in your database** associated with this `:id`.
+
+Therefore, **before calling this endpoint, ensure that the canonical product has been fully defined and saved with all necessary details (especially `Title`)** using an endpoint like `POST /api/products/publish` or a direct creation endpoint.
+
+The `options` field in the request body of *this* endpoint (`/api/products/:id/publish/shopify`) is for providing Shopify-specific overrides or settings for *this particular publishing act* (e.g., Shopify status, vendor for Shopify, tags for Shopify). It does not update the canonical product record itself.
 
 **Feature Flag:** `shopify`
 
@@ -689,47 +696,47 @@ In addition to specific errors mentioned per endpoint, the API may return common
 
 - **400 Bad Request:** The request was malformed (e.g., missing required fields, invalid data types). The response body usually contains a `message` detailing the error.
   ```json
-  {
-    "statusCode": 400,
+{
+  "statusCode": 400,
     "message": "Invalid image URI provided.",
     "error": "Bad Request"
-  }
+}
   ```
 - **401 Unauthorized:** Authentication token is missing, invalid, or expired.
   ```json
-  {
-    "statusCode": 401,
+{
+  "statusCode": 401,
     "message": "Unauthorized",
     "error": "Unauthorized"
   }
   ```
 - **403 Forbidden:** The authenticated user does not have permission to perform the action (e.g., feature not enabled for their subscription).
   ```json
-  {
-    "statusCode": 403,
+{
+  "statusCode": 403,
     "message": "Feature 'aiScans' not enabled for your subscription.",
     "error": "Forbidden"
   }
   ```
 - **404 Not Found:** The requested resource (e.g., product, variant, connection) could not be found.
-  ```json
-  {
+```json
+{
     "statusCode": 404,
     "message": "Cannot POST /api/products/analyze. Ensure the URL is correct and includes the /api prefix if applicable.",
     "error": "Not Found"
   }
   ```
 - **429 Too Many Requests:** The user has exceeded the rate limit for the endpoint.
-  ```json
-  {
+```json
+{
     "statusCode": 429,
     "message": "Too Many Requests",
     "error": "Too Many Requests"
   }
   ```
 - **500 Internal Server Error:** An unexpected error occurred on the server.
-  ```json
-  {
+```json
+{
     "statusCode": 500,
     "message": "Internal server error",
     "error": "Internal Server Error"

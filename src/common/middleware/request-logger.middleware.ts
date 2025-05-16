@@ -21,7 +21,6 @@ export class RequestLoggerMiddleware implements NestMiddleware {
       `\nUser: ${userId}` +
       `\nUA: ${userAgent}` +
       `\nQuery: ${JSON.stringify(query)}` +
-      `\nBody: ${JSON.stringify(body)}` +
       `\nHeaders: ${JSON.stringify({
         'content-type': headers['content-type'],
         'authorization': headers['authorization'] ? 'Bearer ***' : undefined,
@@ -29,6 +28,23 @@ export class RequestLoggerMiddleware implements NestMiddleware {
         'x-real-ip': headers['x-real-ip']
       })}`
     );
+
+    // Detailed logging for media.imageUris
+    if (body && typeof body === 'object' && body.media && Array.isArray(body.media.imageUris)) {
+      middlewareLogger.log(`[${requestId}] req.body.media.imageUris (type: ${typeof body.media.imageUris}, length: ${body.media.imageUris.length}):`);
+      body.media.imageUris.forEach((uri, index) => {
+        middlewareLogger.log(`[${requestId}]   [${index}] (type: ${typeof uri}): "${uri}"`);
+      });
+    } else if (body && typeof body === 'object' && body.media) {
+      middlewareLogger.log(`[${requestId}] req.body.media exists, but imageUris is not an array. Value: ${JSON.stringify(body.media.imageUris)}`);
+    } else if (body && typeof body === 'object') {
+      middlewareLogger.log(`[${requestId}] req.body.media does not exist or is not an object.`);
+    } else {
+      middlewareLogger.log(`[${requestId}] req.body is not an object or is null/undefined. Type: ${typeof body}, Value: ${body}`);
+    }
+    
+    // Log the full body as before for general context
+    middlewareLogger.log(`[${requestId}] Full req.body stringified: ${JSON.stringify(body)}`);
 
     // Monkey-patch res.send to log response details
     const originalSend = res.send;
