@@ -44,7 +44,15 @@ export class FeatureUsageGuard implements CanActivate {
                 .select('Id, Status, IsEnabled') // Select Status and IsEnabled
                 .eq('UserId', userId)
                 .eq('PlatformType', 'SHOPIFY')
-                .eq('IsEnabled', true); // Still check for IsEnabled
+                .eq('IsEnabled', true);
+
+            // <<< DETAILED LOGGING START >>>
+            this.logger.debug(`FeatureUsageGuard: Shopify connections query for user ${userId}.`);
+            if (connectionError) {
+                this.logger.error(`FeatureUsageGuard: Query Error: ${JSON.stringify(connectionError)}`);
+            }
+            this.logger.debug(`FeatureUsageGuard: Query Data: ${JSON.stringify(shopifyConnections)}`);
+            // <<< DETAILED LOGGING END >>>
 
             if (connectionError) {
                 this.logger.error(`FeatureUsageGuard: Error fetching Shopify connections for user ${userId}: ${connectionError.message}`, connectionError);
