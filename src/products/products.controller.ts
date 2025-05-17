@@ -262,11 +262,52 @@ export class ProductsController {
                     }
                 ] : undefined,
                 variants: variants.map(variant => {
-                    const imageUrl = variantImageMap.get(variant.Id);
-                    const file: ShopifyProductFile | undefined = imageUrl ? {
-                        originalSource: imageUrl,
+                    const imageUrlFromDb = variantImageMap.get(variant.Id);
+                    let finalImageUrlForShopify: string | undefined = undefined;
+
+                    if (typeof imageUrlFromDb === 'string' && imageUrlFromDb.trim() !== '') {
+                        this.logger.log(`[publishToShopify] Raw ImageUrl from DB for variant ${variant.Id}: "${imageUrlFromDb}"`);
+                        let tempUrl = imageUrlFromDb;
+
+                        // 1. Try to extract URL from potential Markdown: [text](url)
+                        const markdownMatch = tempUrl.match(/\[.*?\]\(([^)]+)\)/);
+                        if (markdownMatch && markdownMatch[1]) {
+                            tempUrl = markdownMatch[1];
+                            this.logger.log(`[publishToShopify] Extracted from Markdown: "${tempUrl}"`);
+                        }
+
+                        // 2. Decode URI components (e.g., %22 -> ")
+                        try {
+                            tempUrl = decodeURIComponent(tempUrl);
+                            this.logger.log(`[publishToShopify] After decodeURIComponent: "${tempUrl}"`);
+                        } catch (e) {
+                            this.logger.error(`[publishToShopify] Error decoding URI component for "${tempUrl}": ${e.message}`);
+                            // Keep tempUrl as is if decoding fails
+                        }
+                        
+                        // 3. Remove leading/trailing actual double quotes
+                        tempUrl = tempUrl.replace(/^"|"$/g, '');
+                        this.logger.log(`[publishToShopify] After quote removal: "${tempUrl}"`);
+
+                        // 4. Remove trailing semicolons (and any whitespace before them)
+                        tempUrl = tempUrl.replace(/\s*;+$/, '');
+                        this.logger.log(`[publishToShopify] After semicolon removal: "${tempUrl}"`);
+
+                        // 5. Final check if it looks like a valid HTTP/HTTPS URL
+                        if (tempUrl.startsWith('http')) {
+                            finalImageUrlForShopify = tempUrl;
+                            this.logger.log(`[publishToShopify] Final clean ImageUrl for Shopify: "${finalImageUrlForShopify}"`);
+                        } else {
+                            this.logger.warn(`[publishToShopify] ImageUrl for variant ${variant.Id} after cleaning ("${tempUrl}") does not appear to be a valid http/https URL. Skipping image for Shopify.`);
+                        }
+                    } else {
+                        this.logger.warn(`[publishToShopify] No ImageUrl found or it is empty in DB for variant ${variant.Id}.`);
+                    }
+
+                    const file: ShopifyProductFile | undefined = finalImageUrlForShopify ? {
+                        originalSource: finalImageUrlForShopify,
                         alt: `${primaryVariant.Title} - ${variant.Title}`,
-                        filename: `${variant.Sku}.jpg`,
+                        filename: `${variant.Sku}.jpg`, // Assuming jpg, might need to be more robust
                         contentType: 'IMAGE'
                     } : undefined;
 
