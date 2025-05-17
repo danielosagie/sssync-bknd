@@ -419,10 +419,12 @@ export class ProductsService {
         this.logger.log(`[ImageCleanDB ${index}] After trim: "${currentUrl}"`);
 
         // Step 1: Extract from Markdown (if applicable)
-        const markdownMatch = currentUrl.match(/\\\[.*?\\\]\\(([^)]+)\\)/);
+        const markdownMatch = currentUrl.match(/\\[[^\\\]]*\\]\\(([^)]+)\\)/);
         if (markdownMatch && markdownMatch[1]) {
           currentUrl = markdownMatch[1];
           this.logger.log(`[ImageCleanDB ${index}] Extracted from Markdown: "${currentUrl}"`);
+        } else {
+          this.logger.log(`[ImageCleanDB ${index}] No Markdown link found or pattern mismatch for: "${currentUrl}"`);
         }
 
         // Step 2: Decode URI Components
