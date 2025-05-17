@@ -403,21 +403,68 @@ export class ProductsService {
 
     this.logger.log(`Received media object in DTO: ${JSON.stringify(mediaDetails)}`);
 
-    let cleanedImageUris: string[] = [];
+    let cleanedImageUris: string[] = []; // This is used for logging later, can be kept or removed if processedImageUrisForDb is sufficient
+    let processedImageUrisForDb: string[] = []; // Initialize here
+
     if (mediaDetails?.imageUris && Array.isArray(mediaDetails.imageUris)) {
       this.logger.log('Raw imageUris from DTO before cleaning attempt:');
       mediaDetails.imageUris.forEach((uri, index) => {
         this.logger.log(`  [${index}]: "${uri}" (length: ${uri?.length})`);
       });
 
-      cleanedImageUris = mediaDetails.imageUris.map(uri => 
-        typeof uri === 'string' ? uri.replace(/;+$/, '') : uri
-      ).filter(uri => typeof uri === 'string' && uri.length > 0); // Ensure it's still a non-empty string
+      // Process imageUris for saving
+      const processedImageUrisForDb = mediaDetails.imageUris.map((rawUri, index) => {
+        this.logger.log(`[ImageCleanDB ${index}] Raw URI: "${rawUri}"`);
+        let currentUrl = typeof rawUri === 'string' ? rawUri.trim() : '';
+        this.logger.log(`[ImageCleanDB ${index}] After trim: "${currentUrl}"`);
 
-      this.logger.log('Cleaned imageUris attempt in service:');
-      cleanedImageUris.forEach((uri, index) => {
-        this.logger.log(`  [${index}]: "${uri}"`);
+        // Step 1: Extract from Markdown (if applicable)
+        const markdownMatch = currentUrl.match(/\\\[.*?\\\]\\(([^)]+)\\)/);
+        if (markdownMatch && markdownMatch[1]) {
+          currentUrl = markdownMatch[1];
+          this.logger.log(`[ImageCleanDB ${index}] Extracted from Markdown: "${currentUrl}"`);
+        }
+
+        // Step 2: Decode URI Components
+        try {
+          let decodedUrl = decodeURIComponent(currentUrl);
+          // Aggressively decode multiple times if needed (max 3 to prevent infinite loops)
+          for (let i = 0; i < 3 && decodedUrl.includes('%'); i++) {
+            decodedUrl = decodeURIComponent(decodedUrl);
+          }
+          currentUrl = decodedUrl;
+          this.logger.log(`[ImageCleanDB ${index}] After decodeURIComponent: "${currentUrl}"`);
+        } catch (e) {
+          this.logger.error(`[ImageCleanDB ${index}] Error decoding URI component for "${currentUrl}": ${e.message}`);
+          // Keep currentUrl as is if decoding fails
+        }
+
+        // Step 3: Remove leading/trailing literal double quotes
+        currentUrl = currentUrl.replace(/^"|"$/g, '');
+        this.logger.log(`[ImageCleanDB ${index}] After quote removal: "${currentUrl}"`);
+        
+        // Step 4: Remove trailing semicolons (and any whitespace before them)
+        currentUrl = currentUrl.replace(/\\s*;+$/, '');
+        this.logger.log(`[ImageCleanDB ${index}] After semicolon removal: "${currentUrl}"`);
+
+        // Step 5: Final check for http/https prefix
+        if (!currentUrl.startsWith('http://') && !currentUrl.startsWith('https://')) {
+          this.logger.warn(`[ImageCleanDB ${index}] URL "${currentUrl}" does not start with http(s). May be invalid.`);
+        }
+        
+        this.logger.log(`[ImageCleanDB ${index}] Final URL for DB: "${currentUrl}"`);
+        return currentUrl;
+      }).filter(uri => typeof uri === 'string' && uri.length > 0);
+
+
+      // Use processedImageUrisForDb for database operations
+      cleanedImageUris = processedImageUrisForDb; // Update this if it's used later, though it's mainly for logging now
+
+      this.logger.log('Cleaned imageUris for DB storage:');
+      processedImageUrisForDb.forEach((uri, index) => {
+        this.logger.log(`  [DB ${index}]: "${uri}"`);
       });
+
     } else {
       this.logger.log('No imageUris found in DTO or not an array.');
     }
@@ -498,8 +545,8 @@ export class ProductsService {
         }
 
         // Update ProductImages based on dto.media (delete existing, add new)
-        if (media && media.imageUris && Array.isArray(media.imageUris)) {
-            this.logger.log(`Updating ProductImages for variant ${variantId}. Found ${media.imageUris.length} new images.`);
+        if (media && processedImageUrisForDb && Array.isArray(processedImageUrisForDb)) { // Check processedImageUrisForDb
+            this.logger.log(`Updating ProductImages for variant ${variantId}. Found ${processedImageUrisForDb.length} new images from processed DTO.`);
             // 1. Delete existing images for this variant
             const { error: deleteError } = await supabase
                 .from('ProductImages')
@@ -511,49 +558,24 @@ export class ProductsService {
                 // Decide if this is a fatal error or if we can proceed
             }
 
-            // 2. Insert new images (using the already cleaned dto.media.imageUris)
-            if (cleanedImageUris.length > 0) { // Use cleanedImageUris directly here
-                const imagesToInsert = cleanedImageUris.map((url, index) => {
-                    let originalUrl = typeof url === 'string' ? url : '';
-                    this.logger.log(`[saveOrPublishListing] URI [${index}] - Initial from DTO: "${originalUrl}"`);
+            // 2. Insert new images (using the processedImageUrisForDb)
+            if (processedImageUrisForDb.length > 0) {
+                const imagesToInsert = processedImageUrisForDb.map((url, index) => {
+                    // The URL here is already cleaned by the new logic above.
+                    // The logger.log statements for extension-based cleaning and fallback are removed
+                    // as the comprehensive cleaning should handle it.
 
-                    let cleanedUrl = originalUrl;
-
-                    // Attempt to extract URL up to a known image extension, optionally including query params
-                    // Regex explanation:
-                    // ^                   - Start of the string
-                    // ([^?#;]+?            - Group 1: Match any char except ?, #, or ;, one or more times, non-greedy (MODIFIED to exclude ;)
-                    //  \.                 - followed by a literal dot
-                    //  (?:jpg|jpeg|png|webp) - followed by jpg, jpeg, png, or webp (non-capturing group)
-                    // )
-                    // ([?#].*)?           - Group 2 (optional): Match ? or # followed by any characters to the end
-                    // $                   - End of the string
-                    // i                   - Case-insensitive
-                    const imageExtensionMatch = cleanedUrl.match(/^([^?#;]+?\.(?:jpg|jpeg|png|webp))([?#].*)?$/i);
-
-                    if (imageExtensionMatch && imageExtensionMatch[1]) {
-                        cleanedUrl = imageExtensionMatch[1] + (imageExtensionMatch[2] || '');
-                        this.logger.log(`[saveOrPublishListing] URI [${index}] - After extension-based cleaning: "${cleanedUrl}"`);
-                    } else {
-                        this.logger.warn(`[saveOrPublishListing] URI [${index}] - Could not match common image extension. Falling back to generic cleaning for: "${originalUrl}"`);
-                        cleanedUrl = cleanedUrl.replace(/^"|"$/g, ''); // Remove literal quotes
-                        this.logger.log(`[saveOrPublishListing] URI [${index}] - After quote removal (fallback): "${cleanedUrl}"`);
-                        cleanedUrl = cleanedUrl.replace(/;+$/, '');    // Remove trailing semicolons
-                        this.logger.log(`[saveOrPublishListing] URI [${index}] - After semicolon removal (fallback): "${cleanedUrl}"`);
-                        // Optional aggressive fallback: cleanedUrl = cleanedUrl.replace(/[^a-zA-Z0-9\/:._\-?&=%#]/g, '');
-                    }
-                    
-                    this.logger.log(`[saveOrPublishListing] URI [${index}] - Final URL to be saved: "${cleanedUrl}"`);
+                    this.logger.log(`[saveOrPublishListing - DB Insert] Using pre-cleaned URL for DB: "${url}"`);
 
                     return {
                         ProductVariantId: variantId,
-                        ImageUrl: cleanedUrl, // Use the fully processed URL
+                        ImageUrl: url, // Use the comprehensively cleaned URL
                         AltText: canonicalDetails?.title || 'Product image', 
                         Position: index,
                     };
                 });
 
-                this.logger.debug(`[saveOrPublishListing] ProductImages to be inserted: ${JSON.stringify(imagesToInsert)}`);
+                this.logger.debug(`[saveOrPublishListing] ProductImages to be inserted into DB: ${JSON.stringify(imagesToInsert)}`);
 
                 const { error: insertError } = await supabase
                     .from('ProductImages')
@@ -567,7 +589,7 @@ export class ProductsService {
                 }
             }
         } else {
-            this.logger.warn(`No media.imageUris found in DTO for variant ${variantId}, skipping image update.`);
+            this.logger.warn(`No media.imageUris found in DTO or processedImageUrisForDb is empty for variant ${variantId}, skipping image update.`);
         }
 
         await this.activityLogService.logActivity(

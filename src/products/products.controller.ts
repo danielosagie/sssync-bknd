@@ -264,50 +264,68 @@ export class ProductsController {
                 variants: variants.map(variant => {
                     const imageUrlFromDb = variantImageMap.get(variant.Id);
                     let finalImageUrlForShopify: string | undefined = undefined;
+                    let shopifyFilename = `${variant.Sku}.jpg`; // Default filename
 
                     if (typeof imageUrlFromDb === 'string' && imageUrlFromDb.trim() !== '') {
-                        this.logger.log(`[publishToShopify] Raw ImageUrl from DB for variant ${variant.Id}: "${imageUrlFromDb}"`);
-                        let tempUrl = imageUrlFromDb;
+                        this.logger.log(`[ShopifyPublish ${variant.Id}] Raw ImageUrl from DB: "${imageUrlFromDb}"`);
+                        let currentUrl = imageUrlFromDb.trim();
+                        this.logger.log(`[ShopifyPublish ${variant.Id}] After trim: "${currentUrl}"`);
 
-                        // 1. Try to extract URL from potential Markdown: [text](url)
-                        const markdownMatch = tempUrl.match(/\[.*?\]\(([^)]+)\)/);
+                        // Step 1: Extract from Markdown (if applicable)
+                        const markdownMatch = currentUrl.match(/\\\[.*?\\\]\\(([^)]+)\\)/);
                         if (markdownMatch && markdownMatch[1]) {
-                            tempUrl = markdownMatch[1];
-                            this.logger.log(`[publishToShopify] Extracted from Markdown: "${tempUrl}"`);
+                            currentUrl = markdownMatch[1];
+                            this.logger.log(`[ShopifyPublish ${variant.Id}] Extracted from Markdown: "${currentUrl}"`);
                         }
 
-                        // 2. Decode URI components (e.g., %22 -> ")
+                        // Step 2: Decode URI Components (multiple passes)
                         try {
-                            tempUrl = decodeURIComponent(tempUrl);
-                            this.logger.log(`[publishToShopify] After decodeURIComponent: "${tempUrl}"`);
+                            let decodedUrl = currentUrl;
+                            for (let i = 0; i < 3 && decodedUrl.includes('%'); i++) { // Max 3 decodes
+                                decodedUrl = decodeURIComponent(decodedUrl);
+                            }
+                            currentUrl = decodedUrl;
+                            this.logger.log(`[ShopifyPublish ${variant.Id}] After decodeURIComponent: "${currentUrl}"`);
                         } catch (e) {
-                            this.logger.error(`[publishToShopify] Error decoding URI component for "${tempUrl}": ${e.message}`);
-                            // Keep tempUrl as is if decoding fails
+                            this.logger.error(`[ShopifyPublish ${variant.Id}] Error decoding URI for "${currentUrl}": ${e.message}`);
                         }
-                        
-                        // 3. Remove leading/trailing actual double quotes
-                        tempUrl = tempUrl.replace(/^"|"$/g, '');
-                        this.logger.log(`[publishToShopify] After quote removal: "${tempUrl}"`);
 
-                        // 4. Remove trailing semicolons (and any whitespace before them)
-                        tempUrl = tempUrl.replace(/\s*;+$/, '');
-                        this.logger.log(`[publishToShopify] After semicolon removal: "${tempUrl}"`);
+                        // Step 3: Remove leading/trailing literal double quotes
+                        currentUrl = currentUrl.replace(/^"|"$/g, '');
+                        this.logger.log(`[ShopifyPublish ${variant.Id}] After quote removal: "${currentUrl}"`);
 
-                        // 5. Final check if it looks like a valid HTTP/HTTPS URL
-                        if (tempUrl.startsWith('http')) {
-                            finalImageUrlForShopify = tempUrl;
-                            this.logger.log(`[publishToShopify] Final clean ImageUrl for Shopify: "${finalImageUrlForShopify}"`);
+                        // Step 4: Remove trailing semicolons (and any whitespace before them)
+                        currentUrl = currentUrl.replace(/\\s*;+$/, '');
+                        this.logger.log(`[ShopifyPublish ${variant.Id}] After semicolon removal: "${currentUrl}"`);
+
+                        // Step 5: Final check if it looks like a valid HTTP/HTTPS URL
+                        if (currentUrl.startsWith('http')) {
+                            finalImageUrlForShopify = currentUrl;
+                            this.logger.log(`[ShopifyPublish ${variant.Id}] Final clean ImageUrl for Shopify: "${finalImageUrlForShopify}"`);
+
+                            // Attempt to derive filename from the cleaned URL
+                            try {
+                                const urlPath = new URL(finalImageUrlForShopify).pathname;
+                                const pathSegments = urlPath.split('/');
+                                const lastSegment = pathSegments.pop() || '';
+                                if (lastSegment.match(/\\.(jpg|jpeg|png|webp)$/i)) {
+                                    shopifyFilename = lastSegment.replace(/[^a-zA-Z0-9._-]/g, '_'); // Sanitize
+                                    this.logger.log(`[ShopifyPublish ${variant.Id}] Derived filename: "${shopifyFilename}"`);
+                                }
+                            } catch (e) {
+                                this.logger.warn(`[ShopifyPublish ${variant.Id}] Could not parse URL to derive filename: ${e.message}. Using default.`);
+                            }
                         } else {
-                            this.logger.warn(`[publishToShopify] ImageUrl for variant ${variant.Id} after cleaning ("${tempUrl}") does not appear to be a valid http/https URL. Skipping image for Shopify.`);
+                            this.logger.warn(`[ShopifyPublish ${variant.Id}] ImageUrl for variant after cleaning ("${currentUrl}") does not appear to be a valid http/https URL. Skipping image for Shopify.`);
                         }
                     } else {
-                        this.logger.warn(`[publishToShopify] No ImageUrl found or it is empty in DB for variant ${variant.Id}.`);
+                        this.logger.warn(`[ShopifyPublish ${variant.Id}] No ImageUrl found or it is empty in DB.`);
                     }
 
                     const file: ShopifyProductFile | undefined = finalImageUrlForShopify ? {
                         originalSource: finalImageUrlForShopify,
                         alt: `${primaryVariant.Title} - ${variant.Title}`,
-                        filename: `${variant.Sku}.jpg`, // Assuming jpg, might need to be more robust
+                        filename: shopifyFilename, // Use dynamic or default filename
                         contentType: 'IMAGE'
                     } : undefined;
 
