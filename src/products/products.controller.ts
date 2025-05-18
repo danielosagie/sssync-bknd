@@ -269,7 +269,7 @@ export class ProductsController {
                 productOptions: shopifyProductOptions, // Use the determined options
                 variants: variants.map(variant => {
                     const imageUrlFromDb = variantImageMap.get(variant.Id);
-                    let finalImageUrlForShopify: string | undefined = undefined;
+                    let finalImageUrlForShopify: string = '';
                     let shopifyFilename = `${variant.Sku}.jpg`; // Default filename
 
                     if (typeof imageUrlFromDb === 'string' && imageUrlFromDb.trim() !== '') {
