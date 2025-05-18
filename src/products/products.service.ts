@@ -419,26 +419,21 @@ export class ProductsService {
         this.logger.log(`[ImageCleanDB ${index}] After trim: "${currentUrl}"`);
 
         // Step 1: Extract from Markdown (if applicable)
-        // Regex assuming format like: ["Link Text"](URLContent)
-        // Breakdown for /\\\["([^"]*)\"\\\]\\(([^)]*)\\)/
-        // \\\["       : Matches literal '["'
-        // ([^"]*)   : Group 1, captures content inside first quotes (link text)
-        // "\\\]      : Matches literal '"]'
-        // \\(        : Matches literal '('
-        // ([^)]*)   : Group 2, captures content inside parentheses (the URL we want)
-        // \\)        : Matches literal ')'
         const markdownMatch = currentUrl.match(/\\\["([^"]*)\"\\\]\\(([^)]*)\\)/);
         if (markdownMatch && markdownMatch[2]) { // We want group 2 for the URL
           currentUrl = markdownMatch[2].trim(); 
           this.logger.log(`[ImageCleanDB ${index}] Extracted from specific Markdown format: "${currentUrl}"`);
         } else {
-          this.logger.log(`[ImageCleanDB ${index}] No specific Markdown link format found or pattern mismatch for: "${currentUrl}". Will proceed with URL as is.`);
+          this.logger.log(`[ImageCleanDB ${index}] No specific Markdown link format found or pattern mismatch for: "${currentUrl}". Will proceed with URL as is for subsequent cleaning.`);
         }
 
-        // Step 2: Decode URI Components
+        // Step 2: Remove trailing semicolons (and any whitespace before them) - MOVED UP
+        currentUrl = currentUrl.replace(/\s*;+$/, '');
+        this.logger.log(`[ImageCleanDB ${index}] After semicolon removal (early): "${currentUrl}"`);
+
+        // Step 3: Decode URI Components - MOVED AFTER SEMICOLON REMOVAL
         try {
           let decodedUrl = decodeURIComponent(currentUrl);
-          // Aggressively decode multiple times if needed (max 3 to prevent infinite loops)
           for (let i = 0; i < 3 && decodedUrl.includes('%'); i++) {
             decodedUrl = decodeURIComponent(decodedUrl);
           }
@@ -446,17 +441,12 @@ export class ProductsService {
           this.logger.log(`[ImageCleanDB ${index}] After decodeURIComponent: "${currentUrl}"`);
         } catch (e) {
           this.logger.error(`[ImageCleanDB ${index}] Error decoding URI component for "${currentUrl}": ${e.message}`);
-          // Keep currentUrl as is if decoding fails
         }
 
-        // Step 3: Remove leading/trailing literal double quotes
+        // Step 4: Remove leading/trailing literal double quotes - MOVED AFTER DECODE
         currentUrl = currentUrl.replace(/^"|"$/g, '');
-        this.logger.log(`[ImageCleanDB ${index}] After quote removal: "${currentUrl}"`);
+        this.logger.log(`[ImageCleanDB ${index}] After quote removal (late): "${currentUrl}"`);
         
-        // Step 4: Remove trailing semicolons (and any whitespace before them)
-        currentUrl = currentUrl.replace(/\\s*;+$/, '');
-        this.logger.log(`[ImageCleanDB ${index}] After semicolon removal: "${currentUrl}"`);
-
         // Step 5: Final check for http/https prefix
         if (!currentUrl.startsWith('http://') && !currentUrl.startsWith('https://')) {
           this.logger.warn(`[ImageCleanDB ${index}] URL "${currentUrl}" does not start with http(s). May be invalid.`);

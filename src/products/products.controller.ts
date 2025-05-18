@@ -199,6 +199,8 @@ export class ProductsController {
         @Req() req: AuthenticatedRequest
     ) {
         this.logger.log(`[publishToShopify] Entered method for productId: ${productId}, user: ${req.user.id}`);
+        this.logger.debug(`[publishToShopify] Received publishData: ${JSON.stringify(publishData, null, 2)}`);
+
         const userId = req.user.id;
         const { platformConnectionId, locations, options } = publishData;
 
@@ -365,6 +367,8 @@ export class ProductsController {
                     };
                 })
             };
+
+            this.logger.debug(`[publishToShopify] Constructed productInput for Shopify: ${JSON.stringify(productInput, null, 2)}`);
 
             const result = await this.shopifyApiClient.createProductAsync(connection, productInput);
 
