@@ -418,43 +418,56 @@ export class ProductsService {
         let currentUrl = typeof rawUri === 'string' ? rawUri.trim() : '';
         this.logger.log(`[ImageCleanDB ${index}] After trim: "${currentUrl}"`);
 
-        // Step 1: Extract from Markdown (if applicable)
-        const markdownMatch = currentUrl.match(/\\\["([^"]*)\"\\\]\\(([^)]*)\\)/);
-        if (markdownMatch && markdownMatch[2]) { // We want group 2 for the URL
-          currentUrl = markdownMatch[2].trim(); 
-          this.logger.log(`[ImageCleanDB ${index}] Extracted from specific Markdown format: "${currentUrl}"`);
+        // Step 1: Attempt to extract URL if it matches the specific problematic format like '["some_label"](actual_url_part)'
+        const problematicFormatMatch = currentUrl.match(/.*\]\(([^)]*)\)/); // Matches 'anything](URL_PART)'
+        if (problematicFormatMatch && problematicFormatMatch[1]) {
+          currentUrl = problematicFormatMatch[1].trim();
+          this.logger.log(`[ImageCleanDB ${index}] Extracted from problematic format 'anything](URL_PART)': "${currentUrl}"`);
         } else {
-          this.logger.log(`[ImageCleanDB ${index}] No specific Markdown link format found or pattern mismatch for: "${currentUrl}". Will proceed with URL as is for subsequent cleaning.`);
+          // Fallback: Check for standard Markdown (less likely to be the issue here based on logs but good to keep)
+          const markdownMatch = currentUrl.match(/\\\[[^\]]*\\\]\\(([^)]*)\\)/); // Simplified standard markdown: [text](url)
+          if (markdownMatch && markdownMatch[1]) { // Group 1 for standard markdown URL
+            currentUrl = markdownMatch[1].trim();
+            this.logger.log(`[ImageCleanDB ${index}] Extracted from standard Markdown format: "${currentUrl}"`);
+          } else {
+            this.logger.log(`[ImageCleanDB ${index}] No specific Markdown or problematic format found. Proceeding with URL as is for subsequent cleaning: "${currentUrl}".`);
+          }
         }
 
-        // Step 2: Remove trailing semicolons (and any whitespace before them) - MOVED UP
+        // Step 2: Remove trailing semicolons (and any whitespace before them) - Applied to potentially extracted URL
         currentUrl = currentUrl.replace(/\s*;+$/, '');
-        this.logger.log(`[ImageCleanDB ${index}] After semicolon removal (early): "${currentUrl}"`);
+        this.logger.log(`[ImageCleanDB ${index}] After semicolon removal: "${currentUrl}"`);
 
-        // Step 3: Decode URI Components - MOVED AFTER SEMICOLON REMOVAL
+        // Step 3: Decode URI Components - Applied to potentially extracted URL
         try {
-          let decodedUrl = decodeURIComponent(currentUrl);
-          for (let i = 0; i < 3 && decodedUrl.includes('%'); i++) {
+          let decodedUrl = currentUrl;
+          // Iteratively decode if there's still '%'
+          for (let i = 0; i < 3 && decodedUrl.includes('%'); i++) { 
             decodedUrl = decodeURIComponent(decodedUrl);
           }
           currentUrl = decodedUrl;
-          this.logger.log(`[ImageCleanDB ${index}] After decodeURIComponent: "${currentUrl}"`);
+          this.logger.log(`[ImageCleanDB ${index}] After decodeURIComponent (iterative): "${currentUrl}"`);
         } catch (e) {
-          this.logger.error(`[ImageCleanDB ${index}] Error decoding URI component for "${currentUrl}": ${e.message}`);
+          this.logger.warn(`[ImageCleanDB ${index}] Error decoding URI component for "${currentUrl}": ${e.message}. URL kept as is.`);
+          // Keep currentUrl as is if decoding fails
         }
-
-        // Step 4: Remove leading/trailing literal double quotes - MOVED AFTER DECODE
+        
+        // Step 4: Remove leading/trailing literal double quotes - Applied to potentially extracted AND decoded URL
         currentUrl = currentUrl.replace(/^"|"$/g, '');
-        this.logger.log(`[ImageCleanDB ${index}] After quote removal (late): "${currentUrl}"`);
+        this.logger.log(`[ImageCleanDB ${index}] After quote removal: "${currentUrl}"`);
         
         // Step 5: Final check for http/https prefix
         if (!currentUrl.startsWith('http://') && !currentUrl.startsWith('https://')) {
           this.logger.warn(`[ImageCleanDB ${index}] URL "${currentUrl}" does not start with http(s). May be invalid.`);
         }
         
-        this.logger.log(`[ImageCleanDB ${index}] Final URL for DB: "${currentUrl}"`);
+        this.logger.log(`[ImageCleanDB ${index}] Final URL for DB (before map return): "${currentUrl}", Type: ${typeof currentUrl}, Length: ${currentUrl?.length}`);
         return currentUrl;
-      }).filter(uri => typeof uri === 'string' && uri.length > 0);
+      }).filter(uri => {
+        const isValid = typeof uri === 'string' && uri.length > 0 && uri.startsWith('http');
+        this.logger.log(`[ImageCleanDB Filter] URI: "${uri}", IsValidForFilter: ${isValid}`);
+        return isValid;
+      });
 
 
       // Use processedImageUrisForDb for database operations
