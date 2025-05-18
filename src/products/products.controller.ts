@@ -248,6 +248,15 @@ export class ProductsController {
                 variantImages?.map(img => [img.ProductVariantId, img.ImageUrl]) || []
             );
 
+            // Determine productOptions for Shopify
+            // If the primary variant has no defined .Options, create a default "Title" option
+            // Otherwise, attempt to use the existing Options structure (this part might need more advanced mapping for complex options)
+            const shopifyProductOptions = (!primaryVariant.Options || Object.keys(primaryVariant.Options).length === 0) 
+                ? [{ name: "Title", values: variants.map(v => ({ name: v.Title })) }]
+                : [{ name: "Option", values: variants.map(v => ({ name: v.Title })) }]; // Fallback or more complex mapping needed here if primaryVariant.Options is structured
+            
+            this.logger.log(`[ShopifyPublish] Determined shopifyProductOptions: ${JSON.stringify(shopifyProductOptions)}`);
+
             const productInput: ShopifyProductSetInput = {
                 title: primaryVariant.Title,
                 descriptionHtml: primaryVariant.Description || undefined,
@@ -255,12 +264,7 @@ export class ProductsController {
                 vendor: options?.vendor,
                 productType: options?.productType,
                 tags: options?.tags,
-                productOptions: variants[0]?.Options ? [
-                    {
-                        name: 'Option',
-                        values: variants.map(v => ({ name: v.Title }))
-                    }
-                ] : undefined,
+                productOptions: shopifyProductOptions, // Use the determined options
                 variants: variants.map(variant => {
                     const imageUrlFromDb = variantImageMap.get(variant.Id);
                     let finalImageUrlForShopify: string | undefined = undefined;
@@ -272,9 +276,9 @@ export class ProductsController {
                         this.logger.log(`[ShopifyPublish ${variant.Id}] After trim: "${currentUrl}"`);
 
                         // Step 1: Extract from Markdown (if applicable)
-                        const markdownMatch = currentUrl.match(/\\[[^\\\]]*\\]\\(([^)]+)\\)/);
+                        const markdownMatch = currentUrl.match(/\[.*\]\((.*)\)/);
                         if (markdownMatch && markdownMatch[1]) {
-                            currentUrl = markdownMatch[1];
+                            currentUrl = markdownMatch[1].trim(); // Also trim the captured URL
                             this.logger.log(`[ShopifyPublish ${variant.Id}] Extracted from Markdown: "${currentUrl}"`);
                         } else {
                             this.logger.log(`[ShopifyPublish ${variant.Id}] No Markdown link found or pattern mismatch for: "${currentUrl}"`);
@@ -330,14 +334,14 @@ export class ProductsController {
                         filename: shopifyFilename, // Use dynamic or default filename
                         contentType: 'IMAGE'
                     } : undefined;
+                    
+                    // Determine optionValues for this specific variant
+                    const shopifyOptionValues = (!variant.Options || Object.keys(variant.Options).length === 0)
+                        ? [{ optionName: "Title", name: variant.Title }]
+                        : [{ optionName: "Option", name: variant.Title }]; // Fallback or more complex mapping for structured variant.Options
 
                     return {
-                        optionValues: variant.Options ? [
-                            {
-                                optionName: 'Option',
-                                name: variant.Title
-                            }
-                        ] : [],
+                        optionValues: shopifyOptionValues, // Use determined option values
                         price: variant.Price.toString(),
                         sku: variant.Sku,
                         inventoryItem: {
