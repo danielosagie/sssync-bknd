@@ -276,12 +276,13 @@ export class ProductsController {
                         this.logger.log(`[ShopifyPublish ${variant.Id}] After trim: "${currentUrl}"`);
 
                         // Step 1: Extract from Markdown (if applicable)
-                        const markdownMatch = currentUrl.match(/\[.*\]\((.*)\)/);
-                        if (markdownMatch && markdownMatch[1]) {
-                            currentUrl = markdownMatch[1].trim(); // Also trim the captured URL
-                            this.logger.log(`[ShopifyPublish ${variant.Id}] Extracted from Markdown: "${currentUrl}"`);
+                        // Regex assuming format like: ["Link Text"](URLContent)
+                        const markdownMatch = currentUrl.match(/\\\["([^"]*)\"\\\]\\(([^)]*)\\)/);
+                        if (markdownMatch && markdownMatch[2]) { // We want group 2 for the URL
+                            currentUrl = markdownMatch[2].trim();
+                            this.logger.log(`[ShopifyPublish ${variant.Id}] Extracted from specific Markdown format: "${currentUrl}"`);
                         } else {
-                            this.logger.log(`[ShopifyPublish ${variant.Id}] No Markdown link found or pattern mismatch for: "${currentUrl}"`);
+                            this.logger.log(`[ShopifyPublish ${variant.Id}] No specific Markdown link format found or pattern mismatch for: "${currentUrl}". Will proceed with URL as is.`);
                         }
 
                         // Step 2: Decode URI Components (multiple passes)

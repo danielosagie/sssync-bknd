@@ -419,12 +419,20 @@ export class ProductsService {
         this.logger.log(`[ImageCleanDB ${index}] After trim: "${currentUrl}"`);
 
         // Step 1: Extract from Markdown (if applicable)
-        const markdownMatch = currentUrl.match(/\[.*\]\((.*)\)/);
-        if (markdownMatch && markdownMatch[1]) {
-          currentUrl = markdownMatch[1].trim(); // Also trim the captured URL
-          this.logger.log(`[ImageCleanDB ${index}] Extracted from Markdown: "${currentUrl}"`);
+        // Regex assuming format like: ["Link Text"](URLContent)
+        // Breakdown for /\\\["([^"]*)\"\\\]\\(([^)]*)\\)/
+        // \\\["       : Matches literal '["'
+        // ([^"]*)   : Group 1, captures content inside first quotes (link text)
+        // "\\\]      : Matches literal '"]'
+        // \\(        : Matches literal '('
+        // ([^)]*)   : Group 2, captures content inside parentheses (the URL we want)
+        // \\)        : Matches literal ')'
+        const markdownMatch = currentUrl.match(/\\\["([^"]*)\"\\\]\\(([^)]*)\\)/);
+        if (markdownMatch && markdownMatch[2]) { // We want group 2 for the URL
+          currentUrl = markdownMatch[2].trim(); 
+          this.logger.log(`[ImageCleanDB ${index}] Extracted from specific Markdown format: "${currentUrl}"`);
         } else {
-          this.logger.log(`[ImageCleanDB ${index}] No Markdown link found or pattern mismatch for: "${currentUrl}"`);
+          this.logger.log(`[ImageCleanDB ${index}] No specific Markdown link format found or pattern mismatch for: "${currentUrl}". Will proceed with URL as is.`);
         }
 
         // Step 2: Decode URI Components
