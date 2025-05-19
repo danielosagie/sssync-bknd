@@ -306,7 +306,7 @@ export class ProductsController {
                         this.logger.log(`[ShopifyPublish ${variant.Id}] After quote removal: "${currentUrl}"`);
 
                         // Step 4: Remove trailing semicolons (and any whitespace before them)
-                        currentUrl = currentUrl.replace(/\\s*;+$/, '');
+                        currentUrl = currentUrl.replace(/\s*;+\s*$/, '');
                         this.logger.log(`[ShopifyPublish ${variant.Id}] After semicolon removal: "${currentUrl}"`);
 
                         // Step 5: Final check if it looks like a valid HTTP/HTTPS URL
