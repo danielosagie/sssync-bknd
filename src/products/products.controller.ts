@@ -240,6 +240,7 @@ export class ProductsController {
                 .from('ProductImages')
                 .select('ProductVariantId, ImageUrl, AltText')
                 .in('ProductVariantId', variants.map(v => v.Id));
+                this.logger.log(`[publishToShopify] Fetched variant images: ${JSON.stringify(variantImages, null, 2)}`);
 
             if (imagesError) {
                 this.logger.error(`Failed to fetch variant images: ${imagesError.message}`);
@@ -249,6 +250,7 @@ export class ProductsController {
             const variantImageMap = new Map(
                 variantImages?.map(img => [img.ProductVariantId, img.ImageUrl]) || []
             );
+            this.logger.log(`[publishToShopify] Variant image map: ${JSON.stringify(variantImageMap, null, 2)}`);
 
             // Determine productOptions for Shopify
             // If the primary variant has no defined .Options, create a default "Title" option
@@ -269,7 +271,7 @@ export class ProductsController {
                 productOptions: shopifyProductOptions, // Use the determined options
                 variants: variants.map(variant => {
                     const imageUrlFromDb = variantImageMap.get(variant.Id);
-                    let finalImageUrlForShopify: string = '';
+                    let finalImageUrlForShopify: string | undefined = undefined;
                     let shopifyFilename = `${variant.Sku}.jpg`; // Default filename
 
                     if (typeof imageUrlFromDb === 'string' && imageUrlFromDb.trim() !== '') {

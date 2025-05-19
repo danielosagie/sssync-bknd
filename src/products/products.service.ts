@@ -435,7 +435,7 @@ export class ProductsService {
         }
 
         // Step 2: Remove trailing semicolons (and any whitespace before them) - Applied to potentially extracted URL
-        currentUrl = currentUrl.replace(/\s*;+$/, '');
+        currentUrl = currentUrl.replace(/\s*;+\s*$/, '');
         this.logger.log(`[ImageCleanDB ${index}] After semicolon removal: "${currentUrl}"`);
 
         // Step 3: Decode URI Components - Applied to potentially extracted URL
