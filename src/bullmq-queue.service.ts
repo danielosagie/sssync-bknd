@@ -60,7 +60,13 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
           throw new Error(`Unknown job type: ${job.data.type}`);
         }
       },
-      { connection: this.connection }
+      {
+        connection: this.connection,
+        settings: {
+          guardInterval: 300000, // 5 minutes
+          drainDelay: 300000,    // 5 minutes
+        }
+      }
     );
 
     this.worker.on('completed', (job) => {

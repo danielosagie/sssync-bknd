@@ -500,14 +500,14 @@ export class ProductsService {
         // Extract primary canonical details from the DTO
         if (!canonicalDetails) {
             this.logger.warn(`Canonical details missing in DTO for variant ${variantId}. Only UpdatedAt will be set.`);
-            const updatePayload = {
-                UpdatedAt: new Date().toISOString(),
-            };
-            const { error: updateError } = await supabase
-                .from('ProductVariants')
-                .update(updatePayload)
-                .match({ Id: variantId });
-            if (updateError) throw updateError;
+        const updatePayload = {
+            UpdatedAt: new Date().toISOString(),
+        };
+        const { error: updateError } = await supabase
+            .from('ProductVariants')
+            .update(updatePayload)
+            .match({ Id: variantId });
+        if (updateError) throw updateError;
         } else {
             const updatePayload: Partial<ProductVariant> = {
                 UpdatedAt: new Date().toISOString(),

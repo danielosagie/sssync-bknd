@@ -5,8 +5,8 @@ import { UltraLowQueueService } from './ultra-low-queue.service';
 import { BullMQQueueService } from './bullmq-queue.service';
 
 // Constants for dynamic switching logic
-const HIGH_TRAFFIC_THRESHOLD_REQUESTS_PER_SECOND = 5;
-const HIGH_TRAFFIC_DURATION_SECONDS = 15;
+const HIGH_TRAFFIC_THRESHOLD_REQUESTS_PER_SECOND = 100;
+const HIGH_TRAFFIC_DURATION_SECONDS = 60;
 const SCALE_DOWN_IDLE_SECONDS = 60; // Switch back to low queue if no requests for 60s
 
 @Injectable()
