@@ -62,10 +62,6 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
       },
       {
         connection: this.connection,
-        settings: {
-          guardInterval: 300000, // 5 minutes
-          drainDelay: 300000,    // 5 minutes
-        }
       }
     );
 

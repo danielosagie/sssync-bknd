@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { ProductsController } from './products.controller';
 import { ImageRecognitionService } from './image-recognition/image-recognition.service';
@@ -9,6 +9,7 @@ import { PlatformConnectionsModule } from '../platform-connections/platform-conn
 import { SyncEngineModule } from '../sync-engine/sync-engine.module';
 import { PlatformProductMappingsModule } from '../platform-product-mappings/platform-product-mappings.module';
 import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.module';
+import { ShopifyAdapterModule } from '../platform-adapters/shopify/shopify-adapter.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.m
     SyncEngineModule,
     PlatformProductMappingsModule,
     PlatformAdaptersModule,
+    ShopifyAdapterModule,
   ],
   controllers: [ProductsController],
   providers: [ProductsService, ImageRecognitionService, AiGenerationService],

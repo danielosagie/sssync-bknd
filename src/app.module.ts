@@ -2,20 +2,23 @@ import { Module, Global, NestModule, MiddlewareConsumer, RequestMethod, Logger }
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { APP_GUARD } from '@nestjs/core';
-import { BullModule } from '@nestjs/bullmq';
+// import { BullModule } from '@nestjs/bullmq'; // Assuming BullModule might be unused if all queues via QueueManager
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { CommonModule } from './common/common.module';
 import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
-import { PlatformsModule } from './platforms/platforms.module';
+// import { PlatformsModule } from './platforms/platforms.module'; // Remove this line
 import { ProductsModule } from './products/products.module';
 import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
-import { SupabaseService } from './common/supabase.service';
-import { EncryptionService } from './common/encryption.service';
+// import { SupabaseService } from './common/supabase.service'; // Provided in CommonModule
+// import { EncryptionService } from './common/encryption.service'; // Provided in CommonModule
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
 import { QueueModule } from './queue.module';
+import { ScheduleModule } from '@nestjs/schedule';
+import { TasksModule } from './tasks/tasks.module';
+import { PlatformAdaptersModule } from './platform-adapters/platform-adapters.module';
 
 @Global()
 @Module({
@@ -24,6 +27,7 @@ import { QueueModule } from './queue.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
+    ScheduleModule.forRoot(),
     ThrottlerModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -63,9 +67,11 @@ import { QueueModule } from './queue.module';
     CommonModule,
     AuthModule,
     UsersModule,
-    PlatformsModule,
+    // PlatformsModule, // Remove this line
     ProductsModule,
     QueueModule,
+    TasksModule,
+    PlatformAdaptersModule,
   ],
   controllers: [AppController],
   providers: [

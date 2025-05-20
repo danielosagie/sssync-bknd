@@ -121,6 +121,23 @@ export class PlatformConnectionsService {
         return (data || []) as PlatformConnection[];
     }
 
+    async getAllEnabledConnections(): Promise<PlatformConnection[]> {
+        const supabase = this.getSupabaseClient();
+        this.logger.log('Fetching all enabled platform connections for periodic tasks.');
+        const { data, error } = await supabase
+            .from('PlatformConnections')
+            .select('Id, UserId, PlatformType, DisplayName, Status, IsEnabled, LastSyncSuccessAt, CreatedAt, UpdatedAt') // Select necessary fields
+            .eq('IsEnabled', true);
+
+        if (error) {
+            this.logger.error(`Error fetching all enabled connections: ${error.message}`);
+            // Depending on severity, you might return [] or throw.
+            // For a cron job, perhaps returning [] and logging is better than stopping the whole job.
+            return []; 
+        }
+        return (data || []) as PlatformConnection[];
+    }
+
      async updateConnectionStatus(connectionId: string, userId: string, status: PlatformConnection['Status']): Promise<void> {
           await this.updateConnectionData(connectionId, userId, { Status: status });
      }

@@ -691,6 +691,44 @@ The `userId` is typically derived from the authentication token.
 ```
 This endpoint would call `QueueManager.enqueueJob({ type: 'product-sync', productId, userId, timestamp: Date.now() });`
 
+## Trigger Periodic Reconciliation Sync
+
+Manually triggers a periodic reconciliation sync for a specific platform connection. This process will:
+    * Fetch all product identifiers from the connected platform.
+    * Compare these with the canonical product data in sssync's database.
+    * Identify and queue tasks to add any new products found on the platform.
+    * Identify and queue tasks to handle products that are in sssync's DB but no longer on the platform.
+    * Reconcile inventory levels for all mapped products, treating the platform as the source of truth.
+
+This is useful for ensuring data consistency and picking up changes that might have been missed by real-time webhooks, or for an initial full data comparison after a connection is established or re-enabled. The job is queued, and processing happens asynchronously.
+
+*   **Endpoint:** `POST /api/sync/connection/:connectionId/reconcile`
+*   **Auth Required:** Yes (Supabase JWT)
+*   **Permissions:** User must own the specified `connectionId`.
+*   **Path Parameters:**
+    *   `connectionId` (UUID): The ID of the platform connection to reconcile.
+*   **Request Body:** None
+*   **Success Response (202 Accepted):**
+    ```json
+    {
+        "message": "Reconciliation job successfully queued for connection xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx. Job ID: <job_id>",
+        "jobId": "<job_id>"
+    }
+    ```
+*   **Error Responses:**
+    *   `400 Bad Request`: If the connection is disabled or `connectionId` is not a valid UUID.
+    *   `401 Unauthorized`: If authentication fails.
+    *   `404 Not Found`: If the connection ID doesn't exist or doesn't belong to the user.
+    *   `500 Internal Server Error`: If the connection is missing critical information like `PlatformType`.
+
+**How to use:**
+
+1.  Obtain a valid JWT for an authenticated user.
+2.  Identify the `connectionId` (UUID) of the platform connection you wish to reconcile. This can be retrieved from the `GET /api/platform-connections` endpoint.
+3.  Make a POST request to the endpoint, including the `Authorization` header with the Bearer token and the `connectionId` in the path.
+4.  The API will respond with a 202 status code if the job is successfully queued, along with a message and the `jobId`.
+5.  The actual reconciliation process happens in the background. You can monitor activity logs or check product/inventory data after some time to see the results.
+
 ## General Error Responses
 In addition to specific errors mentioned per endpoint, the API may return common HTTP status codes:
 

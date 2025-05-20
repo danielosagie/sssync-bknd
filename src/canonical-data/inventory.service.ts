@@ -28,7 +28,7 @@ export class InventoryService {
      * Updates or inserts an inventory level record.
      * Uses the unique constraint on (ProductVariantId, PlatformConnectionId, PlatformLocationId).
      */
-    async updateLevel(levelData: Omit<InventoryLevel, 'Id' | 'UpdatedAt'>): Promise<InventoryLevel> {
+    async updateLevel(levelData: Omit<InventoryLevel, 'Id' | 'UpdatedAt' | 'CreatedAt'>): Promise<InventoryLevel> {
         const supabase = this.getSupabaseClient();
         const { ProductVariantId, PlatformConnectionId, PlatformLocationId, Quantity } = levelData;
         const locationLog = PlatformLocationId || '[default]';
@@ -142,4 +142,4 @@ export class InventoryService {
     }
 
     // Add other methods as needed (getLevel, getLevelsForVariant, etc.)
-} 
+}

@@ -1,15 +1,19 @@
-import { Controller, Post, Get, Body, Param, UseGuards, Request, Logger, ParseUUIDPipe, ValidationPipe } from '@nestjs/common'; // Added ValidationPipe
+import { Controller, Post, Get, Body, Param, UseGuards, Request, Logger, ParseUUIDPipe, ValidationPipe, HttpCode, HttpStatus, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common'; // Added ValidationPipe and other imports
 import { InitialSyncService, InitialScanResult, SyncPreview } from './initial-sync.service'; // Check path
 import { MappingSuggestion } from './mapping.service'; // <<< Import from mapping.service
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard'; // Check path
 import { ConfirmMappingsDto } from './dto/confirm-mappings.dto'; // Check path
+import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service'; // Added PlatformConnectionsService
 
 @UseGuards(SupabaseAuthGuard)
 @Controller('sync')
 export class SyncController {
     private readonly logger = new Logger(SyncController.name);
 
-    constructor(private readonly initialSyncService: InitialSyncService) {}
+    constructor(
+        private readonly initialSyncService: InitialSyncService,
+        private readonly platformConnectionsService: PlatformConnectionsService, // Injected PlatformConnectionsService
+    ) {}
 
     @Post('connections/:connectionId/start-scan')
     async startInitialScan(
@@ -72,4 +76,32 @@ export class SyncController {
          const jobId = await this.initialSyncService.queueInitialSyncJob(connectionId, userId);
          return { jobId };
      }
+
+    @Post('connection/:connectionId/reconcile')
+    @HttpCode(HttpStatus.ACCEPTED)
+    async triggerReconciliation(
+        @Request() req,
+        @Param('connectionId', ParseUUIDPipe) connectionId: string,
+    ): Promise<{ message: string; jobId: string }> {
+        const userId = req.user.id;
+        this.logger.log(`[POST /sync/connection/${connectionId}/reconcile] User ${userId} requested to trigger reconciliation.`);
+
+        // Fetch connection details to get platformType
+        const connection = await this.platformConnectionsService.getConnectionById(connectionId, userId);
+        if (!connection) {
+            throw new NotFoundException(`Connection with ID ${connectionId} not found for user ${userId}.`);
+        }
+        if (!connection.IsEnabled) {
+            throw new BadRequestException(`Connection with ID ${connectionId} is disabled. Reconciliation cannot be queued.`);
+        }
+        if (!connection.PlatformType) {
+            this.logger.error(`Connection ${connectionId} is missing PlatformType. Cannot queue reconciliation.`);
+            throw new InternalServerErrorException(`Connection ${connectionId} is missing PlatformType information.`);
+        }
+
+        const jobId = await this.initialSyncService.queueReconciliationJob(connectionId, userId, connection.PlatformType);
+        const message = `Reconciliation job successfully queued for connection ${connectionId}. Job ID: ${jobId}`;
+        this.logger.log(message);
+        return { message, jobId };
+    }
 } 

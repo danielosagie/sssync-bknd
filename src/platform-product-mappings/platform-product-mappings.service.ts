@@ -110,4 +110,25 @@ export class PlatformProductMappingsService {
             throw new InternalServerErrorException('Failed to delete platform product mapping');
         }
     }
+
+    async getMappingsByConnectionId(platformConnectionId: string, onlyActive: boolean = false): Promise<PlatformProductMapping[]> {
+        const supabase = this.getSupabaseClient();
+        this.logger.debug(`Fetching all mappings for connection ${platformConnectionId}, onlyActive: ${onlyActive}`);
+        let query = supabase
+            .from('PlatformProductMappings')
+            .select('*')
+            .eq('PlatformConnectionId', platformConnectionId);
+        
+        // if (onlyActive) { // Assuming IsEnabled or similar field might be added to mappings later
+        //     query = query.eq('IsEnabled', true);
+        // }
+
+        const { data, error } = await query;
+
+        if (error) {
+            this.logger.error(`Error fetching mappings for connection ${platformConnectionId}: ${error.message}`);
+            throw new InternalServerErrorException(`Could not fetch mappings: ${error.message}`);
+        }
+        return (data || []) as PlatformProductMapping[];
+    }
 } 

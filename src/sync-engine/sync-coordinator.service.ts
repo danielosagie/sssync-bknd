@@ -1,9 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { PlatformConnectionsService } from '../platform-connections/platform-connections.service'; // Adjust path
-import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry'; // Adjust path
-import { WEBHOOK_QUEUE } from './sync-engine.constants'; // Adjust path
+import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service';
+import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
+import { WEBHOOK_PROCESSING_QUEUE } from './sync-engine.constants'; // Corrected import
 // Import canonical data services (Products, Inventory, Mapping)
 
 @Injectable()

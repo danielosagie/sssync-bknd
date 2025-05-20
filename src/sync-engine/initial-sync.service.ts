@@ -3,14 +3,24 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service';
 import { MappingService, MappingSuggestion } from './mapping.service';
-import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE } from './sync-engine.constants';
+import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, RECONCILIATION_QUEUE } from './sync-engine.constants';
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
 import * as QueueManager from '../queue-manager';
+import { ActivityLogService } from '../common/activity-log.service';
+import { QueueManagerService } from '../queue-manager.service';
 
 // Define interfaces for return types
 export interface InitialScanResult { countProducts: number; countVariants: number; countLocations: number; analysisId?: string; }
 export interface SyncPreview { actions: Array<{type: string; description: string}>; /* ... */ }
 export interface JobData { type?: string; connectionId: string; userId: string; platformType: string; }
+
+// Interface for Reconciliation Job Data
+export interface ReconciliationJobData {
+    connectionId: string;
+    userId: string;
+    platformType: string;
+    // Potentially add options like 'full' or 'delta' in the future
+}
 
 console.log('[InitialSyncService] Imported INITIAL_SCAN_QUEUE:', INITIAL_SCAN_QUEUE);
 
@@ -19,9 +29,12 @@ export class InitialSyncService {
     private readonly logger = new Logger(InitialSyncService.name);
 
     constructor(
-        @InjectQueue(INITIAL_SYNC_QUEUE) private initialSyncQueue: Queue,
+        @InjectQueue(INITIAL_SYNC_QUEUE) private initialSyncQueue: Queue<JobData>,
+        @InjectQueue(RECONCILIATION_QUEUE) private reconciliationQueue: Queue<ReconciliationJobData>,
+        private readonly queueManagerService: QueueManagerService,
         private readonly connectionService: PlatformConnectionsService,
         private readonly mappingService: MappingService,
+        private readonly activityLogService: ActivityLogService,
     ) {}
 
     private async getConnectionAndVerify(connectionId: string, userId: string): Promise<PlatformConnection> {
@@ -34,21 +47,39 @@ export class InitialSyncService {
 
     async queueInitialScanJob(connectionId: string, userId: string): Promise<string> {
         const connection = await this.getConnectionAndVerify(connectionId, userId);
-        this.logger.log(`Queueing initial scan job via QueueManager for connection ${connectionId} (${connection.PlatformType})`);
+        const jobData: JobData = { type: 'initial-scan', connectionId, userId, platformType: connection.PlatformType };
 
-        await this.connectionService.updateConnectionStatus(connectionId, userId, 'scanning');
-        
-        const jobData: JobData = { 
-            type: 'initial-scan',
-            connectionId, 
-            userId, 
-            platformType: connection.PlatformType!
-        };
+        await this.activityLogService.logActivity(
+            userId,
+            'PlatformConnection',
+            connectionId,
+            'QUEUE_INITIAL_SCAN_JOB',
+            'Info',
+            `Attempting to queue initial scan job for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
+            connectionId,
+            connection.PlatformType
+        );
 
-        await QueueManager.enqueueJob(jobData);
-        
-        this.logger.log(`Job for connection ${connectionId} (type: initial-scan) handed to QueueManager.`);
-        return `queued-via-manager:${connectionId}-${Date.now()}`;
+        try {
+            await this.queueManagerService.enqueueJob(jobData);
+            const message = `Initial scan job for connection ${connectionId} successfully handed to QueueManager.`;
+            this.logger.log(message);
+            
+            await this.activityLogService.logActivity(
+                userId,
+                'PlatformConnection',
+                connectionId,
+                'QUEUE_INITIAL_SCAN_JOB_SUCCESS',
+                'Success',
+                `Successfully queued initial scan job (via QueueManager) for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
+                connectionId,
+                connection.PlatformType,
+            );
+            return "queued_via_manager";
+        } catch (error) {
+            this.logger.error(`Failed to queue initial scan job for connection ${connectionId} via QueueManager: ${error.message}`, error.stack);
+            throw error;
+        }
     }
 
     async getScanSummary(connectionId: string, userId: string): Promise<InitialScanResult> {
@@ -112,5 +143,22 @@ export class InitialSyncService {
         });
         this.logger.log(`Job ${job.id} added to queue ${INITIAL_SYNC_QUEUE}`);
         return job.id!;
+    }
+
+    async queueReconciliationJob(connectionId: string, userId: string, platformType: string): Promise<string> {
+        this.logger.log(`Queueing reconciliation job for connection ${connectionId} (User: ${userId}, Platform: ${platformType})`);
+        const job = await this.reconciliationQueue.add(
+            'reconcile-connection', // Job name
+            { connectionId, userId, platformType },
+            {
+                jobId: `reconcile-${connectionId}-${Date.now()}`,
+                // attempts: 2, // Default from queue config, or override here
+                // backoff: { type: 'exponential', delay: 60000 }
+            }
+        );
+        this.logger.log(`Reconciliation job ${job.id} queued for connection ${connectionId}.`);
+        await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'RECONCILIATION_QUEUED', 'Info', 
+            `Periodic reconciliation job queued for ${platformType} connection.`, connectionId, platformType);
+        return job.id as string;
     }
 } 

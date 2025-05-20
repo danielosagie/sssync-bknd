@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ShopifyApiClient } from './shopify-api-client.service';
 import { ShopifyMapper } from './shopify.mapper';
 import { ShopifyAdapter } from './shopify.adapter';
@@ -8,9 +8,9 @@ import { PlatformConnectionsModule } from '../../platform-connections/platform-c
 @Module({
   imports: [
     ConfigModule, // Import if needed
-    PlatformConnectionsModule // <<< ADD IT HERE
+    forwardRef(() => PlatformConnectionsModule) // <<< ADD forwardRef HERE
   ],
   providers: [ShopifyApiClient, ShopifyMapper, ShopifyAdapter],
-  exports: [ShopifyAdapter], // Export the main adapter facade
+  exports: [ShopifyAdapter, ShopifyApiClient], // Export the main adapter facade AND ShopifyApiClient
 })
 export class ShopifyAdapterModule {} 

@@ -47,7 +47,7 @@ export interface ShopifyInventoryLevelLocationNode {
 }
 
 export interface ShopifyInventoryLevelNode {
-    // available: number; // This was missing in user's query but is crucial - will add to query
+    available: number;
     location: ShopifyInventoryLevelLocationNode;
 }
 
@@ -129,6 +129,14 @@ export interface ShopifyProductNode {
     };
 }
 // --- End interface definitions ---
+
+// +++ Add new interface for Product Overview +++
+export interface ShopifyProductOverview {
+    id: string;
+    sku: string | null; // SKU of the first variant
+    updatedAt: string;
+    title: string; // Product title for logging/identification
+}
 
 // Types for Shopify GraphQL responses
 interface ShopifyLocation {
@@ -587,6 +595,109 @@ const GET_INVENTORY_LEVELS_QUERY = `
   }
 `;
 
+// +++ Add new query for fetching product overviews +++
+const GET_ALL_PRODUCT_OVERVIEWS_QUERY = `
+  query GetAllProductOverviews($cursor: String) {
+    products(first: 100, after: $cursor, sortKey: UPDATED_AT) { # Fetch 100, sort by UPDATED_AT
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+      edges {
+        node {
+          id
+          title
+          updatedAt
+          variants(first: 1) { # Only need the first variant for its SKU
+            edges {
+              node {
+                sku
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+`;
+
+// +++ Add new query for fetching products by their IDs +++
+const GET_PRODUCTS_BY_IDS_QUERY = `
+  query GetProductsByIds($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on Product {
+        # Include all fields from ShopifyProductNode that you need for mapping
+        id
+        title
+        status
+        descriptionHtml
+        tags
+        media(first: 10) { # Adjust count as needed
+          edges {
+            node {
+              id
+              preview {
+                image {
+                  url
+                }
+              }
+            }
+          }
+        }
+        variants(first: 50) { # Adjust count as needed
+          pageInfo {
+            hasNextPage
+            endCursor
+          }
+          edges {
+            node {
+              # Include all fields from ShopifyVariantNode
+              id
+              sku
+              barcode
+              compareAtPrice
+              createdAt
+              price
+              taxable
+              taxCode
+              inventoryQuantity
+              inventoryItem {
+                sku
+                measurement {
+                  weight {
+                    unit
+                    value
+                  }
+                }
+                inventoryLevels(first: 10) {
+                  edges {
+                    node {
+                      available # Make sure this field is available or adjust query/mapper
+                      location {
+                        id
+                        name
+                        isActive
+                      }
+                    }
+                  }
+                }
+              }
+              # selectedOptions and image might need to be fetched differently or mapped from product.media
+            }
+          }
+        }
+        totalInventory
+        tracksInventory
+        updatedAt
+        variantsCount {
+          count
+        }
+        # Add other ShopifyProductNode fields here if needed (handle, vendor, productType, options, etc.)
+      }
+    }
+  }
+`;
+
 @Injectable()
 export class ShopifyApiClient {
     private readonly logger = new Logger(ShopifyApiClient.name);
@@ -856,6 +967,69 @@ export class ShopifyApiClient {
         const uniqueProducts = Array.from(allProductsMap.values());
         this.logger.log(`Finished fetching data. Total unique products: ${uniqueProducts.length}. Total product pages fetched: ${productPagesFetched}. Total locations: ${allShopifyLocations.length}`);
         return { products: uniqueProducts, locations: allShopifyLocations };
+    }
+
+    async fetchAllProductOverviews(connection: PlatformConnection): Promise<ShopifyProductOverview[]> {
+        const shop = connection.PlatformSpecificData?.['shop'];
+        this.logger.log(`Fetching all product overviews from Shopify for shop: ${shop}...`);
+        const client = await this.getGraphQLClient(connection);
+
+        let allOverviews: ShopifyProductOverview[] = [];
+        let cursor: string | null = null;
+        let hasNextPage = true;
+        let pagesFetched = 0;
+
+        while (hasNextPage) {
+            pagesFetched++;
+            this.logger.debug(`Fetching product overview page ${pagesFetched} for shop ${shop}, after: ${cursor}`);
+
+            try {
+                const response = await client.request<{
+                    products: {
+                        pageInfo: { hasNextPage: boolean; endCursor: string | null };
+                        edges: { node: { id: string; title: string; updatedAt: string; variants: { edges: { node: { sku: string | null } }[] } } }[];
+                    };
+                }>(GET_ALL_PRODUCT_OVERVIEWS_QUERY, {
+                    variables: { cursor },
+                });
+
+                if (response.errors) {
+                    this.logger.error(`GraphQL product overviews query errors for shop ${shop}: ${JSON.stringify(response.errors)}`);
+                    throw new InternalServerErrorException(`GraphQL product overviews query failed: ${response.errors[0]?.message}`);
+                }
+
+                const productsData = response.data?.products;
+                if (!productsData || !productsData.edges) {
+                    this.logger.warn(`No products data or edges in response for overview page ${pagesFetched}, shop ${shop}.`);
+                    hasNextPage = false;
+                    continue;
+                }
+
+                for (const edge of productsData.edges) {
+                    const productNode = edge.node;
+                    allOverviews.push({
+                        id: productNode.id,
+                        title: productNode.title,
+                        sku: productNode.variants?.edges[0]?.node?.sku || null,
+                        updatedAt: productNode.updatedAt,
+                    });
+                }
+
+                hasNextPage = productsData.pageInfo.hasNextPage;
+                cursor = productsData.pageInfo.endCursor;
+                this.logger.debug(`Processed ${productsData.edges.length} product overviews from page ${pagesFetched}. More: ${hasNextPage}.`);
+
+            } catch (error) {
+                this.logger.error(`Failed to fetch product overview page ${pagesFetched} from Shopify for shop ${shop}: ${error.message}`, error.stack);
+                if (error instanceof UnauthorizedException || (error.message?.includes('401') || error.message?.includes('403'))) {
+                    await this.connectionsService.updateConnectionStatus(connection.Id, connection.UserId, 'error').catch(e => this.logger.error(`Failed update status: ${e.message}`));
+                    throw new UnauthorizedException(`Shopify authentication failed during product overview fetch for shop ${shop}.`);
+                }
+                throw error;
+            }
+        }
+        this.logger.log(`Finished fetching product overviews. Total: ${allOverviews.length} for shop: ${shop}.`);
+        return allOverviews;
     }
 
     async createProduct(
@@ -1213,6 +1387,56 @@ export class ShopifyApiClient {
         } catch (error) {
             this.logger.error(`Error fetching inventory levels: ${error.message}`, error.stack);
             throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to fetch inventory levels');
+        }
+    }
+
+    // +++ Add new method fetchProductsByIds +++
+    async fetchProductsByIds(connection: PlatformConnection, productIds: string[]): Promise<ShopifyProductNode[]> {
+        if (!productIds || productIds.length === 0) {
+            this.logger.debug('fetchProductsByIds called with no IDs. Returning empty array.');
+            return [];
+        }
+        const shop = connection.PlatformSpecificData?.['shop'];
+        this.logger.log(`Fetching ${productIds.length} products by IDs from Shopify for shop: ${shop}...`);
+        const client = await this.getGraphQLClient(connection);
+
+        // Shopify's `nodes` query can take up to 250 IDs at a time.
+        // We might need to batch if productIds.length > 250, but for now, assume it's less.
+        // If you expect more, implement batching logic here.
+        if (productIds.length > 250) {
+            this.logger.warn(`fetchProductsByIds called with ${productIds.length} IDs, which exceeds Shopify's typical limit of 250 for the nodes query. Implement batching if this is a common scenario.`);
+            // Truncate for now to avoid errors, or implement batching.
+            // For a real implementation, batching is essential for >250 IDs.
+        }
+
+        try {
+            const response = await client.request<{
+                nodes: (ShopifyProductNode | null)[] // The response for `nodes` is an array, some items might be null if ID not found
+            }>(GET_PRODUCTS_BY_IDS_QUERY, {
+                variables: { ids: productIds }, // Pass the array of IDs
+            });
+
+            if (response.errors) {
+                this.logger.error(`GraphQL fetchProductsByIds query errors for shop ${shop}: ${JSON.stringify(response.errors)}`);
+                throw new InternalServerErrorException(`GraphQL fetchProductsByIds query failed: ${response.errors[0]?.message}`);
+            }
+
+            const fetchedProducts = response.data?.nodes?.filter(node => node !== null) as ShopifyProductNode[] || [];
+            
+            // Note: If variants inside these products need further pagination, that logic would need to be added here,
+            // similar to fetchAllRelevantData. For simplicity now, we assume first page of variants is sufficient
+            // or GET_PRODUCTS_BY_IDS_QUERY fetches enough variants.
+
+            this.logger.log(`Successfully fetched ${fetchedProducts.length} products by IDs for shop: ${shop}.`);
+            return fetchedProducts;
+
+        } catch (error) {
+            this.logger.error(`Failed to fetch products by IDs from Shopify for shop ${shop}: ${error.message}`, error.stack);
+            if (error instanceof UnauthorizedException || (error.message?.includes('401') || error.message?.includes('403'))) {
+                await this.connectionsService.updateConnectionStatus(connection.Id, connection.UserId, 'error').catch(e => this.logger.error(`Failed update status: ${e.message}`));
+                throw new UnauthorizedException(`Shopify authentication failed during fetchProductsByIds for shop ${shop}.`);
+            }
+            throw error;
         }
     }
 
