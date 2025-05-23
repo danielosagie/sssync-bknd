@@ -142,4 +142,4 @@ export class InventoryService {
     }
 
     // Add other methods as needed (getLevel, getLevelsForVariant, etc.)
-}
+} 

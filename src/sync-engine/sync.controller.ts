@@ -103,5 +103,5 @@ export class SyncController {
         const message = `Reconciliation job successfully queued for connection ${connectionId}. Job ID: ${jobId}`;
         this.logger.log(message);
         return { message, jobId };
-    }
+     }
 } 

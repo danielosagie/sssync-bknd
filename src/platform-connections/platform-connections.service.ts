@@ -245,4 +245,35 @@ export class PlatformConnectionsService {
         const connection = await this.getConnectionById(connectionId, userId);
         return connection?.PlatformSpecificData?.['scanSummary'] || null;
     }
+
+    async getConnectionsByPlatformAndAttribute(
+        platformType: string,
+        attributeKey: string, // e.g., 'shop', 'merchantId'
+        attributeValue: string,
+    ): Promise<PlatformConnection[]> {
+        const supabase = this.getSupabaseClient();
+        this.logger.debug(`Fetching connections for platform ${platformType} where PlatformSpecificData.${attributeKey} = ${attributeValue}`);
+
+        // Note: Querying JSONB for a specific key-value pair.
+        // The exact syntax might depend on Supabase/PostgreSQL version and how deep the attribute is nested.
+        // This assumes attributeKey is a top-level key in PlatformSpecificData.
+        // For nested keys, you might use 'PlatformSpecificData->>key1->>key2' or similar.
+        const { data, error } = await supabase
+            .from('PlatformConnections')
+            .select('*')
+            .eq('PlatformType', platformType)
+            .eq(`PlatformSpecificData->>${attributeKey}`, attributeValue); // Filter by top-level key in JSONB
+
+        if (error) {
+            this.logger.error(`Error fetching connections by platform attribute ${platformType}.${attributeKey}=${attributeValue}: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Could not fetch connections by attribute: ${error.message}`);
+        }
+
+        if (!data) {
+            this.logger.debug(`No connections found for ${platformType}.${attributeKey}=${attributeValue}`);
+            return [];
+        }
+
+        return data as PlatformConnection[];
+    }
 } 

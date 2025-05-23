@@ -23,8 +23,6 @@ export interface ProductVariant {
     IsTaxable: boolean;
     TaxCode: string | null;
     ImageId: string | null;
-    PlatformVariantId: string | null;
-    PlatformProductId: string | null;
     CreatedAt: string;
     UpdatedAt: string;
 }

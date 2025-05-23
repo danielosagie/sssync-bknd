@@ -12,15 +12,17 @@ import { InitialSyncProcessor } from './processors/initial-sync.processor';
 import { WebhookController } from './webhook.controller';
 import { SyncController } from './sync.controller';
 import { ReconciliationProcessor } from './processors/reconciliation.processor';
+import { PushOperationsProcessor } from './processors/push-operations.processor';
 import { ProductsModule } from '../products/products.module';
-import { ActivityLogService } from '../common/activity-log.service';
 import { PlatformProductMappingsModule } from '../platform-product-mappings/platform-product-mappings.module';
 import { QueueModule } from '../queue.module';
-
-// Queue names as constants
-export const INITIAL_SYNC_QUEUE = 'initial-sync';
-export const RECONCILIATION_QUEUE = 'reconciliation';
-export const WEBHOOK_PROCESSING_QUEUE = 'webhook-processing';
+import { 
+    WEBHOOK_PROCESSING_QUEUE, 
+    INITIAL_SCAN_QUEUE, 
+    INITIAL_SYNC_QUEUE, 
+    RECONCILIATION_QUEUE,
+    PUSH_OPERATIONS_QUEUE
+} from './sync-engine.constants';
 
 @Module({
   imports: [
@@ -60,9 +62,11 @@ export const WEBHOOK_PROCESSING_QUEUE = 'webhook-processing';
       inject: [ConfigService],
     }),
     BullModule.registerQueue(
+      { name: INITIAL_SCAN_QUEUE },
       { name: INITIAL_SYNC_QUEUE },
+      { name: WEBHOOK_PROCESSING_QUEUE },
       { name: RECONCILIATION_QUEUE },
-      { name: WEBHOOK_PROCESSING_QUEUE }
+      { name: PUSH_OPERATIONS_QUEUE }
     ),
   ],
   controllers: [SyncController, WebhookController],
@@ -73,7 +77,7 @@ export const WEBHOOK_PROCESSING_QUEUE = 'webhook-processing';
     InitialScanProcessor,
     InitialSyncProcessor,
     ReconciliationProcessor,
-    ActivityLogService,
+    PushOperationsProcessor,
   ],
   exports: [
     InitialSyncService,

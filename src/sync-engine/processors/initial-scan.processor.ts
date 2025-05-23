@@ -1,5 +1,4 @@
-// import { Processor, WorkerHost } from '@nestjs/bullmq'; // Comment out Processor
-import { WorkerHost } from '@nestjs/bullmq'; // Keep WorkerHost if methods are overridden
+import { Processor, WorkerHost } from '@nestjs/bullmq'; // Keep WorkerHost if methods are overridden
 import { Job } from 'bullmq';
 import { Logger, InternalServerErrorException } from '@nestjs/common';
 import { INITIAL_SCAN_QUEUE } from '../sync-engine.constants';
@@ -13,7 +12,7 @@ import { ShopifyProductNode, ShopifyVariantNode } from '../../platform-adapters/
 import { CanonicalProduct, CanonicalProductVariant } from '../../platform-adapters/shopify/shopify.mapper';
 import { ProductVariant } from '../../common/types/supabase.types';
 
-// @Processor(INITIAL_SCAN_QUEUE) // <<< Temporarily comment out to stop direct BullMQ polling
+@Processor(INITIAL_SCAN_QUEUE) // <<< Temporarily comment out to stop direct BullMQ polling
 export class InitialScanProcessor extends WorkerHost {
     private readonly logger = new Logger(InitialScanProcessor.name);
     private lastActiveJobTimestamp: number = 0;

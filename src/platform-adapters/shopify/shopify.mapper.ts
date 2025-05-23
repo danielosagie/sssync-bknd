@@ -3,8 +3,14 @@ import {
     ShopifyProductNode, 
     ShopifyVariantNode, 
     ShopifyInventoryLevelNode, 
-    ShopifyLocationNode 
-} from './shopify-api-client.service'; // Assuming these are exported
+    ShopifyLocationNode,
+    ShopifyProductSetInput,
+    ShopifyVariantInput,
+    ShopifyInventoryItem,
+    ShopifyInventoryQuantity,
+    ShopifyProductOption,
+    ShopifyProductFile
+} from './shopify-api-client.service';
 import { CanonicalInventoryLevel } from '../../canonical-data/inventory.service'; // Adjust path if needed
 
 // --- Canonical Data Structure Interfaces (based on sssync-db.md) ---
@@ -13,7 +19,10 @@ export interface CanonicalProduct {
     Id?: string; // Will be set by DB or ProductsService
     UserId: string;
     IsArchived: boolean;
+    Title: string;
+    Description?: string;
     ImageUrls?: string[]; // Added for product-level images
+    PlatformSpecificData?: Record<string, any>;
     // CreatedAt, UpdatedAt are DB managed
     // Any other product-level fields from your DB schema?
 }
@@ -29,10 +38,16 @@ export interface CanonicalProductVariant {
     Description?: string | null;
     Price: number;
     CompareAtPrice?: number | null;
+    Cost?: number | null;
     Weight?: number | null;
     WeightUnit?: string | null;
     Options?: Record<string, string> | null; // e.g. { "Color": "Blue", "Size": "Large" }
-    // Add fields for images if they are directly on the variant in canonical model
+    PlatformSpecificData?: Record<string, any>;
+    IsArchived?: boolean; // Added - typically product level, but useful for variant-level sync decisions
+    RequiresShipping?: boolean;
+    IsTaxable?: boolean;
+    TaxCode?: string | null;
+    ImageId?: string | null; // Could be an ID for a primary image linked in ProductImages
     // CreatedAt, UpdatedAt are DB managed
 }
 
@@ -64,6 +79,15 @@ interface ShopifyVariantData { // This was for a FLATTENED variant structure
     productDescriptionHtml?: string;
     productVendor?: string;
     productTags?: string[];
+}
+
+// For product updates, Shopify's ProductInput is very similar to ProductSetInput.
+// We can reuse ShopifyProductSetInput and ShopifyVariantInput for updates,
+// with the understanding that ShopifyVariantInput can optionally include an 'id' field for existing variants.
+// Let's alias them for clarity within the update mapping function if needed, or just use them directly.
+// type ShopifyProductUpdateInput = ShopifyProductSetInput; // Product GID is passed separately to productUpdate mutation
+interface ShopifyVariantWithOptionalIdInput extends ShopifyVariantInput {
+    id?: string; // Shopify Variant GID for updates
 }
 
 @Injectable()
@@ -136,6 +160,8 @@ export class ShopifyMapper {
             Id: tempProductId, // This is temporary; actual ID comes from DB.
             UserId: userId,
             IsArchived: productNode.status.toUpperCase() === 'ARCHIVED',
+            Title: productNode.title,
+            Description: productNode.descriptionHtml || undefined,
             ImageUrls: imageUrls.length > 0 ? imageUrls : undefined,
             // TODO: Map other product-level fields if your CanonicalProduct has them
             // e.g., Title (if product title distinct from variant titles in canonical), Tags, Vendor, ProductType
@@ -174,7 +200,7 @@ export class ShopifyMapper {
             ProductVariantId: canonicalVariantId, // Link to the canonical variant
             PlatformConnectionId: platformConnectionId,
             PlatformLocationId: invLevelNode.location.id, // This is the Shopify Location GID
-            Quantity: 0, // TEMP: Set to 0 as 'available' was removed from ShopifyInventoryLevelNode
+            Quantity: invLevelNode.available ?? 0, // Use the 'available' field, defaulting to 0 if null/undefined
         };
     }
 
@@ -222,4 +248,264 @@ export class ShopifyMapper {
          this.logger.warn('mapShopifyInventory not implemented');
          return {};
      }
+
+    mapCanonicalProductToShopifyInput(
+        product: CanonicalProduct,
+        variants: CanonicalProductVariant[],
+        inventoryLevels: CanonicalInventoryLevel[], // All canonical levels for these variants across all connections
+        targetShopifyLocationGids: string[] // Shopify Location GIDs for THIS connection to set inventory for
+    ): ShopifyProductSetInput {
+        if (!product || !variants || variants.length === 0) {
+            this.logger.error('Cannot map to Shopify input: product or variants are missing/empty.');
+            // Or throw an error, depending on how SyncCoordinator handles this.
+            // For now, returning a partial/empty structure might lead to API errors.
+            // It's better to ensure valid inputs before calling this mapper.
+            throw new Error('Product and at least one variant are required to map to Shopify input.');
+        }
+
+        const shopifyVariants: ShopifyVariantInput[] = variants.map(v => {
+            if (!v.Sku) {
+                this.logger.error(`Variant with ID ${v.Id} is missing an SKU. Shopify requires SKUs for variants being created via productSet. Skipping this variant.`);
+                // Or throw, as Shopify often requires SKU for new variants.
+                // throw new Error(`Variant ${v.Id} (Title: ${v.Title}) is missing an SKU, which is required by Shopify.`);
+                return null; // This variant will be filtered out later.
+            }
+
+            const optionValues: Array<{ optionName: string; name: string }> = [];
+            if (v.Options) {
+                for (const optName in v.Options) {
+                    optionValues.push({ optionName: optName, name: v.Options[optName] });
+                }
+            } else if (variants.length === 1 && (!v.Options || Object.keys(v.Options).length === 0)) {
+                // Handle single variant products that might not have explicit options (Shopify still needs a default title option)
+                optionValues.push({ optionName: "Title", name: "Default Title" });
+            }
+
+
+            const inventoryItem: ShopifyInventoryItem = {
+                cost: v.Cost?.toString(), // Cost should be string
+                tracked: true, // Assuming all synced items should be tracked
+                measurement: v.Weight && v.WeightUnit ? {
+                    weight: {
+                        value: v.Weight,
+                        unit: v.WeightUnit.toUpperCase() as 'KILOGRAMS' | 'GRAMS' | 'POUNDS' | 'OUNCES'
+                    }
+                } : undefined
+            };
+
+            const inventoryQuantities: ShopifyInventoryQuantity[] = [];
+            for (const shopifyLocationGid of targetShopifyLocationGids) {
+                const relevantLevel = inventoryLevels.find(
+                    il => il.ProductVariantId === v.Id && il.PlatformLocationId === shopifyLocationGid
+                );
+                inventoryQuantities.push({
+                    locationId: shopifyLocationGid,
+                    name: 'available', // Setting 'available' quantity
+                    quantity: relevantLevel ? relevantLevel.Quantity : 0
+                });
+            }
+            
+            // TODO: Handle variant image (ShopifyVariantInput.file)
+            // This would require knowing the primary image URL for the variant.
+            // If v.ImageId refers to a CanonicalProductImage, we'd need to fetch its URL.
+            // Or, if CanonicalProductVariant had a direct `ImageUrl` field for its primary image.
+
+            return {
+                optionValues,
+                price: v.Price.toString(), // Price must be a string
+                sku: v.Sku,
+                inventoryItem,
+                inventoryQuantities,
+                taxable: v.IsTaxable !== undefined ? v.IsTaxable : true, // Default to true
+                barcode: v.Barcode || undefined,
+            };
+        }).filter(Boolean) as ShopifyVariantInput[]; // Filter out nulls from skipped variants
+
+        if (shopifyVariants.length === 0) {
+             this.logger.error('No valid variants could be mapped for Shopify product creation. All variants were missing SKUs or other critical info.');
+             throw new Error('Cannot create Shopify product: No valid variants provided or all were missing SKUs.');
+        }
+        
+        const productOptions: ShopifyProductOption[] = [];
+        if (variants.length > 0 && variants[0].Options) {
+            const firstVariantOptions = variants[0].Options;
+            for (const optName in firstVariantOptions) {
+                // Collect all unique values for this option across all variants
+                const uniqueValues = Array.from(new Set(variants.map(v => v.Options?.[optName]).filter(Boolean))) as string[];
+                productOptions.push({
+                    name: optName,
+                    values: uniqueValues.map(val => ({ name: val }))
+                });
+            }
+        }  else if (variants.length === 1) { // Single variant, no explicit options
+             productOptions.push({ name: "Title", values: [{ name: "Default Title"}] });
+        }
+
+
+        // Map product-level images to ShopifyProductFile[]
+        const files: ShopifyProductFile[] = product.ImageUrls?.map((url, index) => ({
+            originalSource: url,
+            alt: product.Title, // Use product title as alt text for now
+            filename: `${product.Title.replace(/[^a-zA-Z0-9]/g, '_')}_${index + 1}`, // Basic filename
+            contentType: 'IMAGE', // Assuming all are images
+        })) || [];
+
+
+        const input: ShopifyProductSetInput = {
+            title: product.Title,
+            descriptionHtml: product.Description || undefined,
+            // vendor: product.PlatformSpecificData?.vendor, // Example
+            // productType: product.PlatformSpecificData?.productType, // Example
+            status: product.IsArchived ? 'ARCHIVED' : 'ACTIVE', // Default to ACTIVE if not archived
+            // tags: product.PlatformSpecificData?.tags, // Example, ensure it's string[]
+            productOptions: productOptions.length > 0 ? productOptions : undefined,
+            files: files.length > 0 ? files : undefined,
+            variants: shopifyVariants,
+        };
+
+        return input;
+    }
+
+    mapCanonicalProductToShopifyUpdateInput(
+        product: CanonicalProduct,
+        variants: CanonicalProductVariant[], // All current canonical variants for the product
+        inventoryLevels: CanonicalInventoryLevel[],
+        targetShopifyLocationGids: string[],
+        existingPlatformVariantGids: Map<string, string> // Map<CanonicalVariantID, ShopifyVariantGID>
+    ): ShopifyProductSetInput { // Re-using ShopifyProductSetInput structure
+        if (!product || !variants) { 
+            this.logger.error('Cannot map to Shopify update input: product or variants array is missing.');
+            throw new Error('Product and variants array are required to map to Shopify update input.');
+        }
+
+        const shopifyVariants: ShopifyVariantWithOptionalIdInput[] = variants.map(v => {
+            const shopifyVariantGid = v.Id ? existingPlatformVariantGids.get(v.Id) : undefined;
+
+            if (!v.Sku) {
+                if (!shopifyVariantGid) {
+                    // This is a NEW variant being added during an update, and it has no SKU.
+                    this.logger.error(`New variant (Canonical ID: ${v.Id}, Title: ${v.Title}) is missing an SKU. New variants cannot be added to Shopify without an SKU. Skipping this variant.`);
+                    return null; // Filter this variant out later
+                } else {
+                    // This is an EXISTING variant being updated, and its canonical Sku is null/empty.
+                    // We will send an empty string for the SKU. Shopify might reject this or clear the SKU.
+                    this.logger.warn(`Existing variant (Canonical ID: ${v.Id}, Shopify GID: ${shopifyVariantGid}, Title: ${v.Title}) has a null/empty SKU in canonical data. Sending empty SKU to Shopify.`);
+                }
+            }
+
+            const optionValues: Array<{ optionName: string; name: string }> = [];
+            if (v.Options) {
+                for (const optName in v.Options) {
+                    optionValues.push({ optionName: optName, name: v.Options[optName] });
+                }
+            } else if (variants.length === 1 && (!v.Options || Object.keys(v.Options).length === 0)) {
+                optionValues.push({ optionName: "Title", name: "Default Title" });
+            }
+
+            const inventoryItem: ShopifyInventoryItem = {
+                cost: v.Cost?.toString(),
+                tracked: true, 
+                measurement: v.Weight && v.WeightUnit ? {
+                    weight: {
+                        value: v.Weight,
+                        unit: v.WeightUnit.toUpperCase() as 'KILOGRAMS' | 'GRAMS' | 'POUNDS' | 'OUNCES'
+                    }
+                } : undefined
+            };
+
+            const inventoryQuantities: ShopifyInventoryQuantity[] = [];
+            for (const shopifyLocationGid of targetShopifyLocationGids) {
+                const relevantLevel = inventoryLevels.find(
+                    il => il.ProductVariantId === v.Id && il.PlatformLocationId === shopifyLocationGid
+                );
+                inventoryQuantities.push({
+                    locationId: shopifyLocationGid,
+                    name: 'available',
+                    quantity: relevantLevel ? relevantLevel.Quantity : 0
+                });
+            }
+            
+            const variantInput: ShopifyVariantWithOptionalIdInput = {
+                id: shopifyVariantGid, 
+                optionValues,
+                price: v.Price.toString(),
+                sku: v.Sku || "", // Ensure SKU is a string; if v.Sku is null/undefined, use ""
+                inventoryItem,
+                inventoryQuantities,
+                taxable: v.IsTaxable !== undefined ? v.IsTaxable : true,
+                barcode: v.Barcode || undefined,
+                // TODO: Handle variant image updates. Shopify's ProductInput variants can take 'imageSrc' or 'imageId'.
+            };
+             // Clean up undefined id field if not present, as Shopify expects it to be absent for new variants
+            if (!variantInput.id) {
+                delete variantInput.id;
+            }
+            return variantInput;
+
+        }).filter(Boolean) as ShopifyVariantWithOptionalIdInput[]; // Filter out nulls (new variants without SKUs)
+
+        if (variants.length > 0 && shopifyVariants.length === 0 && !product.IsArchived) {
+            // All variants were filtered out (e.g. new variants missing SKUs), and product is not being archived.
+            // This would lead to a product with no variants if we proceed, which might be an issue.
+            this.logger.error('All variants were filtered out during mapping for Shopify product update (e.g., new variants missing SKUs). Cannot proceed with update that would leave product with no variants unless archiving.');
+            throw new Error('Cannot update Shopify product: No valid variants to update or add, and product is not being archived.');
+        }
+
+        const productOptions: ShopifyProductOption[] = [];
+         if (variants.length > 0 && variants[0].Options) { // Define options based on the current set of variants
+            const allOptionNames = new Set<string>();
+            variants.forEach(v => {
+                if (v.Options) {
+                    Object.keys(v.Options).forEach(name => allOptionNames.add(name));
+                }
+            });
+
+            allOptionNames.forEach(optName => {
+                const uniqueValues = Array.from(new Set(variants.map(v => v.Options?.[optName]).filter(Boolean))) as string[];
+                 if (uniqueValues.length > 0) {
+                    productOptions.push({
+                        name: optName,
+                        values: uniqueValues.map(val => ({ name: val }))
+                    });
+                }
+            });
+        } else if (variants.length === 1 && (!variants[0].Options || Object.keys(variants[0].Options).length === 0)) {
+            productOptions.push({ name: "Title", values: [{ name: "Default Title" }] });
+        }
+
+
+        // TODO: Handle image updates. ProductInput takes an `images` array.
+        // This would involve comparing product.ImageUrls with existing Shopify images,
+        // creating new ones, updating alt text, or disassociating. This is complex.
+        // For now, we'll pass existing images if any, or new ones.
+        // A more robust solution involves image IDs for updates.
+        const files: ShopifyProductFile[] = product.ImageUrls?.map((url, index) => ({
+            originalSource: url, // If these are new URLs. For existing images, we'd pass their Shopify Image GID.
+            alt: product.Title, 
+            filename: `${product.Title.replace(/[^a-zA-Z0-9]/g, '_')}_update_${index + 1}`,
+            contentType: 'IMAGE',
+        })) || [];
+
+        // Construct the ShopifyProductSetInput (which serves as ProductInput for updates)
+        // The main product GID is passed separately to the productUpdate mutation.
+        const updateInput: ShopifyProductSetInput = {
+            title: product.Title, // Title is required by ProductInput
+            descriptionHtml: product.Description || undefined,
+            status: product.IsArchived ? 'ARCHIVED' : 'ACTIVE',
+            // Shopify's ProductInput can also take 'handle', 'vendor', 'productType', 'tags'
+            // productOptions: productOptions.length > 0 ? productOptions : undefined, // Manage options carefully during update
+            // files: files.length > 0 ? files : undefined, // Manage images carefully
+            variants: shopifyVariants, // This will contain variants with GIDs (for update) and without (for creation)
+        };
+        
+        // Conditionally add options and files to avoid sending empty arrays if not intended.
+        if (productOptions.length > 0) {
+            updateInput.productOptions = productOptions;
+        }
+        // For images, productUpdate uses an `images` field with `ImageInput` which can take `id` for existing, `src` for new.
+        // The `files` field used in `productSet` is for StagedUploads, typically for new products.
+        // This part needs careful handling for updates. For now, this mapping might not correctly update images.
+
+        return updateInput;
+    }
 }

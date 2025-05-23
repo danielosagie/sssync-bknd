@@ -786,3 +786,902 @@ Several operations, particularly those involving AI processing or third-party pl
 - Endpoints like `POST /api/products/publish` might return a `202 Accepted` status, indicating the request has been queued for processing.
 - The status of these background jobs can be tracked through other means (e.g., webhook notifications, polling a job status endpoint - TBD).
 - For precise control over initial inventory settings on platforms like Shopify, it's often recommended to use platform-specific endpoints (e.g., `POST /api/products/:id/publish/shopify`) after the main publish request has been accepted and the product shell is created on the platform. Refer to the documentation for `/api/products/publish` and `/api/products/shopify/locations` for more details on this flow.
+
+
+##How Reconcilation Works:
+
+
+### Current Application Flow
+
+The system is designed to keep your product inventory synchronized between your sssync backend and connected e-commerce platforms (like Shopify). Here's a breakdown:
+
+1.  **Connecting a New Platform (e.g., Shopify):**
+    *   You (the user) initiate an OAuth flow from your client application. For Shopify, this would involve linking to an endpoint like `GET /api/auth/shopify/login`.
+    *   The backend (`AuthController`, `AuthService`) handles the OAuth dance with Shopify, obtains credentials (like an access token), encrypts them, and saves them in the `PlatformConnections` table in your Supabase database. The connection is typically marked as `IsEnabled: true` and might have an initial `Status` like `'connecting'`.
+    *   The `AuthService` also uses JWTs for managing the `state` parameter during the OAuth flow to prevent CSRF attacks and pass necessary information like `userId` and the `finalRedirectUri`.
+
+2.  **Initial Scan & Data Ingestion:**
+    *   Once a platform is connected, an **`initial-scan` job** is typically queued. This job is processed by one of the queue workers (`InitialScanProcessor` or `ReconciliationProcessor` indirectly).
+    *   The processor uses the appropriate platform **adapter** (e.g., `ShopifyAdapter`) and its **API client** (e.g., `ShopifyApiClient`) to fetch all existing products, variants, locations, and inventory levels from the newly connected platform. (e.g., `ShopifyApiClient.fetchAllRelevantData()`).
+    *   The fetched platform-specific data is then transformed into your app's **canonical data model** by a **mapper** (e.g., `ShopifyMapper.mapShopifyDataToCanonical()`).
+    *   **Mapping Suggestions:** The `MappingService` attempts to match these incoming platform products with any existing canonical products you might already have (e.g., from a previous CSV import or another platform connection). This involves comparing SKUs, barcodes, titles, etc.
+    *   **User Confirmation:** You'll likely interact with a UI (not part of the backend itself) that presents these mapping suggestions. You confirm which platform products link to existing canonical products, which should create new canonical products, and which to ignore. This confirmation would call an endpoint like `POST /api/sync/connections/:connectionId/confirm-mappings`.
+    *   `InitialSyncService.saveConfirmedMappings()` persists these choices, creating entries in `PlatformProductMappings`.
+    *   Based on these mappings, new canonical products/variants are created in your Supabase DB (`Products`, `ProductVariants` tables via `ProductsService`), and initial inventory levels are stored (`InventoryLevels` table via `InventoryService`).
+
+3.  **Ongoing Synchronization (Keeping Data Up-to-Date):**
+    *   **Webhooks (Real-time):**
+        *   Platforms like Shopify can send real-time notifications (webhooks) when events occur (e.g., a new product is created, inventory is updated).
+        *   These webhooks hit your `/api/webhooks/:platform` endpoint.
+        *   The `WebhookController` verifies and passes the payload to the `SyncCoordinatorService`.
+        *   The `SyncCoordinatorService` uses the relevant adapter and mapper to update your canonical data (Products, InventoryLevels) immediately. It can also trigger updates to *other* linked platforms if a change originated from one specific platform.
+    *   **Periodic Reconciliation Sync (Scheduled Background Job - Daily by default):**
+        *   A scheduled task (`TasksService`) runs daily (e.g., at 3 AM).
+        *   It fetches all `IsEnabled: true` platform connections (`PlatformConnectionsService.getAllEnabledConnections()`).
+        *   For each connection, it queues a **`reconciliation` job** (`InitialSyncService.queueReconciliationJob()`).
+        *   The `ReconciliationProcessor` handles these jobs:
+            1.  It fetches a lightweight overview of all products currently on the platform (e.g., `ShopifyApiClient.fetchAllProductOverviews()`).
+            2.  It compares this list against your `PlatformProductMappings` table.
+            3.  **New Products:** If products exist on the platform but are not in your mappings, the processor fetches their full details (e.g., `ShopifyApiClient.fetchProductsByIds()`), maps them to canonical models, saves them to your `Products` and `ProductVariants` tables, stores their inventory in `InventoryLevels`, and creates new entries in `PlatformProductMappings`. This is how products added directly on Shopify (like your 7 new ones) would be automatically imported.
+            4.  **Missing Products:** (Logic can be expanded) It identifies products that are in your mappings but no longer found on the platform. It might log this or mark the canonical product/mapping as needing review.
+            5.  **Inventory Reconciliation:** For all products that *are* mapped, it fetches the current live inventory from the platform (e.g., `ShopifyApiClient.getInventoryLevels()`) and updates your canonical `InventoryLevels` table to match. This ensures quantities are accurate.
+    *   **Manual Triggers / API Endpoints:**
+        *   Your application's UI will primarily read product and inventory data from your **canonical Supabase tables**.
+        *   The frontend can subscribe to real-time changes in these Supabase tables (e.g., `InventoryLevels`) for instant UI updates.
+        *   Some API endpoints (e.g., `GET /api/products/shopify/inventory?sync=true`) might allow an optional `sync=true` parameter to force an immediate on-demand fetch from the platform, but this should be used sparingly to avoid rate limits.
+
+4.  **Queue Management:**
+    *   The `QueueManagerService` decides whether to use the `UltraLowQueueService` (a simple Redis list, good for most cases) or the `BullMQQueueService` (more robust, for high-load scenarios). The thresholds are set very high, so it will almost always use the `UltraLowQueueService`. This was done to reduce Redis load from BullMQ's more frequent polling.
+
+### How to Test the Flow
+
+Testing will involve interacting with your API, observing logs, and checking data in your Supabase database and potentially Redis.
+
+**Prerequisites:**
+*   Your NestJS application running.
+*   `.env` file correctly configured (Supabase URL/keys, Redis URL, Shopify API key/secret/scopes/redirect URI, JWT secret, encryption secret).
+*   A Shopify development store with some products.
+*   A tool like Postman or `curl` for making API requests.
+*   Access to your Supabase dashboard to inspect tables.
+
+**Testing Steps:**
+
+1.  **Connect Shopify:**
+    *   **Action:** Use your client (or Postman redirecting in a browser) to hit `GET /api/auth/shopify/login?userId=<your_user_id>&shop=<your-shop-name>.myshopify.com&finalRedirectUri=<http://localhost:3000/some-client-callback-route>`.
+    *   Complete the Shopify OAuth flow in your browser.
+    *   **Verify:**
+        *   You're redirected to your `finalRedirectUri` with `status=success`.
+        *   A new entry appears in the `PlatformConnections` table for your user and Shopify, with `Status` likely 'connecting' or 'needs_review' and `IsEnabled: true`. Credentials should be encrypted.
+        *   Check application logs for messages from `AuthService` and `PlatformConnectionsService`.
+
+2.  **Initial Scan & Mapping:**
+    *   **Action (Automatic):** After connection, an `initial-scan` job should be queued.
+    *   **Verify (Logs & Queues):**
+        *   Check logs for `InitialScanProcessor` activity (or whichever processor is configured for `initial-scan` jobs via `bullmq-high-queue` or `ultra-low-queue`).
+        *   The processor should log fetching data from Shopify (`ShopifyApiClient.fetchAllRelevantData`).
+    *   **Action (API):** Once the scan is logged as complete, fetch mapping suggestions:
+        `GET http://localhost:3000/api/sync/connections/<your_connection_id>/mapping-suggestions` (Include your JWT Auth Bearer token).
+    *   **Verify (API Response):** You should get a list of platform products and any suggested canonical matches.
+    *   **Action (API):** Confirm the mappings:
+        `POST http://localhost:3000/api/sync/connections/<your_connection_id>/confirm-mappings` (Auth token needed) with a body like:
+        ```json
+        {
+          "confirmedMatches": [
+            { "platformProductId": "gid://shopify/Product/123", "sssyncVariantId": null, "action": "create" },
+            { "platformProductId": "gid://shopify/Product/456", "sssyncVariantId": "your-existing-canonical-variant-uuid", "action": "link" }
+          ]
+        }
+        ```
+    *   **Verify (Database):**
+        *   New entries in `PlatformProductMappings`.
+        *   New entries in `Products` and `ProductVariants` for `action: "create"`.
+        *   Inventory levels populated in `InventoryLevels`.
+        *   The `PlatformConnections` status might update to `syncing` or `connected`.
+
+3.  **Periodic Reconciliation Sync:**
+    *   **Action (Add data on Shopify):**
+        1.  Log into your Shopify development store.
+        2.  Add 1-2 new products *directly in Shopify*.
+        3.  Change the inventory quantity of an existing product that is already synced/mapped.
+    *   **Action (Trigger Reconciliation):**
+        *   **Option A (Wait):** The `TasksService` cron job runs daily.
+        *   **Option B (Manual Trigger via API):** Call `POST /api/sync/connections/<your_connection_id>/trigger-reconciliation` (Auth token needed). This will queue a reconciliation job.
+    *   **Verify (Logs & Database):**
+        *   Monitor logs for `ReconciliationProcessor` activity for your connection.
+        *   Look for logs indicating it's fetching product overviews, comparing, and then fetching full details for new products.
+        *   Check your Supabase tables:
+            *   The new products you added on Shopify should now appear in your `Products` and `ProductVariants` tables.
+            *   New entries for these products should be in `PlatformProductMappings`.
+            *   The `InventoryLevels` for the product whose quantity you changed on Shopify should now reflect the new Shopify quantity in your database.
+            *   The `LastSyncSuccessAt` timestamp on the `PlatformConnections` entry should update.
+
+4.  **Webhooks (Advanced Test):**
+    *   This requires a publicly accessible URL for your dev machine (e.g., using ngrok).
+    *   **Action:**
+        1.  Start ngrok: `ngrok http 3000`. Note the public URL (e.g., `https://<random_string>.ngrok.io`).
+        2.  In your Shopify store admin, go to Settings -> Notifications -> Webhooks.
+        3.  Create webhooks for events like `Product creation`, `Product update`, `Inventory level update`. Set the URL to `https://<random_string>.ngrok.io/api/webhooks/shopify`.
+        4.  Now, perform actions in Shopify (create a product, update inventory).
+    *   **Verify (Logs & Database):**
+        *   Your NestJS logs should show requests hitting `/api/webhooks/shopify`.
+        *   `WebhookController` and `SyncCoordinatorService` logs should indicate processing.
+        *   Changes should reflect (almost) instantly in your Supabase tables.
+
+5.  **API Endpoints for Data Retrieval:**
+    *   **Action:** Call endpoints like `GET /api/products/shopify/inventory?platformConnectionId=<your_connection_id>` (Auth token).
+    *   **Verify:** The data returned should match what's in your canonical Supabase tables.
+
+### Endpoint to List Connections
+
+You asked about how to use the `fetchConnections` endpoint. The correct endpoint to list your platform connections is:
+
+*   **Method:** `GET`
+*   **Path:** `/api/platform-connections`
+*   **Controller:** `PlatformConnectionsController`
+*   **Method:** `listConnections(@Request() req)`
+*   **Service Method:** `PlatformConnectionsService.getConnectionsForUser(userId)`
+
+**Authentication:** This endpoint is protected by `SupabaseAuthGuard`, so you need to include a valid JWT Bearer token in the `Authorization` header of your request. This token is what `req.user.id` is derived from.
+
+**What it Returns:**
+The service method `getConnectionsForUser` is designed to return only non-sensitive fields. It explicitly selects:
+`Id, UserId, PlatformType, DisplayName, Status, IsEnabled, LastSyncSuccessAt, CreatedAt, UpdatedAt`
+
+It **does not** return the encrypted `Credentials` or the full `PlatformSpecificData` (though `PlatformSpecificData` might contain some safe summary info if it were added there, but typically it holds things like `shop` domain or `merchantId` which are fine).
+
+**How to Call It (Example using `curl`):**
+Assuming you have a valid Supabase JWT for a user:
+
+```bash
+curl -X GET \
+  http://localhost:3000/api/platform-connections \
+  -H "Authorization: Bearer <YOUR_SUPABASE_JWT_TOKEN>" \
+  -H "Content-Type: application/json"
+```
+
+**Example Response:**
+You would receive a JSON array of connection objects, like this:
+
+```json
+[
+  {
+    "Id": "a1b2c3d4-e5f6-7890-1234-567890abcdef",
+    "UserId": "user-uuid-from-jwt",
+    "PlatformType": "shopify",
+    "DisplayName": "my-awesome-store.myshopify.com",
+    "Status": "connected",
+    "IsEnabled": true,
+    "LastSyncSuccessAt": "2023-11-15T10:30:00.000Z",
+    "CreatedAt": "2023-11-10T09:00:00.000Z",
+    "UpdatedAt": "2023-11-15T10:30:05.000Z"
+  },
+  {
+    "Id": "x1y2z3w4-v5u6-7890-aabb-ccddeeff0011",
+    "UserId": "user-uuid-from-jwt",
+    "PlatformType": "clover",
+    "DisplayName": "Clover (XYZMerchant)",
+    "Status": "needs_review",
+    "IsEnabled": true,
+    "LastSyncSuccessAt": null,
+    "CreatedAt": "2023-11-12T14:00:00.000Z",
+    "UpdatedAt": "2023-11-12T14:05:00.000Z"
+  }
+  // ... more connections for this user
+]
+```
+
+This detailed explanation should give you a good overview and a solid plan for testing. Let me know if any part is unclear!
+
+
+
+Okay, this is an excellent and comprehensive request. Let's break this down into actionable parts.
+
+**1. Comprehensive Testing Plan (Shopify, Clover, Square)**
+
+We'll test the end-to-end flow for each platform. The core steps will be similar, with platform-specific API calls and data structures being handled by their respective adapters.
+
+**I. Prerequisites for All Platforms:**
+
+*   **Environment Setup:**
+    *   Your NestJS application is running locally.
+    *   Your `.env` file is fully configured: Supabase (URL, Anon Key, Service Role Key), Redis (URL), JWT Secret, Credentials Encryption Secret.
+    *   Platform API Keys & Secrets:
+        *   Shopify: API Key, API Secret, Scopes, Redirect URI.
+        *   Clover: App ID, App Secret, Redirect URI (for both Sandbox and Production, though we'll primarily test with Sandbox).
+        *   Square: Application ID, Application Secret, Redirect URI, Scopes (for both Sandbox and Production, primarily testing with Sandbox).
+    *   You have active sandbox/developer accounts:
+        *   Shopify Development Store.
+        *   Clover Sandbox Merchant Account.
+        *   Square Sandbox Account.
+    *   **Initial Data:** Populate each platform's sandbox with 5-7 distinct products.
+        *   Include a mix: some simple products, some with 2-3 variants (e.g., Size: S/M/L, Color: Red/Blue).
+        *   Ensure some products/variants have SKUs.
+        *   Ensure some products/variants have unique barcodes.
+        *   Set varying inventory levels for products/variants, across different locations if the platform supports it explicitly in the sandbox (Shopify does, Square can, Clover is often merchant-level).
+*   **Tools:**
+    *   API Client (Postman, Insomnia, or `curl`) for making HTTP requests.
+    *   Supabase Dashboard access to inspect tables: `Users`, `PlatformConnections`, `Products`, `ProductVariants`, `PlatformProductMappings`, `InventoryLevels`, `ActivityLogs`.
+    *   Application logs (NestJS console output).
+
+**II. Test Flow (Repeat for Shopify, then Clover, then Square):**
+
+**Phase 1: OAuth Connection & Initial Setup**
+
+1.  **Authenticate a User & Obtain JWT:**
+    *   Ensure you have a user in your Supabase `Users` table. If not, create one (e.g., via Supabase Studio or a signup flow if you have one).
+    *   Obtain a JWT for this user (e.g., by "logging in" through a test script or Supabase's SQL editor to generate a token for a test user).
+2.  **Initiate OAuth Connection:**
+    *   **Action:** Using your API client (ensure it can handle redirects or you can manually follow them in a browser), construct and hit the appropriate login URL. Replace `<YOUR_USER_ID>` and `<YOUR_JWT_TOKEN>`.
+        *   **Shopify:**
+            `GET {{base_url}}/auth/shopify/login?userId=<YOUR_USER_ID>&shop=<your-dev-shop-name>.myshopify.com&finalRedirectUri=http://localhost:8000/auth-callback-test` (Replace `{{base_url}}` with your app's local URL, e.g., `http://localhost:3000/api`)
+        *   **Clover (Sandbox):**
+            `GET {{base_url}}/auth/clover/login?userId=<YOUR_USER_ID>&finalRedirectUri=http://localhost:8000/auth-callback-test`
+            *(Ensure `CLOVER_API_BASE_URL` in your `.env` points to the Clover Sandbox: `https://sandbox.dev.clover.com`)*
+        *   **Square (Sandbox):**
+            `GET {{base_url}}/auth/square/login?userId=<YOUR_USER_ID>&finalRedirectUri=http://localhost:8000/auth-callback-test`
+            *(Ensure `SQUARE_API_BASE` in your `.env` points to Square Sandbox: `https://connect.squareupsandbox.com`)*
+    *   Complete the authentication flow on the respective platform's website.
+    *   **Verify:**
+        *   Successful redirection to your `finalRedirectUri` with query parameters like `connection=<platform>&status=success`.
+        *   **Supabase `PlatformConnections` Table:**
+            *   A new row exists for the user and the connected platform.
+            *   `IsEnabled` is `true`.
+            *   `Credentials` are present (and should be encrypted, though you can't directly see the decrypted value).
+            *   `PlatformSpecificData` contains relevant IDs (e.g., `shop` for Shopify; `merchantId` for Clover and Square).
+            *   `Status` is appropriate (e.g., `connected`, `needs_review`).
+        *   **Application Logs:** Check for successful token exchange messages from `AuthService` and `PlatformConnectionsService`.
+        *   **Supabase `ActivityLogs` Table:** Entry for "AUTH_SUCCESS" or similar for the platform connection.
+
+3.  **List Platform Connections:**
+    *   **Action:** `GET {{base_url}}/platform-connections` (Header: `Authorization: Bearer <YOUR_JWT_TOKEN>`).
+    *   **Verify:**
+        *   The newly connected platform is listed in the JSON array response.
+        *   The response includes `Id`, `PlatformType`, `DisplayName`, `Status`, `IsEnabled`.
+        *   Crucially, the encrypted `Credentials` are NOT present in this API response.
+
+**Phase 2: Initial Scan, Data Ingestion & Mapping**
+*The system should automatically queue an `initial-scan` job after a successful connection.*
+
+1.  **Monitor Initial Scan:**
+    *   **Verify (Application Logs & Queue [if accessible]):**
+        *   Logs from `InitialScanProcessor` (or `ReconciliationProcessor` if it handles this queue) indicating a job for the new connection.
+        *   Logs from the relevant platform adapter (`ShopifyAdapter`, `CloverAdapter`, `SquareAdapter`) and its API client showing it's fetching data (`fetchAllRelevantData`).
+            *   Shopify: Calls to fetch products, locations.
+            *   Clover: Calls to fetch items, merchant details.
+            *   Square: Calls to fetch catalog objects, inventory, locations.
+        *   Logs from `MappingService` trying to `generateSuggestions`.
+        *   `PlatformConnections.Status` in Supabase might transition (e.g., `scanning` -> `needs_review`).
+        *   `ActivityLogs` entry for scan start/completion, potentially with counts of items found.
+
+2.  **Fetch Mapping Suggestions:**
+    *   **Action:** `GET {{base_url}}/sync/connections/<platform_connection_id>/mapping-suggestions` (Header: `Authorization: Bearer <YOUR_JWT_TOKEN>`). Use the `Id` from the `PlatformConnections` table.
+    *   **Verify:**
+        *   Response is a JSON array. Each item represents a product/variant from the platform.
+        *   For a fresh setup, `suggestedCanonicalVariant` should likely be `null` for all, and `matchType` should be `NONE`.
+
+3.  **Confirm Mappings (Instructing to Create New Canonical Products):**
+    *   **Action:** `POST {{base_url}}/sync/connections/<platform_connection_id>/confirm-mappings` (Header: `Authorization: Bearer <YOUR_JWT_TOKEN>`).
+    *   Construct the body based on the response from "Fetch Mapping Suggestions". For all products, set `action: "create"` and `sssyncVariantId: null`.
+        ```json
+        {
+          "confirmedMatches": [
+            // Example for one platform product:
+            {
+              "platformProductId": "<platform_product_id_from_suggestions>",
+              "platformVariantId": "<platform_variant_id_from_suggestions_if_any>", // May be null if product is simple
+              "platformProductSku": "<sku_from_suggestions_if_any>",
+              "platformProductTitle": "<title_from_suggestions>",
+              "sssyncVariantId": null,
+              "action": "create"
+            }
+            // ... more entries for all products from the platform
+          ]
+        }
+        ```
+    *   **Verify:**
+        *   **Supabase `Products` Table:** New entries created for each unique product concept from the platform.
+        *   **Supabase `ProductVariants` Table:** New entries for each product/variant. Check for correct `ProductId`, `Sku`, `Title`, `Price`, `Barcode`, etc.
+        *   **Supabase `PlatformProductMappings` Table:** New entries linking platform IDs (product & variant) to the newly created canonical `ProductVariantId`. Check `PlatformProductId`, `PlatformVariantId`, `PlatformSku`.
+        *   **Supabase `InventoryLevels` Table:** Entries populated for each mapped variant, reflecting stock quantities and location IDs from the platform.
+        *   **Application Logs:** Messages from `InitialSyncService.saveConfirmedMappings`, `ProductsService`, `InventoryService`, `PlatformProductMappingsService` showing data creation.
+        *   **`ActivityLogs`:** Entries for mapping confirmation, product creation, inventory ingestion.
+        *   **`PlatformConnections.Status`:** Should update (e.g., to `syncing`, then `connected` or `active_sync`).
+
+**Phase 3: Reconciliation Sync (The Core Test)**
+
+1.  **Introduce Changes on the Platform:**
+    *   **Action (Directly in Shopify/Clover/Square Admin Panel):**
+        1.  **Add New Products:** Create 1-2 entirely new products on the platform that don't exist in sssync.
+        2.  **Update Inventory:** For 1-2 *already mapped/synced* products, change their inventory quantity (e.g., increase stock of one, decrease another).
+        3.  **(Optional) Update Product Details:** For 1 mapped product, change its title or price on the platform.
+        4.  **(Optional) Delete Product:** Delete 1 mapped product from the platform.
+    *   *Wait a few minutes for platform changes to settle.*
+
+2.  **Trigger Reconciliation Sync:**
+    *   **Action:** `POST {{base_url}}/sync/connection/<platform_connection_id>/reconcile` (Header: `Authorization: Bearer <YOUR_JWT_TOKEN>`).
+    *   **Verify (Logs & Queues):**
+        *   Application logs show `InitialSyncService.queueReconciliationJob` being called.
+        *   `ReconciliationProcessor` logs show it picking up the job.
+        *   Adapter logs:
+            *   Fetching product overviews (e.g., `ShopifyApiClient.fetchAllProductOverviews`).
+            *   Comparing platform list with `PlatformProductMappings`.
+            *   For **new products**: fetching full details (e.g., `ShopifyAdapter.fetchProductsByIds`).
+            *   For **existing mapped products**: fetching current live inventory (e.g., `ShopifyApiClient.getInventoryLevels`).
+
+3.  **Verify Reconciliation Results (Crucial Step):**
+    *   **Wait for the job to complete (monitor logs).**
+    *   **Verify (Supabase Tables & Logs):**
+        *   **Newly Added Products:**
+            *   The products you added directly on the platform should now exist in your `Products` and `ProductVariants` tables.
+            *   New `PlatformProductMappings` should be created for them.
+            *   `InventoryLevels` for these new products should accurately reflect their initial stock from the platform.
+            *   `ActivityLogs` should show "NEW_PRODUCT_FOUND_FROM_PLATFORM" or similar.
+        *   **Inventory Quantity Changes:**
+            *   The `InventoryLevels` table entries for the products whose quantities you changed on the platform should now reflect these **new platform quantities**. This is key – reconciliation treats the platform as the source of truth for inventory.
+            *   `ActivityLogs` for "INVENTORY_LEVEL_RECONCILED".
+        *   **(Optional) Product Detail Changes (Title/Price):**
+            *   Check the `ProductVariants` table. Did the title/price of the product you edited on the platform update in your canonical database? *Current reconciliation primarily focuses on new products and inventory. Updating existing canonical details from platform changes might be a future enhancement or a configurable behavior (platform-is-truth vs. sssync-is-truth for specific fields).*
+        *   **(Optional) Deleted Products:**
+            *   How did the system handle the product deleted from the platform?
+                *   Is the `PlatformProductMapping` marked as `IsEnabled: false` or `SyncStatus: 'PlatformProductNotFound'`?
+                *   Is the canonical `Product` or `ProductVariant` archived or deleted? (Typically, canonical data might be preserved but marked, rather than hard deleted, to avoid data loss if it was an accidental platform deletion).
+            *   Check `ActivityLogs`.
+        *   **`PlatformConnections.LastSyncSuccessAt`:** This timestamp should be updated.
+
+**Phase 4: API Data Pulling & Verification**
+
+1.  **Fetch Inventory via API (Example for Shopify; adapt for other platforms if equivalent direct-inventory-pull endpoints are added):**
+    *   **Action (Shopify):**
+        *   `GET {{base_url}}/products/shopify/inventory?platformConnectionId=<shopify_connection_id>&sync=false` (Bearer token)
+        *   `GET {{base_url}}/products/shopify/inventory?platformConnectionId=<shopify_connection_id>&sync=true` (Bearer token)
+    *   **Verify (Shopify):**
+        *   **`sync=false`:** The API should return inventory data based on the current state of your `InventoryLevels` table (which should be fresh after the reconciliation).
+        *   **`sync=true`:**
+            *   Logs show the `ShopifyAdapter` making live calls to Shopify for inventory.
+            *   Your local `InventoryLevels` table should get updated again if there were any discrepancies.
+            *   The API response should reflect the absolute latest inventory from Shopify.
+            *   `PlatformConnections.LastSyncSuccessAt` should update.
+        *   Cross-reference the API response quantities with what you see in the Shopify admin panel and your Supabase `InventoryLevels` table.
+
+2.  **Fetch Shopify Locations (Shopify-specific):**
+    *   **Action:** `GET {{base_url}}/products/shopify/locations?platformConnectionId=<shopify_connection_id>` (Bearer token).
+    *   **Verify:** Response lists all locations from your Shopify dev store, each with a Shopify GID.
+
+3.  **Fetch Shopify Locations with Products (Shopify-specific):**
+    *   **Action:** `GET {{base_url}}/products/shopify/locations-with-products?platformConnectionId=<shopify_connection_id>&sync=false` (Bearer token).
+    *   **Verify:**
+        *   The response structure aggregates products under their respective locations.
+        *   Inventory quantities shown should match the latest data in `InventoryLevels`.
+
+**Phase 5: Product Updates (Canonical to Platform - Testing the Infrastructure)**
+
+*Since the adapter methods `createProduct`, `updateProduct`, `deleteProduct`, `updateInventoryLevels` are mostly placeholders, full end-to-end testing of pushing changes *from* sssync *to* platforms isn't feasible yet. However, we can test that the `SyncCoordinatorService` correctly identifies the need to push and attempts to call the adapter methods.*
+
+1.  **Manually Create/Update a Canonical Product (if you have internal admin tools or test scripts):**
+    *   **Action:**
+        *   Create a new `Product` and `ProductVariant` directly in your Supabase tables (mimicking an internal creation).
+        *   OR, update the `Price` or `Title` of an *existing* canonical `ProductVariant` that is already mapped to platform products.
+    *   **Triggering the Push (Conceptual):**
+        *   Currently, there isn't a direct API endpoint to say "push this canonical product change to all platforms." This logic is typically triggered internally after a canonical entity is saved (e.g., via a database trigger, or an event emitted by `ProductsService.saveVariants` that `SyncCoordinatorService` listens to - this eventing part might not be fully implemented yet).
+        *   For testing, you might need to:
+            *   Manually invoke `SyncCoordinatorService.handleCanonicalProductCreation(newProductId, userId)` or `SyncCoordinatorService.handleCanonicalProductUpdate(updatedVariantId, userId)` if your test setup allows.
+            *   Or, if `ProductsService` emits events, ensure `SyncCoordinatorService` is listening and reacts.
+    *   **Verify (Application Logs):**
+        *   `SyncCoordinatorService` logs should show it detecting the canonical change.
+        *   It should iterate through all `IsEnabled: true` `PlatformConnections` for that user.
+        *   For each connection, it should:
+            *   Get the correct adapter (e.g., `ShopifyAdapter`).
+            *   Attempt to call the relevant method (e.g., `adapter.createProduct(...)` or `adapter.updateProduct(...)`).
+            *   Since these are placeholders, you should see logs like "createProduct not implemented for Shopify" or the error being thrown.
+        *   This verifies the coordinator's logic up to the point of adapter invocation.
+
+**2. Updating `products.md`**
+
+I will review your `docs/api/products.md` and integrate the following:
+
+*   **Refine "How Reconciliation Works":**
+    *   Generalize the description to apply to Shopify, Clover, and Square.
+    *   Emphasize that during reconciliation, the connected e-commerce platform is treated as the primary source of truth for inventory counts and for discovering new products.
+    *   Clarify how products deleted on the platform are handled (e.g., mapping disabled, canonical product archived/flagged).
+    *   Mention that updates to existing product *details* (like title, price) on the platform might not automatically overwrite canonical data unless specifically configured (as this can be a two-way sync dilemma).
+*   **Add "Testing the Full Sync Flow" Section:**
+    *   Summarize the phases from the testing plan above (OAuth, Initial Scan & Mapping, Reconciliation, API Data Pulling).
+    *   Provide brief, actionable steps for a user/tester to follow.
+    *   Link to relevant API endpoints within the document (e.g., "To check connection status, see GET /api/platform-connections... To trigger reconciliation, use POST /api/sync/connection/:connectionId/reconcile...").
+*   **Add "Core Data Flows" Overview:**
+    *   **Platform to sssync (Pull/Ingestion):**
+        *   OAuth Connection -> Initial Scan (all products/inventory) -> Mapping -> Canonical Data Storage.
+        *   Ongoing: Reconciliation Jobs (detects new platform products, updates all inventory from platform).
+        *   Ongoing: Webhooks (real-time updates from platform for individual changes).
+    *   **sssync to Platform (Push - *Conceptual for now, as implementation is partial*):**
+        *   Canonical data created/updated in sssync (e.g., via UI, API, or another sync).
+        *   `SyncCoordinatorService` detects change.
+        *   Relevant adapter's `create/update/deleteProduct` or `updateInventoryLevels` method is called to push to specific platform.
+*   **Ensure API endpoint documentation is consistent with the testing plan and current implementation.**
+
+**3. System Robustness Assessment & Improvements**
+
+**Current Strengths:**
+
+*   **Modular Design:** The adapter pattern (`BaseAdapter`, specific implementations for Shopify, Clover, Square) is excellent for extensibility.
+*   **Canonical Data Model:** Having a central `Products`, `ProductVariants`, `InventoryLevels` schema is crucial for multi-platform sync.
+*   **OAuth Handled:** Secure authentication flows for all three major platforms are in place.
+*   **Background Processing:** Use of queues (`UltraLowQueueService`, BullMQ a_option_) for tasks like initial scan and reconciliation is good for responsiveness.
+*   **Basic Reconciliation:** The daily reconciliation job provides a safety net for data consistency, especially for inventory and new product discovery from platforms.
+*   **API Documentation Started:** `products.md` is a good foundation.
+
+**Areas for Immediate & Future Improvement:**
+
+*   **Error Handling & Resilience:**
+    *   **Granular Retries:** Implement more sophisticated retry logic within API clients (e.g., exponential backoff for 429s, specific error code handling).
+    *   **Dead-Letter Queues (DLQ):** For queue jobs that consistently fail, move them to a DLQ for manual inspection instead of endless retries.
+    *   **User Feedback on Errors:** Surface sync errors to the user (e.g., in `PlatformConnections.Status` or an `ActivityLog` that a UI can display). "Connection error, please re-authenticate Clover."
+*   **Transactional Integrity:**
+    *   For operations involving multiple database writes (e.g., creating Product + Variants + Mapping + Inventory), ensure these are wrapped in database transactions to prevent partial data states if one part fails. Supabase supports this.
+*   **Outbound Rate Limiting:**
+    *   Adapters calling platform APIs should respect those platforms' rate limits. Implement client-side rate limiters/throttlers in `ShopifyApiClient`, `CloverApiClient`, etc.
+*   **Idempotency:**
+    *   Ensure all create/update operations (both from platform-to-sssync and sssync-to-platform) are idempotent. This is vital for handling webhook retries or re-running failed jobs. (e.g., using platform IDs or unique transaction keys).
+*   **Scalability of Reconciliation:**
+    *   For users with very large catalogs (tens of thousands of products), fetching all product overviews daily can be resource-intensive.
+    *   Explore if platforms offer delta APIs (e.g., "products updated since timestamp/cursor") to make reconciliation more efficient. If not, the current overview approach is the standard.
+*   **Conflict Resolution (Push to Platform):**
+    *   This is a major area for when you fully implement sssync-to-platform pushes.
+    *   If sssync tries to update a product on Shopify, but that product was also just changed on Shopify directly, how is the conflict resolved?
+        *   Strategies: Last-write-wins (based on timestamps), sssync-is-truth, platform-is-truth, or flag for manual user resolution. This needs to be configurable or clearly defined.
+*   **Data Validation & Transformation:**
+    *   More rigorous validation of data from platform APIs before mapping and saving. What if a price comes as a string instead of a number?
+    *   Handle edge cases in mappers (e.g., unexpected nulls, malformed data).
+*   **Configuration Management:**
+    *   Centralize platform-specific settings (e.g., API versions to use, specific feature flags or behaviors per platform) rather than scattering them.
+*   **Logging and Monitoring:**
+    *   Implement more structured logging (e.g., consistent JSON format).
+    *   Add correlation IDs to trace a request/job through multiple services.
+    *   Integrate with a monitoring/alerting system for critical errors or queue backups.
+*   **User Control & Visibility:**
+    *   (Future UI) Dashboard showing connection status, last sync times, count of synced products.
+    *   Log of sync activities and errors per connection.
+    *   Ability to manually trigger a sync/reconciliation for a specific connection.
+    *   Ability to pause/resume syncing for a connection.
+*   **Automated Testing:**
+    *   Expand unit tests for services, mappers, API clients.
+    *   Develop integration tests for key flows (e.g., a full reconciliation loop for a mock platform).
+*   **Two-Way Sync Strategy Definition:**
+    *   Clearly define which system (sssync or the external platform) is the source of truth for different data fields (e.g., inventory might always come from platform during reconciliation, but title/description might be pushed from sssync). This can be complex and may need to be configurable per user or per field.
+*   **Backup and Restore Strategy (Leading to your Google Docs idea):**
+    *   **Database Backups:** Supabase provides automated backups. Understand their frequency and retention.
+    *   **Application-Level "Snapshots":**
+        *   Before major sync operations (like the first big push to a new platform), or periodically, consider a mechanism to snapshot key canonical data (e.g., export product/variant/inventory data to JSON/CSV files stored securely, perhaps in S3 or similar). This is your "application-level" backup.
+        *   This could be extended to allow users to download their canonical data.
+    *   **Versioning:** For critical canonical data, consider implementing version history in your tables (e.g., using audit triggers or a separate history table). This allows rollback of specific changes.
+    *   **"Google Docs" Style Versioning/Restore (More Advanced):** This implies a much finer-grained history and diffing capability, possibly storing changes as events (Event Sourcing pattern). This is a significant architectural step but offers powerful audit and rollback. For a simpler start, periodic snapshots are more achievable.
+
+This is a lot, but it provides a roadmap. The immediate next step is to execute the testing plan.
+
+I'll now proceed to update `docs/api/products.md` based on this discussion. After that, we can refine the "Robustness & Improvements" section if you wish.
+
+
+
+It seems the request to edit `docs/api/products.md` didn't result in any changes. This can happen if the model determines the existing content largely aligns with the instructions or if the instructions are too broad for an automated pass.
+
+Let's try a more targeted approach to update `products.md`. I'll focus on specific sections first.
+
+**Instruction for `products.md` update:**
+
+1.  **Create a new top-level section: `# Core Data Synchronization Flows`**.
+    *   Under this, create two sub-sections:
+        *   `## Platform to sssync (Pull/Ingestion Flow)`
+        *   `## sssync to Platform (Push Flow - Conceptual)`
+2.  **Populate `## Platform to sssync (Pull/Ingestion Flow)` with:**
+    *   A brief overview of how data comes from connected platforms into sssync.
+    *   Steps:
+        1.  **OAuth Connection Establishment:** User authorizes sssync, credentials stored.
+        2.  **Initial Scan & Data Ingestion:** (Triggered post-connection)
+            *   Platform adapter fetches all products, variants, locations, inventory.
+            *   Mapper transforms data to canonical models.
+            *   `MappingService` suggests links or new creations.
+        3.  **User Confirms Mappings:** (Via an external UI) User decisions are sent to an endpoint like `POST /api/sync/connections/:connectionId/confirm-mappings`.
+        4.  **Canonical Data Creation:** New `Products`, `ProductVariants`, `PlatformProductMappings`, and `InventoryLevels` are stored.
+        5.  **Ongoing - Reconciliation (Periodic Background Job):**
+            *   `TasksService` queues daily jobs.
+            *   `ReconciliationProcessor` uses platform adapter to:
+                *   Fetch lightweight product overviews from the platform.
+                *   Compare with `PlatformProductMappings`.
+                *   **Discover New Products:** If platform products are missing in mappings, fetch full details, map, create canonical entries and mappings.
+                *   **Reconcile Inventory:** For all mapped products, fetch live inventory from the platform and update canonical `InventoryLevels`. The platform is the source of truth for inventory during reconciliation.
+                *   **Handle Deleted Platform Products:** (Describe strategy: e.g., disable mapping, archive canonical product, log event).
+        6.  **Ongoing - Webhooks (Real-time, if configured):**
+            *   Platform sends event (e.g., product update, inventory change).
+            *   `WebhookController` -> `SyncCoordinatorService` -> Adapter/Mapper -> Canonical data updated.
+3.  **Populate `## sssync to Platform (Push Flow - Conceptual)` with:**
+    *   A brief overview of how changes in sssync would propagate to connected platforms. *Clearly state this is largely conceptual for full implementation but the infrastructure is being built.*
+    *   Steps:
+        1.  **Canonical Data Change:** Product/variant/inventory created or updated in sssync's database (e.g., via admin UI, API, or sync from another platform).
+        2.  **Change Detection:** `SyncCoordinatorService` is notified or detects this change.
+        3.  **Adapter Invocation:** `SyncCoordinatorService` iterates through relevant, enabled `PlatformConnections`.
+        4.  For each, it gets the appropriate adapter and calls methods like `createProduct`, `updateProduct`, `deleteProduct`, or `updateInventoryLevels` (currently placeholders) with the canonical data.
+        5.  **Platform Update:** The adapter (once fully implemented) would make API calls to the platform to reflect the changes.
+
+# Core Data Synchronization Flows
+
+This section outlines the primary ways data moves between your connected e-commerce platforms and the sssync system.
+
+## Platform to sssync (Pull/Ingestion Flow)
+
+This flow describes how product and inventory data is pulled from your connected platforms (like Shopify, Clover, Square) and stored into sssync's canonical database.
+
+1.  **OAuth Connection Establishment:**
+    *   The user initiates an OAuth flow (e.g., via `GET /api/auth/shopify/login`) to grant sssync access to their platform account.
+    *   The backend (`AuthService`) securely handles the OAuth exchange, obtains necessary credentials (access tokens), encrypts them, and stores them in the `PlatformConnections` table.
+
+2.  **Initial Scan & Data Ingestion (Post-Connection):**
+    *   Typically, after a new connection is successfully established and enabled, an `initial-scan` job is queued.
+    *   The relevant queue processor (e.g., `InitialScanProcessor`) picks up this job.
+    *   It uses the platform-specific **Adapter** (e.g., `ShopifyAdapter`, `CloverAdapter`, `SquareAdapter`) and its associated **API Client** to fetch all existing products, variants, locations (if applicable), and inventory levels from the platform.
+    *   The platform-specific data is then transformed into sssync's canonical data models by the platform's **Mapper** (e.g., `ShopifyMapper.mapShopifyDataToCanonical()`).
+    *   The `MappingService` then attempts to generate suggestions by comparing incoming platform products/variants with any existing canonical data in sssync (e.g., by matching SKUs or barcodes).
+
+3.  **User Confirms Mappings (via an External UI/Application):**
+    *   The user reviews the mapping suggestions provided by sssync.
+    *   They confirm which platform products should link to existing canonical products, which should create new canonical products, and which (if any) should be ignored.
+    *   These confirmed decisions are submitted to an endpoint like `POST /api/sync/connections/:connectionId/confirm-mappings`.
+
+4.  **Canonical Data Creation & Storage:**
+    *   The `InitialSyncService` (or a similar service handling confirmed mappings) processes these confirmations.
+    *   New canonical `Products` and `ProductVariants` are created in the Supabase database via `ProductsService`.
+    *   Links between the platform's product/variant identifiers and sssync's canonical `ProductVariantId` are stored in the `PlatformProductMappings` table via `PlatformProductMappingsService`.
+    *   Initial inventory levels are recorded in the `InventoryLevels` table via `InventoryService`, associated with the correct canonical variant, platform connection, and platform location ID.
+
+5.  **Ongoing - Reconciliation (Periodic Background Job - e.g., Daily):**
+    *   A scheduled task (managed by `TasksService`) queues `reconciliation` jobs for all active and enabled platform connections.
+    *   The `ReconciliationProcessor` handles these jobs:
+        *   It instructs the platform adapter to fetch a lightweight overview of all products currently on the platform (e.g., IDs, SKUs, last update times).
+        *   This list is compared against sssync's `PlatformProductMappings` for that connection.
+        *   **Discover New Products:** If products exist on the platform but are not found in sssync's mappings, the processor directs the adapter to fetch their full details. This data is then mapped to canonical models, and new `Products`, `ProductVariants`, `PlatformProductMappings`, and `InventoryLevels` are created in sssync.
+        *   **Reconcile Inventory:** For all existing mapped products, the processor directs the adapter to fetch the current live inventory quantities from the platform. These quantities then update the corresponding records in sssync's `InventoryLevels` table. **During reconciliation, the connected e-commerce platform is treated as the primary source of truth for inventory counts.**
+        *   **Handle Deleted Platform Products:** If a product previously mapped in sssync is no longer found on the platform, the system will typically:
+            *   Mark the corresponding `PlatformProductMapping` as `IsEnabled: false` or update its `SyncStatus` to indicate the platform product is missing.
+            *   Potentially archive the canonical `Product` (set `IsArchived: true`) if no other active platform mappings exist for it.
+            *   Log an event in `ActivityLogs` for user visibility. (The canonical product is usually not hard-deleted to prevent data loss from accidental platform deletions).
+
+6.  **Ongoing - Webhooks (Real-time Updates, if configured by the user/system):**
+    *   Platforms like Shopify can send real-time notifications (webhooks) when specific events occur (e.g., a new product is created, inventory is updated, an order is placed).
+    *   These webhooks would be directed to an sssync endpoint like `/api/webhooks/:platform`.
+    *   The `WebhookController` verifies the webhook's authenticity and then passes the payload to the `SyncCoordinatorService`.
+    *   The `SyncCoordinatorService` uses the relevant platform adapter and mapper to process the incoming data and update the canonical `Products`, `ProductVariants`, or `InventoryLevels` in near real-time. It can also trigger updates to *other* linked platforms if the webhook signifies a change that needs to be propagated.
+
+## sssync to Platform (Push Flow - Conceptual)
+
+This flow describes how product and inventory changes made within sssync (e.g., through an admin interface, API calls, or as a result of a sync from another platform) would be pushed out to connected e-commerce platforms.
+
+***Note:** While the foundational services (`SyncCoordinatorService`, `BaseAdapter` interface) are designed to support this, the platform-specific adapter methods for pushing data (e.g., `createProduct`, `updateProduct` on Shopify, Clover, Square) are currently placeholders and require full implementation.*
+
+1.  **Canonical Data Change in sssync:**
+    *   A `Product`, `ProductVariant`, or `InventoryLevel` record is created or updated within sssync's database. This could be initiated by:
+        *   A user interacting with an sssync admin panel or a connected application.
+        *   An API call to sssync's own API endpoints (e.g., `POST /api/products`).
+        *   A sync operation pulling data from *another* platform that updates the canonical record.
+
+2.  **Change Detection & Coordination:**
+    *   The `SyncCoordinatorService` is notified of this canonical data change. This could happen through:
+        *   Database triggers or listeners.
+        *   Events emitted by services like `ProductsService` or `InventoryService` after they save data.
+        *   Direct invocation if the change originates from an API controller that then calls the coordinator.
+
+3.  **Adapter Invocation for Push:**
+    *   The `SyncCoordinatorService` identifies which `PlatformConnections` are relevant (e.g., all active and enabled connections for the user associated with the changed data, or specific connections if the push is targeted).
+    *   For each relevant platform connection:
+        *   It retrieves the appropriate platform **Adapter** (e.g., `ShopifyAdapter`) using the `PlatformAdapterRegistry`.
+        *   It calls the corresponding method on the adapter interface, providing the canonical data. For example:
+            *   If a new canonical product/variant was created: `adapter.createProduct(connection, canonicalProduct, canonicalVariants, canonicalInventoryLevels)`
+            *   If a canonical product/variant was updated: `adapter.updateProduct(connection, existingMapping, canonicalProduct, canonicalVariants, canonicalInventoryLevels)`
+            *   If a canonical product was deleted/archived: `adapter.deleteProduct(connection, existingMapping)`
+            *   If canonical inventory levels were updated: `adapter.updateInventoryLevels(connection, inventoryUpdatesArray)`
+
+4.  **Platform Update (via Adapter Implementation):**
+    *   The specific platform adapter (once fully implemented) takes the canonical data.
+    *   It uses its **Mapper** to transform the canonical data into the platform's required API format (e.g., `ShopifyMapper.mapCanonicalProductToShopifyInput()`).
+    *   It then uses its **API Client** to make the necessary API calls to the e-commerce platform to create, update, or delete the product/variant or update inventory levels.
+    *   The adapter handles the response from the platform, including any errors, and might update the `PlatformProductMapping` with new platform IDs or sync status.
+
+This conceptual flow provides the basis for a two-way synchronization system. The robustness will depend on the full implementation of the adapter push methods, conflict resolution strategies, and error handling.
+
+# Testing the Full Sync Flow
+
+This section provides a general guideline for testing the end-to-end synchronization capabilities of sssync, covering OAuth, data ingestion, reconciliation, and API data retrieval for platforms like Shopify, Clover, and Square.
+
+**I. Prerequisites:**
+
+*   **Environment:** NestJS app running, `.env` configured (Supabase, Redis, platform API keys/secrets/redirect URIs).
+*   **Sandbox Accounts:** Active developer/sandbox accounts for Shopify, Clover, and Square.
+*   **Initial Platform Data:** Populate each sandbox with 5-7 diverse products (simple, with variants, with/without SKUs/barcodes, varying inventory).
+*   **Tools:** API Client (Postman, etc.), Supabase Dashboard, NestJS console logs.
+
+**II. General Test Phases (Repeat for Each Platform):**
+
+**Phase 1: OAuth Connection & Initial Setup**
+
+1.  **User Authentication:** Obtain a JWT for a test user in your sssync system.
+2.  **Initiate OAuth:**
+    *   Call the platform-specific login endpoint (e.g., `GET /api/auth/shopify/login?userId=...&shop=...`, `GET /api/auth/clover/login?userId=...`, `GET /api/auth/square/login?userId=...`).
+    *   Complete the platform's authentication flow.
+    *   **Verify:** Successful redirect, new `PlatformConnections` entry in Supabase (enabled, credentials stored, correct `PlatformSpecificData`, status ok), success logs from `AuthService`.
+3.  **List Connections:**
+    *   Call `GET /api/platform-connections` (with JWT).
+    *   **Verify:** The new connection appears in the response.
+
+**Phase 2: Initial Scan, Data Ingestion & Mapping**
+*(An `initial-scan` job should be queued automatically after successful connection)*
+
+1.  **Monitor Scan:**
+    *   **Verify:** Check application logs for `InitialScanProcessor` activity, adapter logs for data fetching from the platform, and `MappingService` logs for suggestion generation. `PlatformConnections.Status` may change. `ActivityLogs` should show scan events.
+2.  **Fetch Mapping Suggestions:**
+    *   Call `GET /api/sync/connections/:connectionId/mapping-suggestions` (with JWT).
+    *   **Verify:** JSON array of platform products. For a new setup, `suggestedCanonicalVariant` should be `null`, `matchType: 'NONE'`.
+3.  **Confirm Mappings (as "Create New"):**
+    *   Call `POST /api/sync/connections/:connectionId/confirm-mappings` (with JWT). Body should instruct `action: "create"` for all platform products.
+    *   **Verify:** New `Products`, `ProductVariants`, `PlatformProductMappings`, and `InventoryLevels` created in Supabase. Logs show successful data saving. `ActivityLogs` for mapping/creation. `PlatformConnections.Status` updates.
+
+**Phase 3: Reconciliation Sync (Core Test)**
+
+1.  **Introduce Changes on Platform:**
+    *   Directly in the Shopify/Clover/Square admin:
+        1.  Add 1-2 entirely new products.
+        2.  Update inventory quantity for 1-2 already mapped products.
+        3.  (Optional) Update title/price of a mapped product.
+        4.  (Optional) Delete a mapped product.
+2.  **Trigger Reconciliation:**
+    *   Call `POST /api/sync/connection/:connectionId/reconcile` (with JWT).
+    *   **Verify:** `InitialSyncService` queues job, `ReconciliationProcessor` picks it up. Adapter logs show fetching overviews, then full details for new items, and inventory for existing items.
+3.  **Verify Reconciliation Results:**
+    *   **New Products:** Should appear in sssync's `Products`, `ProductVariants`, with new `PlatformProductMappings` and correct `InventoryLevels`. `ActivityLogs` indicate discovery.
+    *   **Inventory Changes:** `InventoryLevels` in sssync should reflect the updated quantities from the platform.
+    *   **(Optional) Detail Changes:** Check if canonical `ProductVariants` (title/price) were updated. *Note: Reconciliation primarily focuses on new items and inventory; updating existing details might be a future enhancement or depend on sync rules.*
+    *   **(Optional) Deleted Products:** Check `PlatformProductMapping` (e.g., `IsEnabled: false`, `SyncStatus` updated) and canonical `Product` (e.g., `IsArchived: true`). Check `ActivityLogs`.
+    *   `PlatformConnections.LastSyncSuccessAt` should be updated.
+
+**Phase 4: API Data Pulling & Verification**
+
+1.  **Fetch Inventory via sssync API:**
+    *   Example (Shopify): `GET /api/products/shopify/inventory?platformConnectionId=...&sync=false` (then `&sync=true`).
+    *   **Verify:** `sync=false` returns current DB state. `sync=true` triggers live fetch from platform, updates DB, then returns fresh data. Compare with platform admin panel and Supabase.
+2.  **Fetch Locations (Platform-Specific, e.g., Shopify):**
+    *   Example (Shopify): `GET /api/products/shopify/locations?platformConnectionId=...`.
+    *   **Verify:** Correct locations listed.
+3.  **Fetch Locations with Products (Platform-Specific, e.g., Shopify):**
+    *   Example (Shopify): `GET /api/products/shopify/locations-with-products?platformConnectionId=...&sync=false`.
+    *   **Verify:** Aggregated view matches DB state.
+
+**Phase 5: Product Updates (Canonical to Platform - Infrastructure Test)**
+*(Full end-to-end push is conceptual as adapter methods are placeholders)*
+
+1.  **Manually Change Canonical Data:** Create/update a `Product` or `ProductVariant` directly in Supabase.
+2.  **Trigger Push (Conceptual/Manual):**
+    *   If event-driven: Ensure `SyncCoordinatorService` listens to save events from `ProductsService`.
+    *   If manual trigger needed for testing: Invoke `SyncCoordinatorService.handleCanonicalProductCreation(...)` or `handleCanonicalProductUpdate(...)`.
+3.  **Verify (Logs):**
+    *   `SyncCoordinatorService` logs detecting the change.
+    *   Iteration through enabled connections.
+    *   Attempted calls to adapter methods (e.g., `adapter.createProduct(...)`), which will log "not implemented" or throw the placeholder error. This verifies the coordinator logic.
+
+This testing plan should help thoroughly vet the implemented synchronization features.
+
+# System Robustness & Potential Improvements
+
+**Current Strengths:**
+
+*   **Modular Design:** Adapter pattern for easy extension to new platforms.
+*   **Canonical Data Model:** Centralized schema for multi-platform consistency.
+*   **OAuth Handled:** Secure authentication for Shopify, Clover, Square.
+*   **Background Processing:** Queues for non-blocking operations.
+*   **Basic Reconciliation:** Daily jobs for data consistency (inventory, new products from platform).
+*   **API Documentation:** Foundation laid in `products.md`.
+
+**Areas for Improvement & Future Considerations:**
+
+*   **Error Handling & Resilience:**
+    *   **Granular Retries & Backoff:** Implement in API clients for transient network issues or rate limits.
+    *   **Dead-Letter Queues (DLQ):** For persistently failing jobs.
+    *   **User-Facing Error Reporting:** Better visibility for users on sync failures (e.g., via `PlatformConnections.Status`, `ActivityLogs`, or UI notifications).
+*   **Transactional Integrity:**
+    *   Wrap multi-step database operations (e.g., creating Product + Variants + Mapping + Inventory) in database transactions to ensure atomicity.
+*   **Outbound Rate Limiting:**
+    *   Ensure adapters respect platform API rate limits when pushing data.
+*   **Idempotency:**
+    *   Critical for all create/update operations (platform-to-sssync and sssync-to-platform) to handle retries gracefully.
+*   **Scalability of Reconciliation:**
+    *   For very large catalogs, explore platform delta APIs (if available) or optimize overview fetching.
+*   **Conflict Resolution (for sssync-to-platform):**
+    *   Define strategies (last-write-wins, sssync-is-truth, platform-is-truth, manual resolution) for data conflicts when pushing updates.
+*   **Data Validation & Transformation:**
+    *   More robust validation of incoming platform data and handling of edge cases in mappers.
+*   **Advanced Configuration Management:**
+    *   Centralize more platform-specific configurations.
+*   **Logging and Monitoring:**
+    *   Structured logging (e.g., JSON), correlation IDs, integration with monitoring/alerting.
+*   **User Control & Visibility (UI/UX Focus):**
+    *   Dashboard for connection status, sync history, error logs.
+    *   Manual sync triggers per connection.
+    *   Pause/resume sync functionality.
+*   **Automated Testing:**
+    *   Comprehensive unit and integration tests.
+*   **Two-Way Sync Strategy Definition:**
+    *   Clearly define which system is the source of truth for which fields under different scenarios. May need to be configurable.
+*   **Backup and Restore Strategy:**
+    *   **Database Backups:** Leverage Supabase's automated backups.
+    *   **Application-Level Snapshots:**
+        *   Periodically, or before major operations, snapshot key canonical data (export to JSON/CSV in secure storage like S3). This allows for application-level recovery or user data export.
+        *   This could be extended to allow users to download their canonical data.
+    *   **Data Versioning:** For critical canonical data, consider implementing version history in Supabase tables (e.g., audit triggers or history tables) for easier rollback of specific changes.
+    *   **"Google Docs" Style Versioning/Restore (Advanced):** This implies a much finer-grained audit trail, potentially using Event Sourcing. While powerful, it's a significant architectural addition. Periodic snapshots are a more immediate and achievable first step for application-level backups.
+
+This provides a comprehensive view of data flows, testing, and areas for enhancement.
+
+
+
+
+Read file: src/common/types/supabase.types.ts
+You're right, that TypeScript error `Argument of type 'string | undefined' is not assignable to parameter of type 'string | null'` at `sync-coordinator.service.ts:300` for `canonicalVariant.Id` is problematic.
+
+Looking at the type definition for `ProductVariant` in `src/common/types/supabase.types.ts` (which I've just read), the `Id` field is indeed `string`.
+However, in `SyncCoordinatorService` (line 240-241 in `_executeProductCreationPush`), we have:
+```typescript
+                    const canonicalVariantsForAdapter: CanonicalProductVariant[] = supabaseVariants.map(v => ({
+                        Id: v.Id!, // Asserting Id is present here
+                        // ...
+                    }));
+```
+And then later (around line 281):
+```typescript
+                    for (const canonicalVariant of canonicalVariantsForAdapter) {
+                        const platformVariantId = platformVariantIds[canonicalVariant.Id!]; // Asserting Id is present
+                        if (platformVariantId) {
+                            // ...
+                        } else {
+                            // ...
+                             await this.activityLogService.logActivity(
+                                userId,
+                                'ProductVariant',
+                                canonicalVariant.Id, // Problem is here
+                                //...
+                            );
+                        }
+                    }
+```
+The issue is that `canonicalVariantsForAdapter` is an array of `CanonicalProductVariant`. The `CanonicalProductVariant` interface (from `src/platform-adapters/shopify/shopify.mapper.ts`, though not explicitly shown now, it's inferred from usage) might define `Id` as optional or `string | undefined`. Even if `supabaseVariants` (which are `SupabaseProductVariant[]`) all have `Id` as `string`, the mapping to `CanonicalProductVariant` might introduce this optionality if the `CanonicalProductVariant` interface itself declares `Id` as `string | undefined`.
+
+The non-null assertion operator (`!`) in `canonicalVariant.Id!` tells TypeScript "I know this will not be null/undefined at this point." However, it seems the type of `canonicalVariant.Id` is still being inferred as `string | undefined` when passed to `logActivity`.
+
+The most robust fix is to ensure `canonicalVariant.Id` is indeed a string before calling `logActivity` in that `else` block, or ensure the `CanonicalProductVariant` type definition for `Id` is `string`.
+
+Given that `SupabaseProductVariant.Id` is `string`, and `CanonicalProductVariant.Id` *should* also be a non-nullable string (as it represents a persisted entity's ID), let's ensure the `logActivity` call is safe.
+
+I'll adjust the `logActivity` call to handle the potential `undefined` for `canonicalVariant.Id` for the linter, although conceptually the ID should always be there if we're in this part of the logic.
+
+
+Okay, that should address the TypeScript error by explicitly handling the case where `canonicalVariant.Id` might be perceived as `undefined` by the linter, providing `null` instead.
+
+Now, let's describe the sync engine.
+
+## Sync Engine Overview
+
+Our sync engine is designed to keep product and inventory data consistent between a central canonical database (Supabase) and various connected e-commerce platforms (Shopify, Clover, Square). It handles initial data fetching, ongoing updates via webhooks, periodic reconciliation, and pushing local changes out to platforms.
+
+**Core Components:**
+
+1.  **Platform Adapters (`src/platform-adapters/`):**
+    *   Each platform (Shopify, Clover, Square) has its own adapter.
+    *   **API Client (`<platform>-api-client.service.ts`):** Handles all HTTP communication with the specific platform's API (fetching data, creating/updating/deleting products, inventory, etc.). Includes error handling, pagination, and authentication.
+    *   **Mapper (`<platform>.mapper.ts`):** Translates data structures between the platform's format and our canonical `CanonicalProduct`, `CanonicalProductVariant`, and `CanonicalInventoryLevel` formats.
+    *   **Adapter (`<platform>.adapter.ts`):** Orchestrates the use of the API client and mapper. Implements the `IPlatformAdapter` interface, providing standardized methods like `initialScan`, `processWebhook`, `createProduct`, `updateProduct`, `deleteProduct`, `getInventoryLevels`, `updateInventoryLevels`.
+    *   **Module (`<platform>-adapter.module.ts`):** Bundles the adapter's components.
+    *   `PlatformAdapterRegistry`: Allows dynamic retrieval of the correct adapter based on platform type.
+
+2.  **Canonical Data Services (`src/canonical-data/`):**
+    *   `ProductsService`: Manages CRUD operations for `Products` and `ProductVariants` in our Supabase database.
+    *   `InventoryService`: Manages CRUD operations for `InventoryLevels` in Supabase.
+    *   These services are the source of truth *after* data has been pulled and mapped from platforms or when new data is created within our system.
+
+3.  **Platform Connections Service (`src/platform-connections/`):**
+    *   Manages platform connection details (credentials, status, user ID, etc.) stored in the `PlatformConnections` table.
+    *   Handles encryption/decryption of credentials.
+
+4.  **Platform Product Mappings Service (`src/platform-product-mappings/`):**
+    *   Manages the `PlatformProductMappings` table, which links our canonical `ProductVariantId` to platform-specific product and variant identifiers (`PlatformProductId`, `PlatformVariantId`). This is crucial for targeted updates.
+
+5.  **Queueing System (BullMQ & Redis):**
+    *   **`UltraLowQueueService` (not directly part of sync-engine but influences it):** A custom, less Redis-intensive queue for very frequent, low-priority tasks (primarily intended for rate limiting checks, but its existence informed the need to be mindful of Redis load).
+    *   **`BullMQQueueService` (NestJS default BullMQ for specific high-load tasks):** Used for tasks requiring robust job management, retries, etc. Worker settings (`guardInterval`, `drainDelay`) were adjusted for `bullmq-high-queue` to reduce Redis polling.
+    *   **Sync Engine Queues (defined in `sync-engine.constants.ts`):**
+        *   `INITIAL_SCAN_QUEUE`: For initial fetching of all products/inventory from a newly connected platform. Processed by `InitialScanProcessor`.
+        *   `INITIAL_SYNC_QUEUE`: For processing and saving the data fetched by the initial scan. Processed by `InitialSyncProcessor`. *(Currently, these processors are commented out in `sync-engine.module.ts`, suggesting this specific flow might be dormant or refactored. `initial-scan` *type* jobs are now handled by `bullmq-high-queue` worker and potentially general sync processors).*
+        *   `WEBHOOK_PROCESSING_QUEUE`: Intended for processing incoming webhooks. (Currently, webhooks are handled synchronously by `SyncCoordinatorService.handleWebhook` but could be offloaded to this queue for more resilience).
+        *   `RECONCILIATION_QUEUE`: For periodic reconciliation jobs. Processed by `ReconciliationProcessor`.
+        *   `PUSH_OPERATIONS_QUEUE`: For pushing canonical data changes (create, update, delete products/inventory) out to connected platforms. Processed by `PushOperationsProcessor`.
+
+6.  **Processors (`src/sync-engine/processors/`):**
+    *   **`InitialScanProcessor`:** Handles jobs from `INITIAL_SCAN_QUEUE`. Fetches all product and inventory data from a platform via its adapter. (Currently, its registration is commented out).
+    *   **`InitialSyncProcessor`:** Handles jobs from `INITIAL_SYNC_QUEUE`. Takes data from an initial scan, maps it, and saves it to the canonical database. (Currently, its registration is commented out).
+    *   **`ReconciliationProcessor`:** Handles jobs from `RECONCILIATION_QUEUE`. Periodically fetches product overviews and inventory from platforms, compares with canonical data, identifies discrepancies (new/missing products, inventory mismatches), and triggers updates.
+    *   **`PushOperationsProcessor`:** Handles jobs from `PUSH_OPERATIONS_QUEUE`. Takes details of a canonical data change (e.g., product created, inventory updated) and calls the appropriate `SyncCoordinatorService` method to execute the push to relevant platforms.
+
+7.  **Core Services (`src/sync-engine/`):**
+    *   **`MappingService`:** (Likely) Helps manage and translate data between platform-specific formats and the canonical model, potentially using the platform-specific mappers. (Its direct usage seems less prominent now that adapters have their own mappers).
+    *   **`InitialSyncService`:** Coordinates the initial data synchronization process when a new platform is connected. Queues initial scan and reconciliation jobs.
+    *   **`SyncCoordinatorService`:** The central nervous system for ongoing synchronization.
+        *   Receives webhook events (via `WebhookController`) and delegates processing to the appropriate platform adapter.
+        *   Provides methods (`handleCanonicalProductCreation`, etc.) that are called when canonical data changes. These methods now queue jobs onto the `PUSH_OPERATIONS_QUEUE`.
+        *   Contains the detailed logic (`_executeProductCreationPush`, etc.) for actually performing the push operations to platforms, which are called by the `PushOperationsProcessor`.
+
+8.  **Scheduled Tasks (`src/tasks/`):**
+    *   `TasksService`: Uses `@nestjs/schedule` to run cron jobs.
+    *   `handleDailyReconciliation`: A daily cron job (e.g., 3 AM) that fetches all enabled platform connections and queues a reconciliation job (`RECONCILIATION_QUEUE`) for each one via `InitialSyncService`.
+
+**API Endpoints Related to Sync Engine:**
+
+*   **`POST /webhooks/:platform` (handled by `WebhookController`):**
+    *   Receives incoming webhook events from platforms (e.g., Shopify, Clover, Square).
+    *   Identifies the platform and the specific connection.
+    *   Passes the payload to `SyncCoordinatorService.handleWebhook`, which then delegates to the appropriate platform adapter's `processWebhook` method.
+*   **`POST /sync/initial-scan/:connectionId` (handled by `SyncController`):**
+    *   Triggers an initial scan for a given platform connection.
+    *   Uses `InitialSyncService.queueInitialScanAndSync`.
+*   **`POST /sync/reconcile/:connectionId` (handled by `SyncController`):**
+    *   Triggers an ad-hoc reconciliation for a specific platform connection.
+    *   Uses `InitialSyncService.queueReconciliationJob`.
+*   **Other potential internal triggers (not direct API endpoints but drive the engine):**
+    *   Calls to `SyncCoordinatorService.handleCanonicalProductCreation`, `handleCanonicalProductUpdate`, `handleCanonicalProductDeletion`, `handleCanonicalInventoryUpdate`. These are typically called from other services (e.g., `ProductsService` after a product is created/updated in the app's UI/API) to notify the sync engine of changes that need to be pushed out.
+
+**Synchronization Scenarios Accounted For:**
+
+1.  **Initial Connection & Bulk Data Import:**
+    *   When a new platform is connected, an initial scan (`InitialScanProcessor` via `bullmq-high-queue` or a similar mechanism if `InitialScanProcessor` is dormant) fetches all existing products and inventory.
+    *   This data is then mapped to the canonical format and saved to the Supabase DB (`InitialSyncProcessor` or integrated into the scan/reconciliation logic).
+2.  **Real-time Updates via Webhooks:**
+    *   Platforms send webhooks for events like "product created," "product updated," "inventory changed."
+    *   `WebhookController` receives these, `SyncCoordinatorService` identifies the connection and adapter, and the adapter's `processWebhook` method handles the update (e.g., fetching full details if needed, mapping, and updating canonical data via `ProductsService` or `InventoryService`).
+3.  **Periodic Reconciliation (Scheduled Task):**
+    *   A daily cron job (`TasksService`) queues jobs for `ReconciliationProcessor`.
+    *   **Discovery of New Products:** Fetches product overviews (e.g., IDs, SKUs, last updated timestamps) from each platform. Compares against `PlatformProductMappings`. If new platform products are found, it fetches their full details, maps them, creates canonical products/variants, and establishes new mappings.
+    *   **Identification of Missing/Delisted Products:** If canonical products with mappings are no longer found on a platform during reconciliation, they can be logged or marked as inactive.
+    *   **Inventory Level Reconciliation:** For all mapped products, it fetches live inventory levels from each platform location and updates the canonical `InventoryLevels` table. This corrects any drift that might have occurred if webhooks were missed or if there are other sources of inventory changes.
+4.  **Pushing Canonical Changes to Platforms (via `PUSH_OPERATIONS_QUEUE`):**
+    *   **Product Creation:** When a new product/variant is created in our system (e.g., through an admin UI or another API), `SyncCoordinatorService.handleCanonicalProductCreation` is called. It queues a job for `PushOperationsProcessor`, which then uses the appropriate adapter to create the product on all connected and enabled platforms. Mappings are created.
+    *   **Product Updates:** When a canonical product/variant is updated, `SyncCoordinatorService.handleCanonicalProductUpdate` queues a job. The processor uses the adapter and existing mappings to update the product on linked platforms.
+    *   **Product Deletion:** When a canonical product is deleted, `SyncCoordinatorService.handleCanonicalProductDeletion` queues a job. The processor uses the adapter to delete the product from linked platforms, and the corresponding mappings are removed.
+    *   **Inventory Updates:** When canonical inventory levels are changed (e.g., manual adjustment, sale from an unlinked channel recorded in our DB), `SyncCoordinatorService.handleCanonicalInventoryUpdate` queues a job. The processor uses the adapter to update inventory levels on linked platforms for the specific variant and location.
+5.  **Reduced Redis Load:**
+    *   Increased `guardInterval` and `drainDelay` for the `bullmq-high-queue` worker.
+    *   Significantly increased thresholds in `QueueManagerService` to ensure the less Redis-intensive `UltraLowQueueService` is used for ~99% of applicable cases (primarily rate limiting checks, not direct sync operations).
+    *   Offloading intensive push operations to the `PUSH_OPERATIONS_QUEUE` prevents blocking and allows the main application threads to remain responsive.
+
+**Circumstances Potentially NOT (or Partially) Accounted For / Areas for Improvement:**
+
+1.  **Complex Product Structures & Options/Attributes Sync:**
+    *   While creation of products with variants is handled, the depth of syncing complex option types, attribute names, and their specific mappings across platforms (which might have different ways of representing them, e.g., Shopify's 3-option limit vs. Clover's item groups/attributes/options) can be very challenging. Ensuring these are perfectly bidirectionally synced and maintained during updates requires very robust mapping logic in each adapter.
+    *   The current Clover product creation logic (`orchestrateCloverProductCreation`) is quite detailed, but updates to these structures (e.g., adding a new option to an existing product) would need equally careful handling.
+2.  **Order Syncing:**
+    *   The current focus has been primarily on product and inventory. While `Orders` and `OrderItems` tables exist in the DB schema, the engine doesn't yet seem to actively sync orders from platforms or push orders created within the app to platforms. This is a major feature for many e-commerce integrations.
+3.  **Product "Delisting" vs. "Deletion":**
+    *   The current product deletion flow seems to delete the product from the platform. Some users might prefer a "delist" or "archive" option (mark as unavailable or hidden on the platform but not permanently delete). This would require changes in adapters and canonical data representation (e.g., an `IsPublishedToPlatform` flag in mappings).
+4.  **Conflict Resolution During Bidirectional Sync:**
+    *   If a product is updated simultaneously in our system and on a platform (between reconciliation cycles), how are conflicts resolved? The current model seems to prioritize either the platform (during webhook processing/reconciliation) or the canonical data (during push operations). A more sophisticated strategy (e.g., "last update wins," manual review queue for conflicts) might be needed for true bidirectional sync.
+5.  **Platform-Specific Field Syncing:**
+    *   Platforms often have many unique fields beyond the common ones (title, SKU, price, inventory). The `PlatformSpecificData` JSONB column in mappings and products/variants can store this, but actively syncing and managing these custom fields bidirectionally is complex and usually requires custom mapping UIs for users.
+6.  **Token Refresh Mechanisms (Especially for Square & Clover):**
+    *   While OAuth connection setup is present, robust, automated token refresh logic (especially for platforms with shorter-lived access tokens like Square) is critical for long-term unattended operation. Shopify tokens are typically long-lived. This needs to be built into the API clients or a central auth management service.
+7.  **Error Handling Granularity & User Feedback:**
+    *   The `ActivityLogService` provides good backend logging. However, surfacing critical sync errors to the end-user in a digestible way (e.g., in a dashboard, via notifications) so they can take action (e.g., reconnect a platform, review a mapping error) is important.
+    *   Specific error types from platforms might require different retry strategies or user interventions.
+8.  **Rate Limit Handling Sophistication:**
+    *   Basic retry mechanisms are in BullMQ. However, more sophisticated, platform-aware rate limit handling (e.g., dynamic backoff based on platform response headers, per-connection rate limit queues) might be needed for very active stores or numerous connections. The `UltraLowQueueService` was a step in this direction for some operations.
+9.  **Partial Success/Failures in Multi-Platform Pushes:**
+    *   If a product push succeeds on Shopify but fails on Clover, how is this handled and communicated? The `PushOperationsProcessor` processes changes per-platform connection within its loops, so one platform's failure doesn't stop others, which is good. Logging captures this.
+10. **Scalability for Very Large Catalogs/High Transaction Volumes:**
+    *   While queues help, extremely large initial scans or very high numbers of webhooks/updates might require further optimization in database queries, API client batching, and potentially scaling out worker instances.
+11. **Syncing of Other Entities:**
+    *   Categories/Collections, Customers, Discounts, etc., are not currently part of the sync scope but are common requirements for full e-commerce integration.
+12. **Dormant Queues (`initial-scan`, `initial-sync` named queues):**
+    *   The original `INITIAL_SCAN_QUEUE` and `INITIAL_SYNC_QUEUE` and their processors are commented out. While `initial-scan` *type* jobs are handled, ensuring these queues are truly not being polled by any old BullMQ maintenance or worker configurations (if Redis keys still exist) is important for minimizing Redis load. If obsolete, they should be fully cleaned from Redis.
+
+The engine has a solid foundation with distinct layers for platform interaction, canonical data management, and queued processing, addressing many core sync requirements. The areas not accounted for are typical of more advanced/mature sync systems and can be added iteratively.

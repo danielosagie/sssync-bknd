@@ -1,4 +1,4 @@
-import { Injectable, Logger, InternalServerErrorException, UnauthorizedException, HttpException } from '@nestjs/common';
+import { Injectable, Logger, InternalServerErrorException, UnauthorizedException, HttpException, HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PlatformConnection, PlatformConnectionsService } from '../../platform-connections/platform-connections.service'; // Adjust path
 import {
@@ -196,7 +196,7 @@ interface ShopifyProductSetOperation {
         };
     } | null;
     userErrors: Array<{
-        field: string;
+        field: string[] | null;
         message: string;
         code: string;
     }>;
@@ -295,7 +295,8 @@ interface ShopifyProductOptionValue {
     name: string;
 }
 
-interface ShopifyProductOption {
+// Export this interface
+export interface ShopifyProductOption {
     name: string;
     values: ShopifyProductOptionValue[];
 }
@@ -307,13 +308,15 @@ export interface ShopifyProductFile {
     contentType: 'IMAGE' | 'VIDEO' | 'EXTERNAL_VIDEO' | 'MODEL_3D';
 }
 
-interface ShopifyInventoryQuantity {
+// Export this interface
+export interface ShopifyInventoryQuantity {
     locationId: string;
     name: 'available' | 'committed';
     quantity: number;
 }
 
-interface ShopifyInventoryItem {
+// Export this interface
+export interface ShopifyInventoryItem {
     cost?: string;
     tracked: boolean;
     measurement?: {
@@ -324,7 +327,8 @@ interface ShopifyInventoryItem {
     };
 }
 
-interface ShopifyVariantInput {
+// Export this interface
+export interface ShopifyVariantInput {
     optionValues: Array<{
         optionName: string;
         name: string;
@@ -672,7 +676,7 @@ const GET_PRODUCTS_BY_IDS_QUERY = `
                 inventoryLevels(first: 10) {
                   edges {
                     node {
-                      available # Make sure this field is available or adjust query/mapper
+                      available
                       location {
                         id
                         name
@@ -1261,7 +1265,7 @@ export class ShopifyApiClient {
         operationId: string;
         status: string;
         productId?: string;
-        userErrors: Array<{ field: string; message: string; code: string }>;
+        userErrors: Array<{ field: string[] | null; message: string; code: string }>;
     }> {
         this.logger.log(`[createProductAsync] Attempting to create product on Shopify. Shop: ${connection.DisplayName}`);
         this.logger.debug(`[createProductAsync] Full productInput for Shopify: ${JSON.stringify(productInput, null, 2)}`);
@@ -1274,7 +1278,7 @@ export class ShopifyApiClient {
                 productSet: {
                     product: { id: string; title: string } | null;
                     productSetOperation: ShopifyProductSetOperation;
-                    userErrors: Array<{ field: string; message: string; code: string }>;
+                    userErrors: Array<{ field: string[] | null; message: string; code: string }>;
                 };
             };
 
@@ -1437,6 +1441,114 @@ export class ShopifyApiClient {
                 throw new UnauthorizedException(`Shopify authentication failed during fetchProductsByIds for shop ${shop}.`);
             }
             throw error;
+        }
+    }
+
+    async updateProductAsync(
+        connection: PlatformConnection,
+        productId: string, // Shopify Product GID (e.g., "gid://shopify/Product/12345")
+        productInput: ShopifyProductSetInput // Re-using this type, as ProductInput for updates is very similar
+    ): Promise<{ // Adjusted return type to match ProductUpdateMutationResponse.productUpdate
+        product: {
+            id: string;
+            title: string;
+            status: string;
+            variants: {
+                nodes: Array<{
+                    id: string;
+                    sku: string | null;
+                    title: string;
+                    price: string;
+                }>;
+            } | null;
+        } | null;
+        userErrors: Array<{ field: string[] | null; message: string; code: string }>;
+    }> {
+        this.logger.log(`[updateProductAsync] Attempting to update product ${productId} on Shopify. Shop: ${connection.DisplayName}`);
+        const client = await this.getGraphQLClient(connection);
+
+        const variables = {
+            id: productId,
+            input: productInput,
+        };
+
+        const mutationString = `
+            mutation ProductUpdate($id: ID!, $input: ProductInput!) {
+                productUpdate(id: $id, input: $input) {
+                    product {
+                        id
+                        title
+                        status
+                        variants(first: 100) { 
+                            nodes {
+                                id
+                                sku
+                                title
+                                price
+                            }
+                        }
+                    }
+                    userErrors {
+                        field
+                        message
+                        code
+                    }
+                }
+            }
+        `;
+
+        // Define the expected response type directly based on the mutation
+        type ProductUpdateMutationResponseData = {
+            productUpdate: {
+                product: {
+                    id: string;
+                    title: string;
+                    status: string;
+                    variants: {
+                        nodes: Array<{
+                            id: string;
+                            sku: string | null;
+                            title: string;
+                            price: string;
+                        }>;
+                    } | null;
+                } | null;
+                userErrors: Array<{ field: string[] | null; message: string; code: string }>;
+            };
+        };
+
+        try {
+            this.logger.debug(`[updateProductAsync] Shopify productUpdate mutation variables for ${productId}: ${JSON.stringify(variables)}`);
+            const result = await client.request<ProductUpdateMutationResponseData>(mutationString, { variables });
+
+            this.logger.debug(`[updateProductAsync] Shopify productUpdate mutation raw response for ${productId}: ${JSON.stringify(result)}`);
+
+            if (!result.data || !result.data.productUpdate) { // Check if productUpdate itself is null or undefined, and ensure data exists
+                this.logger.error(`[updateProductAsync] Shopify productUpdate mutation for ${productId} returned no data in productUpdate field or data was missing.`);
+                throw new InternalServerErrorException(`Shopify productUpdate mutation for ${productId} returned no data or invalid response structure.`);
+            }
+
+            // Log user errors if any
+            if (result.data.productUpdate.userErrors && result.data.productUpdate.userErrors.length > 0) {
+                result.data.productUpdate.userErrors.forEach(err => {
+                    this.logger.warn(`[updateProductAsync] UserError for product ${productId}: Fields: ${err.field?.join(', ')}, Message: ${err.message}, Code: ${err.code}`);
+                });
+                // Potentially throw an error here or let the caller handle userErrors
+            }
+            
+            // Return the productUpdate part of the response directly
+            return result.data.productUpdate;
+
+        } catch (error: any) {
+            this.logger.error(`[updateProductAsync] Error during Shopify productUpdate mutation for ${productId}: ${error.message}`, error.stack);
+            if (error.response?.errors) { // Check for GraphQL specific errors
+                error.response.errors.forEach((err: any) => this.logger.error(`GraphQL Error: ${err.message}`));
+            }
+            // Rethrow as a standard exception type
+            throw new HttpException(
+                `Shopify product update failed for ${productId}: ${error.message}`, 
+                error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
+            );
         }
     }
 

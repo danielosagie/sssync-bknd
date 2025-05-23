@@ -23,6 +23,7 @@
   "dependencies": {
     "@google/generative-ai": "^0.24.0",
     "@nest-lab/throttler-storage-redis": "^1.1.0",
+    "@nestjs/axios": "^4.0.0",
     "@nestjs/bullmq": "^11.0.2",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",

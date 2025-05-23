@@ -31,9 +31,7 @@ export type SimpleProductVariant = Pick<ProductVariant,
     'RequiresShipping' | 
     'IsTaxable' | 
     'TaxCode' | 
-    'ImageId' | 
-    'PlatformVariantId' | 
-    'PlatformProductId'
+    'ImageId'
 >;
 
 export interface SimpleProduct {

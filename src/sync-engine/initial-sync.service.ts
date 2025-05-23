@@ -56,7 +56,7 @@ export class InitialSyncService {
             'QUEUE_INITIAL_SCAN_JOB',
             'Info',
             `Attempting to queue initial scan job for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
-            connectionId,
+            connectionId, 
             connection.PlatformType
         );
 
