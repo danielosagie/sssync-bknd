@@ -290,7 +290,7 @@ export class SquareApiClientService {
   }
 
   async initialize(connection: PlatformConnection): Promise<void> {
-    this.logger.log(`Initializing Square API client for connection: ${connection.Id}`);
+        this.logger.log(`Initializing Square API client for connection: ${connection.Id}`);
     // Initialization might involve a test call or just setting up the token for future calls
     try {
         await this._getHeaders(connection); // This will throw if token is bad/missing

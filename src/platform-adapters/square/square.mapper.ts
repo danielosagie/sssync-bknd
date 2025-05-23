@@ -50,7 +50,7 @@ export class SquareMapper {
         }
         // Square money amounts are in the smallest currency unit (e.g., cents)
         return money.amount / 100.0;
-    }
+     }
 
     mapSquareDataToCanonical(
         squareData: {

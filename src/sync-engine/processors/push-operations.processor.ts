@@ -6,20 +6,30 @@ import { PUSH_OPERATIONS_QUEUE } from '../sync-engine.constants';
 import { PushOperationJobData } from '../sync-engine.types';
 import { ActivityLogService } from '../../common/activity-log.service';
 
-@Processor(PUSH_OPERATIONS_QUEUE)
+// Slow down push operations: 1 job every 1 minute
+@Processor(PUSH_OPERATIONS_QUEUE, {
+  concurrency: 1,
+  limiter: {
+    max: 1,
+    duration: 1000 * 60 * 1, // 1 minute
+  },
+})
 export class PushOperationsProcessor extends WorkerHost {
   private readonly logger = new Logger(PushOperationsProcessor.name);
 
   constructor(
     private readonly syncCoordinatorService: SyncCoordinatorService,
-    private readonly activityLogService: ActivityLogService,
+    private readonly activityLogService: ActivityLogService, // Keep ActivityLogService for potential future use or detailed internal logging
   ) {
     super();
   }
 
   async process(job: Job<PushOperationJobData, any, string>): Promise<any> {
-    this.logger.log(`Processing job ${job.id} of type ${job.name} for user ${job.data.userId}, entity ${job.data.entityId}, change ${job.data.changeType}`);
+    this.logger.log(`Processing job ${job.id} (type: ${job.name}) for user ${job.data.userId}, entity ${job.data.entityId}, change ${job.data.changeType}`);
     const { userId, entityId, changeType } = job.data;
+
+    // Note: Activity logging for job start/success/failure is now primarily handled
+    // within the _execute...Push methods in SyncCoordinatorService for more context.
 
     try {
       switch (changeType) {
@@ -37,30 +47,30 @@ export class PushOperationsProcessor extends WorkerHost {
           break;
         default:
           this.logger.warn(`Unknown change type: ${changeType} for job ${job.id}`);
+          // Log to activity log as well for visibility on unknown job types attempted
+          await this.activityLogService.logActivity(
+            userId,
+            null, // No specific entity type for an unknown operation
+            entityId,
+            'PUSH_OPERATION_UNKNOWN_TYPE',
+            'Error',
+            `Job ${job.id} attempted with unknown change type: ${changeType}`,
+            null,
+            null,
+            { jobName: job.name, receivedChangeType: changeType }
+          );
           throw new Error(`Unknown change type: ${changeType}`);
       }
-      this.logger.log(`Successfully processed job ${job.id} for ${changeType} on entity ${entityId}`);
-      // await this.activityLogService.logEvent({
-      //   userId,
-      //   eventType: `PUSH_OPERATION_${changeType}_SUCCESS`,
-      //   status: 'Success',
-      //   message: `Successfully pushed ${changeType} for entity ${entityId}`,
-      //   entityType: changeType.includes('PRODUCT') ? 'Product' : 'ProductVariant',
-      //   entityId,
-      // });
+      this.logger.log(`Successfully processed job ${job.id} for ${changeType} on entity ${entityId}. More detailed activity logs within execution methods.`);
       return { status: 'success', message: `Job ${job.id} processed.` };
     } catch (error) {
+      // Error logging (including to ActivityLogService) is now expected to be handled 
+      // comprehensively within the _execute...Push methods called above.
+      // This catch block is a fallback or for errors happening directly in the switch/processor logic itself before/after _execute calls.
       this.logger.error(`Job ${job.id} failed for ${changeType} on entity ${entityId}: ${error.message}`, error.stack);
-      // await this.activityLogService.logEvent({
-      //   userId,
-      //   eventType: `PUSH_OPERATION_${changeType}_FAILED`,
-      //   status: 'Error',
-      //   message: `Failed to push ${changeType} for entity ${entityId}: ${error.message}`,
-      //   entityType: changeType.includes('PRODUCT') ? 'Product' : 'ProductVariant',
-      //   entityId,
-      //   details: { error: error.message, stack: error.stack },
-      // });
-      throw error; // Re-throw to let BullMQ handle retry logic
+      // Re-throw for BullMQ to handle retry based on defaultJobOptions
+      // The individual _execute methods in SyncCoordinatorService are responsible for detailed failure logging to ActivityLogService.
+      throw error; 
     }
   }
 } 

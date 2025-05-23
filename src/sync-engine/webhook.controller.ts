@@ -20,7 +20,7 @@ import * as crypto from 'crypto';
 
 @Controller('webhook')
 export class WebhookController {
-  private readonly logger = new Logger(WebhookController.name);
+    private readonly logger = new Logger(WebhookController.name);
 
   constructor(
     private syncCoordinator: SyncCoordinatorService,
@@ -29,16 +29,16 @@ export class WebhookController {
 
   @Post(':platform')
   @HttpCode(HttpStatus.OK) // Respond with 200 OK quickly for webhooks
-  async handlePlatformWebhook(
-    @Param('platform') platform: string,
-    @Headers() headers: Record<string, string>,
+    async handlePlatformWebhook(
+        @Param('platform') platform: string,
+        @Headers() headers: Record<string, string>,
     @Req() req: RawBodyRequest<Request>, // Use RawBodyRequest
     @Res() res: Response, // Inject Response to send custom response
   ): Promise<void> {
     this.logger.log(`Received webhook for platform: ${platform} with headers: ${JSON.stringify(headers)}`);
 
     const rawBody = req.rawBody; // Access the raw body
-    if (!rawBody) {
+        if (!rawBody) {
       this.logger.warn('Webhook received without a raw body. Ensure body-parser is configured correctly for raw bodies on this route.');
       // Send response before throwing to avoid hanging
       res.status(HttpStatus.BAD_REQUEST).send('Request body is missing or not in raw format.');
@@ -120,30 +120,30 @@ export class WebhookController {
     }
   }
 
-  private verifyShopifyWebhook(rawBody: Buffer, hmacHeader?: string): boolean {
+     private verifyShopifyWebhook(rawBody: Buffer, hmacHeader?: string): boolean {
     if (!hmacHeader) return false;
 
     const shopifySecret = this.configService.get<string>('SHOPIFY_API_SECRET');
     if (!shopifySecret) {
       this.logger.error('SHOPIFY_API_SECRET is not configured. Cannot verify Shopify webhook.');
       return false; // Cannot verify without the secret
-    }
+             }
 
-    const calculatedHmac = crypto
+            const calculatedHmac = crypto
       .createHmac('sha256', shopifySecret)
-      .update(rawBody)
-      .digest('base64');
+                .update(rawBody)
+                .digest('base64');
     
     this.logger.debug(`[Shopify Webhook Verify] Received HMAC: ${hmacHeader}, Calculated HMAC: ${calculatedHmac}`);
 
     // Use timingSafeEqual for security
     try {
-        return crypto.timingSafeEqual(Buffer.from(calculatedHmac), Buffer.from(hmacHeader));
+            return crypto.timingSafeEqual(Buffer.from(calculatedHmac), Buffer.from(hmacHeader));
     } catch (e) {
         this.logger.error(`Error during timingSafeEqual for Shopify HMAC: ${e.message}`);
-        return false;
+            return false;
+        }
     }
-  }
 
   // private verifySquareWebhook(rawBody: Buffer, signature: string, webhookUrl: string): boolean {
   //   const secret = this.configService.get<string>('SQUARE_WEBHOOK_SIGNATURE_KEY');

@@ -507,5 +507,5 @@ export class ShopifyMapper {
         // This part needs careful handling for updates. For now, this mapping might not correctly update images.
 
         return updateInput;
-    }
+     }
 }
