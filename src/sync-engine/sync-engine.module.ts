@@ -11,12 +11,15 @@ import { WebhookController } from './webhook.controller';
 import { SyncController } from './sync.controller';
 import { ReconciliationProcessor } from './processors/reconciliation.processor';
 import { PushOperationsProcessor } from './processors/push-operations.processor';
+import { InitialScanProcessor } from './processors/initial-scan.processor';
+import { InitialSyncProcessor } from './processors/initial-sync.processor';
 import { ProductsModule } from '../products/products.module';
 import { PlatformProductMappingsModule } from '../platform-product-mappings/platform-product-mappings.module';
 import { QueueModule } from '../queue.module';
+import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.module';
 import { 
     RECONCILIATION_QUEUE,
-    PUSH_OPERATIONS_QUEUE
+    PUSH_OPERATIONS_QUEUE,
 } from './sync-engine.constants';
 
 @Module({
@@ -28,6 +31,7 @@ import {
     PlatformProductMappingsModule,
     QueueModule,
     forwardRef(() => ProductsModule),
+    PlatformAdaptersModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
@@ -68,12 +72,16 @@ import {
     SyncCoordinatorService,
     ReconciliationProcessor,
     PushOperationsProcessor,
+    InitialScanProcessor,
+    InitialSyncProcessor,
   ],
   exports: [
     InitialSyncService,
     MappingService,
     BullModule,
     SyncCoordinatorService,
+    InitialScanProcessor,
+    InitialSyncProcessor,
   ],
 })
 export class SyncEngineModule {} 

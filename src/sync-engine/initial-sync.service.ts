@@ -29,7 +29,6 @@ export class InitialSyncService {
     private readonly logger = new Logger(InitialSyncService.name);
 
     constructor(
-        @InjectQueue(INITIAL_SYNC_QUEUE) private initialSyncQueue: Queue<JobData>,
         @InjectQueue(RECONCILIATION_QUEUE) private reconciliationQueue: Queue<ReconciliationJobData>,
         private readonly queueManagerService: QueueManagerService,
         private readonly connectionService: PlatformConnectionsService,
@@ -123,26 +122,22 @@ export class InitialSyncService {
 
     async queueInitialSyncJob(connectionId: string, userId: string): Promise<string> {
         const connection = await this.getConnectionAndVerify(connectionId, userId);
-        this.logger.log(`Queueing initial sync execution job for connection ${connectionId} (${connection.PlatformType})`);
+        this.logger.log(`Queueing initial sync execution job for connection ${connectionId} (${connection.PlatformType}) via QueueManager`);
 
         await this.connectionService.updateConnectionStatus(connectionId, userId, 'syncing');
         this.logger.log(`Updated connection ${connectionId} status to 'syncing' before queueing job.`);
 
-        const existingJobs = await this.initialSyncQueue.getJobs(['active', 'waiting', 'delayed']);
-        const existingJob = existingJobs.find(job => job.data.connectionId === connectionId);
-        
-        if (existingJob) {
-            this.logger.warn(`Found existing sync job ${existingJob.id} for connection ${connectionId}. Skipping new job creation.`);
-            return existingJob.id!;
-        }
-
         const jobData: JobData = { type: 'initial-sync', connectionId, userId, platformType: connection.PlatformType! };
 
-        const job = await this.initialSyncQueue.add('execute-initial-sync', jobData, {
-            jobId: `sync-${connectionId}-${Date.now()}`,
-        });
-        this.logger.log(`Job ${job.id} added to queue ${INITIAL_SYNC_QUEUE}`);
-        return job.id!;
+        try {
+            await this.queueManagerService.enqueueJob(jobData);
+            const message = `Initial sync job for connection ${connectionId} successfully handed to QueueManager.`;
+            this.logger.log(message);
+            return "queued_via_manager_for_sync";
+        } catch (error) {
+            this.logger.error(`Failed to queue initial sync job for connection ${connectionId} via QueueManager: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Failed to queue initial sync job for ${connectionId}`);
+        }
     }
 
     async queueReconciliationJob(connectionId: string, userId: string, platformType: string): Promise<string> {

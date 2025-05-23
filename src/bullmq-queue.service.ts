@@ -1,10 +1,13 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, forwardRef, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Queue, Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { SimpleQueue } from './queue.interface';
 import { JobData } from './sync-engine/initial-sync.service';
 import { InitialScanProcessor } from './sync-engine/processors/initial-scan.processor';
+import { InitialSyncProcessor } from './sync-engine/processors/initial-sync.processor';
+// Placeholder for InitialSyncProcessor - THIS NEEDS TO BE CREATED AND PROVIDED
+// import { InitialSyncProcessor } from './sync-engine/processors/initial-sync.processor';
 
 const BULLMQ_HIGH_QUEUE_NAME = 'bullmq-high-queue';
 
@@ -17,7 +20,11 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
 
   constructor(
     private readonly configService: ConfigService,
-    private readonly initialScanProcessor: InitialScanProcessor, // Proper injection
+    private readonly initialScanProcessor: InitialScanProcessor, 
+    @Inject(forwardRef(() => InitialSyncProcessor)) // Using forwardRef for safety, though likely not strictly needed here as SyncEngineModule is imported by QueueModule
+    private readonly initialSyncProcessor: InitialSyncProcessor, // Uncommented injection
+    // @Inject(forwardRef(() => InitialSyncProcessor)) // Placeholder for DI
+    // private readonly initialSyncProcessor: InitialSyncProcessor, // Placeholder for DI
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
@@ -40,9 +47,9 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
   }
 
   private initializeWorker(): void {
-    if (!this.initialScanProcessor) {
-        this.logger.error('InitialScanProcessor not available. Worker cannot be initialized.');
-        return; // Should not happen if DI is correct
+    if (!this.initialScanProcessor || !this.initialSyncProcessor) { // Added check for initialSyncProcessor
+        this.logger.error('Required processors (InitialScanProcessor or InitialSyncProcessor) not available. Worker cannot be initialized.');
+        return; 
     }
     this.worker = new Worker(
       BULLMQ_HIGH_QUEUE_NAME,
@@ -50,9 +57,17 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
         this.logger.log(`[BullMQWorker] Processing job ${job.id} of type ${job.data.type}`);
         if (job.data.type === 'initial-scan') {
           try {
-            await this.initialScanProcessor.process(job as any); // Use this.initialScanProcessor
+            await this.initialScanProcessor.process(job as any); 
           } catch (error) {
             this.logger.error(`[BullMQWorker] Error processing 'initial-scan' job ${job.id}: ${error.message}`, error.stack);
+            throw error; 
+          }
+        } else if (job.data.type === 'initial-sync') {
+          try {
+            this.logger.log(`[BullMQWorker] Delegating 'initial-sync' job ${job.id} to InitialSyncProcessor.`);
+            await this.initialSyncProcessor.process(job as any); // Using actual processor
+          } catch (error) {
+            this.logger.error(`[BullMQWorker] Error processing 'initial-sync' job ${job.id}: ${error.message}`, error.stack);
             throw error; 
           }
         } else {

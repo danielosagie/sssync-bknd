@@ -1,9 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, forwardRef, Inject } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { SimpleQueue } from './queue.interface';
 import { JobData } from './sync-engine/initial-sync.service'; // Assuming JobData is defined here or move to a common types file
 import { InitialScanProcessor } from './sync-engine/processors/initial-scan.processor';
+import { InitialSyncProcessor } from './sync-engine/processors/initial-sync.processor';
 
 const QUEUE_KEY = 'ultra-low-queue';
 
@@ -15,6 +16,8 @@ export class UltraLowQueueService implements SimpleQueue {
   constructor(
     private readonly configService: ConfigService,
     private readonly initialScanProcessor: InitialScanProcessor, // Proper injection
+    @Inject(forwardRef(() => InitialSyncProcessor))
+    private readonly initialSyncProcessor: InitialSyncProcessor, // Uncommented injection
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
@@ -35,24 +38,33 @@ export class UltraLowQueueService implements SimpleQueue {
     this.logger.debug(`[UltraLowQueue] Enqueued job type ${jobData.type}: ${JSON.stringify(jobData)}`);
   }
 
-  async processNextJob(): Promise<any> { // Removed initialScanProcessor parameter
+  async processNextJob(): Promise<any> {
     const jobStr = await this.redis.rpop(QUEUE_KEY);
     if (jobStr) {
-      const job = JSON.parse(jobStr) as { id?:string, data: JobData }; // Assume job structure
+      const job = JSON.parse(jobStr) as { id?:string, data: JobData };
       this.logger.log(`[UltraLowQueue] Processing job: ${jobStr}`);
       
+      const mockBullMqJob = {
+        id: job.id || `ultra-low-${Date.now()}`,
+        data: job.data,
+      } as any;
+
       if (job.data.type === 'initial-scan') {
         this.logger.log(`[UltraLowQueue] Delegating to InitialScanProcessor for job ID: ${job.id || 'N/A'}`);
         try {
-          const mockBullMqJob = {
-            id: job.id || `ultra-low-${Date.now()}`,
-            data: job.data,
-          } as any; // Cast to `any` to simulate BullMQ Job for now.
-          await this.initialScanProcessor.process(mockBullMqJob); // Use this.initialScanProcessor
+          await this.initialScanProcessor.process(mockBullMqJob);
           return job.data;
         } catch (error) {
           this.logger.error(`[UltraLowQueue] Error processing 'initial-scan' job ${job.id || 'N/A'}: ${error.message}`, error.stack);
-          // Optionally, re-queue or move to a dead-letter queue
+          return null;
+        }
+      } else if (job.data.type === 'initial-sync') {
+        this.logger.log(`[UltraLowQueue] Delegating to InitialSyncProcessor for job ID: ${job.id || 'N/A'}`);
+        try {
+          await this.initialSyncProcessor.process(mockBullMqJob);
+          return job.data;
+        } catch (error) {
+          this.logger.error(`[UltraLowQueue] Error processing 'initial-sync' job ${job.id || 'N/A'}: ${error.message}`, error.stack);
           return null;
         }
       } else {
@@ -63,7 +75,7 @@ export class UltraLowQueueService implements SimpleQueue {
     return null;
   }
 
-  async processAllJobs(): Promise<void> { // Removed initialScanProcessor parameter
+  async processAllJobs(): Promise<void> {
     this.logger.log('[UltraLowQueue] Processing all jobs in queue...');
     let jobData;
     while ((jobData = await this.processNextJob())) {
