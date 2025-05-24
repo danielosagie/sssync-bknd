@@ -1685,3 +1685,130 @@ Our sync engine is designed to keep product and inventory data consistent betwee
     *   The original `INITIAL_SCAN_QUEUE` and `INITIAL_SYNC_QUEUE` and their processors are commented out. While `initial-scan` *type* jobs are handled, ensuring these queues are truly not being polled by any old BullMQ maintenance or worker configurations (if Redis keys still exist) is important for minimizing Redis load. If obsolete, they should be fully cleaned from Redis.
 
 The engine has a solid foundation with distinct layers for platform interaction, canonical data management, and queued processing, addressing many core sync requirements. The areas not accounted for are typical of more advanced/mature sync systems and can be added iteratively.
+
+
+
+Okay, let's break down what your application can do on the "sync side" based on the provided files, focusing on the API endpoints and the processes they initiate.
+
+The primary controller for initiating synchronization tasks is `src/sync.controller.ts`. It works closely with `src/sync-engine/initial-sync.service.ts` to manage and queue various synchronization jobs.
+
+Here's an overview of the synchronization capabilities and their corresponding endpoints:
+
+**1. Initial Platform Scan & Data Ingestion**
+
+*   **Purpose**: To perform an initial read of all products, variants, and relevant data (like inventory locations) from a newly connected e-commerce platform. This data is then saved into your canonical database, and mapping suggestions are generated to help link platform products to your system's products.
+*   **Main Endpoint**: `POST /sync/connections/:connectionId/start-scan`
+    *   **Action**: When you call this endpoint, the `InitialSyncService.queueInitialScanJob` method is invoked.
+    *   This method queues an `'initial-scan'` job using the `QueueManagerService`.
+    *   The `QueueManagerService` will decide whether to route this job to `UltraLowQueueService` (for low-demand scenarios) or `BullMQQueueService` (for high-demand).
+    *   Ultimately, the `InitialScanProcessor.process` method will handle the job.
+    *   **`InitialScanProcessor` does the following**:
+        *   Updates the connection status to `'scanning'`.
+        *   Fetches all relevant data (products, variants, locations, inventory) from the specified platform using the appropriate platform adapter.
+        *   Maps the fetched platform data to your canonical product, variant, and inventory level structures.
+        *   Saves these canonical entities to your Supabase database.
+        *   Saves product images associated with the variants.
+        *   Generates a scan summary (counts of products, variants, locations) and saves it.
+        *   Generates mapping suggestions (e.g., potential matches based on SKU or barcode) between platform products and existing canonical products.
+        *   Stores these suggestions and the summary in the `PlatformSpecificData` field of the `PlatformConnections` table.
+        *   Updates the connection status to `'needs_review'`, indicating that user action is likely needed to confirm mappings.
+*   **Supporting Endpoints**:
+    *   `GET /sync/connections/:connectionId/scan-summary`: Retrieves the `InitialScanResult` (product/variant/location counts) stored after a scan.
+    *   `GET /sync/connections/:connectionId/mapping-suggestions`: Fetches the `MappingSuggestion[]` generated during the initial scan, allowing the user to review potential matches.
+
+**2. Confirming Mappings & Activating Full Sync**
+
+*   **Purpose**: After an initial scan, the user reviews the mapping suggestions. This flow allows the user to confirm these mappings (e.g., link a platform product to an existing SSSync product, mark a platform product to be created as new in SSSync, or ignore it). Once confirmed, the actual initial synchronization can be activated.
+*   **Endpoint 1**: `POST /sync/connections/:connectionId/confirm-mappings`
+    *   **DTO**: `ConfirmMappingsDto` (expects `confirmedMatches` array and optional `syncRules`).
+    *   **Action**: Calls `InitialSyncService.saveConfirmedMappings`, which in turn uses `MappingService.saveConfirmedMappings`.
+    *   `MappingService` saves these confirmed actions (link, create, ignore) into `PlatformSpecificData` of the `PlatformConnection` and also creates direct links in the `PlatformProductMappings` table for items marked with `action: 'link'`.
+*   **Endpoint 2**: `POST /sync/connections/:connectionId/activate-sync`
+    *   **Action**: Calls `InitialSyncService.queueInitialSyncJob`.
+    *   This method updates the connection status to `'syncing'`.
+    *   It then queues an `'initial-sync'` job via `QueueManagerService`.
+    *   Similar to the scan job, `QueueManagerService` routes this to `UltraLowQueueService` or `BullMQQueueService`.
+    *   The `InitialSyncProcessor.process` method handles this job.
+    *   **`InitialSyncProcessor` is responsible for**:
+        *   Fetching the confirmed mappings.
+        *   Iterating through platform data (fetched again or using a snapshot from the scan).
+        *   Based on the `action` in `confirmedMappings` for each item:
+            *   **'link'**: Creates or updates entries in `PlatformProductMappings`. Fetches platform inventory and updates canonical `InventoryLevels`.
+            *   **'create'**: If sync rules allow, maps the platform product to canonical structures, creates new entries in your `Products` and `ProductVariants` tables, creates the `PlatformProductMapping`, and syncs inventory.
+        *   All these database operations are intended to be within a Supabase transaction for data integrity.
+        *   Finally, updates the connection status (e.g., to `'syncing'` or `'active'`) and `LastSyncSuccessAt`.
+*   **Supporting Endpoint (currently a placeholder)**:
+    *   `GET /sync/connections/:connectionId/sync-preview`: Intended to generate a preview of sync actions, but currently returns an empty actions array.
+
+**3. Periodic Data Reconciliation**
+
+*   **Purpose**: To ensure data consistency between your canonical store and the connected platforms over time. It identifies new products on the platform, products that might have been removed, and updates inventory levels for all mapped products.
+*   **Endpoint**: `POST /sync/connection/:connectionId/reconcile`
+    *   **Action**: Calls `InitialSyncService.queueReconciliationJob`.
+    *   This method queues a job directly to the `RECONCILIATION_QUEUE` (a BullMQ named queue).
+    *   The `ReconciliationProcessor.process` method handles this job.
+    *   **`ReconciliationProcessor` does the following**:
+        *   Logs the start of the job.
+        *   Fetches product overviews (identifiers and minimal data) from the platform.
+        *   Fetches all existing canonical product mappings for the connection.
+        *   Compares the two lists to find:
+            *   Products new on the platform (not yet mapped).
+            *   Products mapped in SSSync but now missing on the platform.
+        *   **For new platform products**: Fetches full details, maps them to canonical, saves new `Products`, `ProductVariants`, creates `PlatformProductMappings`, saves images, and initial `InventoryLevels`.
+        *   **For missing platform products**: Logs a warning, indicating a review might be needed.
+        *   **Inventory Reconciliation**: For all *actively mapped* products, it fetches live inventory levels from the platform and updates the corresponding records in your canonical `InventoryLevels` table.
+        *   Updates `LastSyncSuccessAt` or `Status` on the connection and logs success/failure.
+    *   **Note**: This reconciliation is rate-limited (1 job every 2 minutes per the processor config) to manage load.
+
+**4. Handling Incoming Webhooks (Real-time Updates from Platforms)**
+
+*   **Purpose**: To react to real-time changes happening on the e-commerce platforms (e.g., a product updated on Shopify, an order created on Clover).
+*   **Endpoints**: These are defined in `src/sync-engine/webhook.controller.ts` (not explicitly provided in the file list, but its usage is clear from `SyncCoordinatorService`). Typically, these would be like `/webhooks/shopify`, `/webhooks/clover`, etc.
+*   **Action**:
+    *   The `WebhookController` receives the webhook, validates it (validation logic not detailed here but usually involves signature checking), and then calls `SyncCoordinatorService.handleWebhook`.
+    *   `SyncCoordinatorService.handleWebhook` identifies the platform and the specific `PlatformConnection` based on information in the webhook payload or headers (e.g., Shopify's `x-shopify-shop-domain` header).
+    *   It then delegates the actual processing to the `processWebhook` method of the corresponding platform adapter (e.g., `ShopifyAdapter.processWebhook`).
+    *   **The adapter's `processWebhook` method is responsible for**:
+        *   Parsing the platform-specific webhook payload.
+        *   Determining the type of event (e.g., product update, inventory change).
+        *   Fetching any additional necessary data from the platform related to the event.
+        *   Updating the canonical data in your Supabase database by calling methods on services like `ProductsService` or `InventoryService`.
+        *   For example, if a Shopify product is updated, the `ShopifyAdapter` would map the incoming Shopify product data to your `CanonicalProduct` and `CanonicalProductVariant` structures and then call `productsService.updateProductAndVariants(...)`.
+
+**5. Pushing Canonical Data Changes to Platforms (SSSync -> Platforms)**
+
+*   **Purpose**: When data changes in your canonical SSSync database (either through an admin interface, an import, or as a result of a webhook from *another* platform), these changes need tobe pushed out to all linked and enabled e-commerce platforms.
+*   **Trigger**: This is not directly initiated by an API endpoint but happens as a consequence of your canonical data services (e.g., `ProductsService`, `InventoryService`) being called.
+    *   When a canonical product is created, updated, or deleted, or when inventory levels change, these services call methods on `SyncCoordinatorService` like:
+        *   `handleCanonicalProductCreation(productId, userId)`
+        *   `handleCanonicalProductUpdate(productId, userId)`
+        *   `handleCanonicalProductDeletion(productId, userId)`
+        *   `handleCanonicalInventoryUpdate(variantId, userId)`
+*   **Action**:
+    *   These `handleCanonical...` methods in `SyncCoordinatorService` queue a job to the `PUSH_OPERATIONS_QUEUE` (a BullMQ named queue). The job data includes `userId`, `entityId` (product or variant ID), and `changeType`.
+    *   The `PushOperationsProcessor.process` method handles these jobs.
+    *   **`PushOperationsProcessor` does the following**:
+        *   Based on the `changeType`, it calls a corresponding internal execution method in `SyncCoordinatorService` (e.g., `_executeProductCreationPush`, `_executeProductUpdatePush`, etc.).
+        *   These `_execute...Push` methods contain the core logic:
+            *   Fetch the relevant canonical product/variant and inventory data.
+            *   Iterate through all enabled `PlatformConnections` for the user.
+            *   For each connection:
+                *   Get the appropriate platform adapter.
+                *   Retrieve existing mappings if it's an update or deletion.
+                *   Call the adapter's corresponding method (`createProduct`, `updateProduct`, `deleteProduct`, `updateInventoryLevels`).
+                *   The adapter methods then make the necessary API calls to the e-commerce platform.
+                *   After a successful push, new mappings might be created (for `createProduct`) or existing ones updated (e.g., `LastSyncedAt`, `SyncStatus`).
+                *   Detailed activity logging is performed for success or failure of each push operation to each platform.
+    *   **Note**: `PushOperationsProcessor` is also rate-limited (1 job every 1 minute per config) to manage API request rates to external platforms.
+
+**Queue Management Strategy:**
+
+*   **`QueueManagerService`**: Acts as a "traffic cop" for `'initial-scan'` and `'initial-sync'` jobs. It can dynamically switch between:
+    *   **`UltraLowQueueService`**: A lightweight Redis list-based queue, intended for low-traffic scenarios to minimize Redis commands. It directly calls the `process` methods of `InitialScanProcessor` or `InitialSyncProcessor`.
+    *   **`BullMQQueueService`**: Uses BullMQ for more robust queueing during high-traffic. It has a worker that processes jobs from the `bullmq-high-queue` and similarly calls the respective processor methods.
+*   **Dedicated BullMQ Named Queues**:
+    *   `RECONCILIATION_QUEUE`: Handled by `ReconciliationProcessor`.
+    *   `PUSH_OPERATIONS_QUEUE`: Handled by `PushOperationsProcessor`.
+    *   These queues are registered directly with BullMQ in `SyncEngineModule` and have their own specific configurations (like rate limiting and concurrency).
+
+This covers the main synchronization functionalities exposed via API endpoints and the background processing involved. The system is designed to ingest data, allow user confirmation, perform initial and ongoing syncs, and react to changes from both your canonical store and the external platforms.

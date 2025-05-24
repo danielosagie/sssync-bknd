@@ -577,14 +577,14 @@ const UPDATE_INVENTORY_LEVELS_MUTATION = `
 // Add new query for fetching inventory levels
 const GET_INVENTORY_LEVELS_QUERY = `
   query GetInventoryLevels($inventoryItemIds: [ID!]!) {
-    inventoryItems(first: 50, ids: $inventoryItemIds) {
+    inventoryItems(first: 50, ids: $inventoryItemIds) { # Assuming inventoryItemIds are GIDs
       edges {
-        node {
+        node { # This is InventoryItem
           id
-          inventoryLevels(first: 10) {
+          inventoryLevels(first: 10) { # inventoryLevels on InventoryItem
             edges {
-              node {
-                available
+              node { # This is InventoryLevel
+                available # <-- REVERTED TO DIRECT 'available'
                 location {
                   id
                   name
@@ -675,8 +675,8 @@ const GET_PRODUCTS_BY_IDS_QUERY = `
                 }
                 inventoryLevels(first: 10) {
                   edges {
-                    node {
-                      available
+                    node { # ShopifyInventoryLevelNode
+                      available # <-- REVERTED TO DIRECT 'available'
                       location {
                         id
                         name
@@ -1347,15 +1347,47 @@ export class ShopifyApiClient {
         const client = await this.getGraphQLClient(connection);
         this.logger.log(`Fetching inventory levels for ${variantIds.length} variants`);
 
-        try {
-            // Convert variant IDs to inventory item IDs
-            const inventoryItemIds = variantIds.map(id => 
-                id.startsWith('gid://') ? id : `gid://shopify/ProductVariant/${id}`
-            );
+        if (!variantIds || variantIds.length === 0) {
+            this.logger.debug('getInventoryLevels called with no variant IDs.');
+            return [];
+        }
 
-            const response = await client.request(GET_INVENTORY_LEVELS_QUERY, {
+        // The GET_INVENTORY_LEVELS_QUERY expects InventoryItem GIDs.
+        // We need to fetch ProductVariants first to get their inventoryItem.id
+        // This is a multi-step process if we only have variant GIDs.
+        // For now, let's assume the query can be adapted or variantIds are actually inventoryItemIds if used directly.
+        // OR, more practically, the caller (ReconciliationProcessor) should pass inventoryItem GIDs.
+        // Let's adjust the expectation or make this method more robust.
+
+        // For simplicity in this fix, assuming variantIds are inventoryItem GIDs or can be directly used if the query is adapted.
+        // A more robust solution might be to fetch variants, then their inventory items if only variant GIDs are provided.
+        // Let's assume `variantIds` are actually `inventoryItemGids` for this specific fix based on the query.
+
+        // If variantIds are ProductVariant GIDs, you would typically query for those variants,
+        // get their inventoryItem { id }, and then use those inventoryItem IDs.
+        // For now, this code assumes the provided IDs are what GET_INVENTORY_LEVELS_QUERY needs (InventoryItem GIDs).
+        
+        const inventoryItemGidsToQuery: string[] = [];
+        for (const id of variantIds) {
+            if (id.includes('InventoryItem')) {
+                inventoryItemGidsToQuery.push(id);
+            } else if (id.includes('ProductVariant')) {
+                this.logger.warn(`[getInventoryLevels] Received ProductVariant GID '${id}' but query expects InventoryItem GIDs. This variant will be skipped unless adapted upstream.`);
+            } else {
+                this.logger.warn(`[getInventoryLevels] Received ID '${id}' of unknown type. Assuming it might be an InventoryItem GID for query.`);
+                inventoryItemGidsToQuery.push(id.startsWith('gid://') ? id : `gid://shopify/InventoryItem/${id}`);
+            }
+        }
+        
+        if (inventoryItemGidsToQuery.length === 0) {
+            this.logger.warn('[getInventoryLevels] No valid InventoryItem GIDs to query after filtering. Returning empty array.');
+            return [];
+        }
+
+        try {
+            const response = await client.request<any>(GET_INVENTORY_LEVELS_QUERY, {
                 variables: {
-                    inventoryItemIds
+                    inventoryItemIds: inventoryItemGidsToQuery
                 }
             });
 
@@ -1364,24 +1396,29 @@ export class ShopifyApiClient {
                 throw new InternalServerErrorException(`Failed to fetch inventory levels: ${response.errors[0]?.message}`);
             }
 
-            const inventoryItems = response.data?.inventoryItems?.edges || [];
+            const inventoryItemsData = response.data?.inventoryItems?.edges || [];
             const results: Array<{
-                variantId: string;
+                variantId: string; 
                 locationId: string;
                 quantity: number;
             }> = [];
 
-            for (const item of inventoryItems) {
-                const inventoryItemId = item.node.id;
-                const variantId = inventoryItemId.split('/').pop() || '';
-                
-                for (const levelEdge of item.node.inventoryLevels.edges) {
-                    const level = levelEdge.node;
-                    if (level.location.isActive) {
+            for (const itemEdge of inventoryItemsData) {
+                const inventoryItemNode = itemEdge.node;
+                if (!inventoryItemNode || !inventoryItemNode.id) continue;
+
+                const relatedIdentifier = inventoryItemNode.id; 
+
+                const inventoryLevels = inventoryItemNode.inventoryLevels?.edges || [];
+                for (const levelEdge of inventoryLevels) {
+                    const levelNode = levelEdge.node;
+                    if (levelNode && levelNode.location?.isActive) {
+                        const quantity = typeof levelNode.available === 'number' ? levelNode.available : 0;
+                        
                         results.push({
-                            variantId,
-                            locationId: level.location.id,
-                            quantity: level.available
+                            variantId: relatedIdentifier, 
+                            locationId: levelNode.location.id,
+                            quantity: quantity
                         });
                     }
                 }
@@ -1404,20 +1441,15 @@ export class ShopifyApiClient {
         this.logger.log(`Fetching ${productIds.length} products by IDs from Shopify for shop: ${shop}...`);
         const client = await this.getGraphQLClient(connection);
 
-        // Shopify's `nodes` query can take up to 250 IDs at a time.
-        // We might need to batch if productIds.length > 250, but for now, assume it's less.
-        // If you expect more, implement batching logic here.
         if (productIds.length > 250) {
             this.logger.warn(`fetchProductsByIds called with ${productIds.length} IDs, which exceeds Shopify's typical limit of 250 for the nodes query. Implement batching if this is a common scenario.`);
-            // Truncate for now to avoid errors, or implement batching.
-            // For a real implementation, batching is essential for >250 IDs.
         }
 
         try {
             const response = await client.request<{
-                nodes: (ShopifyProductNode | null)[] // The response for `nodes` is an array, some items might be null if ID not found
+                nodes: (ShopifyProductNode | null)[] 
             }>(GET_PRODUCTS_BY_IDS_QUERY, {
-                variables: { ids: productIds }, // Pass the array of IDs
+                variables: { ids: productIds }, 
             });
 
             if (response.errors) {
@@ -1425,15 +1457,27 @@ export class ShopifyApiClient {
                 throw new InternalServerErrorException(`GraphQL fetchProductsByIds query failed: ${response.errors[0]?.message}`);
             }
 
-            const fetchedProducts = response.data?.nodes?.filter(node => node !== null) as ShopifyProductNode[] || [];
+            const fetchedProductsRaw = response.data?.nodes?.filter(node => node !== null) as any[] || [];
             
-            // Note: If variants inside these products need further pagination, that logic would need to be added here,
-            // similar to fetchAllRelevantData. For simplicity now, we assume first page of variants is sufficient
-            // or GET_PRODUCTS_BY_IDS_QUERY fetches enough variants.
+            const processedProducts: ShopifyProductNode[] = fetchedProductsRaw.map(product => {
+                if (product && product.variants && product.variants.edges) {
+                    product.variants.edges = product.variants.edges.map((variantEdge: any) => {
+                        if (variantEdge.node && variantEdge.node.inventoryItem && variantEdge.node.inventoryItem.inventoryLevels && variantEdge.node.inventoryItem.inventoryLevels.edges) {
+                            variantEdge.node.inventoryItem.inventoryLevels.edges = variantEdge.node.inventoryItem.inventoryLevels.edges.map((levelEdge: any) => {
+                                if (levelEdge.node) {
+                                    levelEdge.node.available = typeof levelEdge.node.available === 'number' ? levelEdge.node.available : 0;
+                                }
+                                return levelEdge;
+                            });
+                        }
+                        return variantEdge;
+                    });
+                }
+                return product as ShopifyProductNode;
+            });
 
-            this.logger.log(`Successfully fetched ${fetchedProducts.length} products by IDs for shop: ${shop}.`);
-            return fetchedProducts;
-
+            this.logger.log(`Successfully fetched ${processedProducts.length} products by IDs for shop: ${shop}.`);
+            return processedProducts;
         } catch (error) {
             this.logger.error(`Failed to fetch products by IDs from Shopify for shop ${shop}: ${error.message}`, error.stack);
             if (error instanceof UnauthorizedException || (error.message?.includes('401') || error.message?.includes('403'))) {

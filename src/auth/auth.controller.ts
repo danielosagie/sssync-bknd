@@ -262,97 +262,86 @@ export class AuthController {
     @Res() res: Response,
     @Query('finalRedirectUri') finalRedirectUri?: string,
   ) {
-     if (!userId) {
-       throw new BadRequestException('Missing required query parameter: userId.');
-     }
-     const redirectTarget = finalRedirectUri || this.frontendRedirectBase;
-     this.logger.log(`Initiating Clover login for userId: ${userId}, redirecting to: ${redirectTarget}`);
+    if (!userId) {
+      throw new BadRequestException('Missing required query parameter: userId.');
+    }
+    // Use the provided finalRedirectUri, or default if it's for a web flow without one explicitly set
+    const effectiveFinalRedirectUri = finalRedirectUri || this.frontendRedirectBase; // frontendRedirectBase could be your web app's main callback page
+
+    this.logger.log(`Initiating Clover login for userId: ${userId}, final redirect target: ${effectiveFinalRedirectUri}`);
     try {
-        // Pass redirectTarget to the service method
-        const authUrl = this.authService.getCloverAuthUrl(userId, redirectTarget);
-        res.redirect(authUrl);
+      // Pass userId AND the final (app/web) redirect URI to be stored in the state
+      const authUrl = this.authService.getCloverAuthUrl(userId, effectiveFinalRedirectUri);
+      res.redirect(authUrl);
     } catch (error) {
-        this.logger.error(`Error generating Clover auth URL: ${error.message}`, error.stack);
-        const errorRedirect = buildRedirectUrl(redirectTarget, 'clover', false, 'Configuration error initiating OAuth flow.');
-        res.redirect(errorRedirect);
+      this.logger.error(`Error generating Clover auth URL: ${error.message}`, error.stack);
+      const errorRedirect = buildRedirectUrl(effectiveFinalRedirectUri, 'clover', false, 'Configuration error initiating OAuth flow.');
+      res.redirect(errorRedirect);
     }
   }
 
   @Get('clover/callback')
   async cloverCallback(
-    @Query() query: { code?: string; state: string; merchant_id?: string; client_id?: string }, // merchant_id might be missing on error
+    @Query() query: { code?: string; state?: string; merchant_id?: string; client_id?: string },
     @Res() res: Response,
   ) {
-    this.logger.log(`Received Clover callback.`);
+    this.logger.log(`Received Clover callback. Query: ${JSON.stringify(query)}`);
     let statePayload: StatePayload | null = null;
+    // Default error redirect if state cannot be parsed early
     let errorRedirectTarget = this.frontendRedirectBase;
 
     try {
-        // Clover might not send merchant_id/client_id on user denial or error
-        if (!query.code || !query.state) {
-           // Check if it's an explicit denial (this might vary based on Clover's exact response)
-           if (query.state && !query.code) { // Assuming state is present but code is missing indicates denial/error
-                try {
-                   // Still try to verify state to get the redirect URI
-                   statePayload = this.authService.verifyStateJwt(query.state, 'clover');
-                   errorRedirectTarget = statePayload.finalRedirectUri;
-                   this.logger.warn(`Clover OAuth denied by user or error before code grant. State: ${query.state}`);
-                   throw new UnauthorizedException('User denied access or Clover returned an error.');
-                } catch (stateError) {
-                    // If state verification also fails
-                    this.logger.error(`Clover callback error: Missing code and failed state verification. State: ${query.state}`, stateError.stack);
-                    throw new BadRequestException('Invalid callback parameters or invalid/expired state.');
-                }
-           } else {
-               // Both code and state are missing or other essential params
-               this.logger.error(`Clover callback error: Missing required parameters. Query: ${JSON.stringify(query)}`);
-               throw new BadRequestException('Missing required parameters in Clover callback.');
-           }
-        }
-        // We need merchant_id for linking, even if client_id isn't strictly needed for logic here
-        if (!query.merchant_id) {
-             this.logger.error(`Clover callback error: Missing merchant_id. Query: ${JSON.stringify(query)}`);
-             throw new BadRequestException('Missing merchant_id in Clover callback.');
-        }
+      if (!query.state) { // State is always expected, even on error from Clover
+        throw new BadRequestException('Missing state parameter in Clover callback.');
+      }
 
-        // Verify client_id matches configuration (security check)
-        const expectedClientId = this.configService.get<string>('CLOVER_APP_ID');
-        if (!expectedClientId || query.client_id !== expectedClientId) {
-            this.logger.error(`Clover callback error: Client ID mismatch. Expected ${expectedClientId}, Received ${query.client_id}`);
-            throw new BadRequestException('Client ID mismatch.');
-        }
+      // 1. Verify state JWT and extract payload (including finalRedirectUri)
+      statePayload = this.authService.verifyStateJwt(query.state, 'clover');
+      // If state is verified, update the error redirect target immediately
+      errorRedirectTarget = statePayload.finalRedirectUri;
+      this.logger.debug(`Clover callback: State JWT verified. Final redirect target set to: ${statePayload.finalRedirectUri}, UserID from state: ${statePayload.userId}`);
 
-        // Verify state JWT
-        statePayload = this.authService.verifyStateJwt(query.state, 'clover');
-        errorRedirectTarget = statePayload.finalRedirectUri; // Update error target
-        this.logger.debug(`Clover State JWT verified. Final redirect target: ${statePayload.finalRedirectUri}`);
+      // Check if Clover returned an error instead of a code
+      if (!query.code && query.merchant_id) { // This condition implies an error if code is missing but merchant_id might still be there on some error scenarios
+          // Clover might not always send a clear 'error' query param. Absence of 'code' when expected is an issue.
+          // Or, if Clover has specific error query params, check for those.
+          this.logger.warn(`Clover callback for user ${statePayload.userId}, merchant ${query.merchant_id} did not include an authorization code. Query: ${JSON.stringify(query)}`);
+          throw new BadRequestException('Clover authorization failed or was denied by the user.');
+      }
+      if (!query.code || !query.merchant_id) {
+           this.logger.error(`Clover callback missing code or merchant_id. Code: ${query.code}, MerchantId: ${query.merchant_id}`);
+           throw new BadRequestException('Missing required parameters (code or merchant_id) in Clover callback.');
+      }
 
-        // Handle OAuth flow
-        await this.authService.handleCloverCallback(query.code, query.merchant_id, query.state);
-        this.logger.log(`Clover OAuth flow completed successfully for merchant: ${query.merchant_id}, userId: ${statePayload.userId}`);
 
-        // Redirect to success URL
-        const successRedirect = buildRedirectUrl(statePayload.finalRedirectUri, 'clover', true);
-        this.logger.log(`Redirecting to success URL: ${successRedirect}`);
-        res.redirect(successRedirect);
+      // 2. Handle OAuth code exchange and token storage
+      // Pass userId from the verified state to handleCloverCallback
+      await this.authService.handleCloverCallback(query.code, query.merchant_id, statePayload.userId, statePayload.finalRedirectUri /* Pass for logging/consistency if needed by service */);
+      this.logger.log(`Clover OAuth flow completed successfully for merchant: ${query.merchant_id}, userId: ${statePayload.userId}`);
+
+      // 3. Redirect to the final destination specified in the state
+      const successRedirect = buildRedirectUrl(statePayload.finalRedirectUri, 'clover', true);
+      this.logger.log(`Clover callback: Redirecting to success URL: ${successRedirect}`);
+      res.redirect(successRedirect);
 
     } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : 'Unknown OAuth error';
-        this.logger.error(`Error during Clover callback: ${errorMessage}`, error.stack);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown OAuth error with Clover.';
+      this.logger.error(`Error during Clover callback: ${errorMessage}`, error.stack);
 
-        let clientErrorMessage = 'OAuth flow failed.';
-         if (error instanceof UnauthorizedException) {
-             clientErrorMessage = 'Authentication failed or access denied.';
-         } else if (error instanceof BadRequestException) {
-             clientErrorMessage = `Invalid request: ${errorMessage}`;
-         } else if (errorMessage.includes('State expired') || errorMessage.includes('Invalid state')) {
-             clientErrorMessage = 'Login session invalid or expired, please try again.';
-         }
-
-        // Use the redirect target from state if available, otherwise default
-        const errorRedirect = buildRedirectUrl(errorRedirectTarget, 'clover', false, clientErrorMessage);
-        this.logger.log(`Redirecting to error URL: ${errorRedirect}`);
-        res.redirect(errorRedirect);
+      let clientErrorMessage = 'Clover OAuth flow failed.';
+      if (error instanceof UnauthorizedException) {
+          clientErrorMessage = `Authentication error: ${errorMessage}`;
+      } else if (error instanceof BadRequestException) {
+          clientErrorMessage = `Invalid request during Clover OAuth: ${errorMessage}`;
+      } else if (errorMessage.includes('State expired')) {
+          clientErrorMessage = 'Login session expired, please try connecting Clover again.';
+      } else if (errorMessage.includes('Invalid state')) {
+           clientErrorMessage = 'Invalid login session, please try connecting Clover again.';
+      }
+      // ErrorRedirectTarget would have been updated if state was parsed, otherwise defaults.
+      const errorRedirect = buildRedirectUrl(errorRedirectTarget, 'clover', false, clientErrorMessage);
+      this.logger.log(`Clover callback: Redirecting to error URL: ${errorRedirect}`);
+      res.redirect(errorRedirect);
     }
   }
 

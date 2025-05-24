@@ -279,80 +279,140 @@ export class AuthService {
 
   // --- Clover ---
 
-  getCloverAuthUrl(userId: string, finalRedirectUri: string): string {
-    const appId = this.configService.get<string>('CLOVER_APP_ID');
-    const redirectUri = this.configService.get<string>('CLOVER_REDIRECT_URI');
-    const cloverBaseUrl = this.configService.get<string>('CLOVER_API_BASE_URL'); // e.g., https://clover.com or https://sandbox.dev.clover.com
+  getCloverAuthUrl(userId: string, finalRedirectUriForState: string): string {
+    const clientId = this.configService.get<string>('CLOVER_APP_ID');
+    const backendCallbackUrl = this.configService.get<string>('CLOVER_REDIRECT_URI'); 
 
-    if (!appId || !redirectUri || !cloverBaseUrl) {
+    if (!clientId || !backendCallbackUrl) {
+      this.logger.error('Clover APP_ID or REDIRECT_URI is not configured.');
       throw new InternalServerErrorException('Clover configuration is missing or invalid.');
     }
 
-    const statePayload: Omit<StatePayload, 'nonce'> = {
+    const statePayload: Omit<StatePayload, 'nonce' | 'shop'> = {
       userId,
       platform: 'clover',
-      finalRedirectUri,
+      finalRedirectUri: finalRedirectUriForState, 
     };
     const state = this.generateStateJwt(statePayload);
 
-    const authUrl = new URL('/oauth/authorize', cloverBaseUrl);
-    authUrl.searchParams.set('client_id', appId);
-    authUrl.searchParams.set('redirect_uri', redirectUri);
+    // Use a specific config for the authorization base URL
+    const cloverAuthBaseUrl = this.configService.get<string>('CLOVER_AUTHORIZATION_BASE_URL'); 
+    if (!cloverAuthBaseUrl) {
+        this.logger.error('CLOVER_AUTHORIZATION_BASE_URL is not configured.');
+        throw new InternalServerErrorException('Clover authorization endpoint configuration is missing.');
+    }
+
+    const authUrl = new URL('/oauth/authorize', cloverAuthBaseUrl); // For v1 OAuth, or /oauth/v2/authorize for v2
+    // If using v2, ensure this path is /oauth/v2/authorize
+    // const authUrl = new URL('/oauth/v2/authorize', cloverAuthBaseUrl);
+    authUrl.searchParams.set('client_id', clientId);
+    authUrl.searchParams.set('response_type', 'code');
+    authUrl.searchParams.set('redirect_uri', backendCallbackUrl); 
     authUrl.searchParams.set('state', state);
 
+    this.logger.log(`Generated Clover Auth URL: ${authUrl.toString()}`);
     return authUrl.toString();
   }
 
-  async handleCloverCallback(code: string, merchantId: string, state: string): Promise<void> {
-    this.logger.log(`Handling Clover callback for merchantId: ${merchantId}`);
-    let statePayload: StatePayload;
+  async handleCloverCallback(code: string, merchantId: string, userIdFromState: string, finalRedirectUriForState: string): Promise<void> {
+    this.logger.log(`Handling Clover callback for merchantId: ${merchantId}, userId from state: ${userIdFromState}`);
+
+    const clientId = this.configService.get<string>('CLOVER_APP_ID');
+    const clientSecret = this.configService.get<string>('CLOVER_APP_SECRET');
+    const backendCallbackUrl = this.configService.get<string>('CLOVER_REDIRECT_URI');
+
+    if (!clientId || !clientSecret || !backendCallbackUrl) {
+      this.logger.error('Clover configuration (APP_ID, APP_SECRET, or REDIRECT_URI) is missing.');
+      throw new InternalServerErrorException('Clover OAuth configuration error on server.');
+    }
+
+    // Use a specific config for the token endpoint base URL
+    const cloverTokenBaseUrl = this.configService.get<string>('CLOVER_TOKEN_ENDPOINT_BASE_URL');
+    if (!cloverTokenBaseUrl) {
+        this.logger.error('CLOVER_TOKEN_ENDPOINT_BASE_URL is not configured.');
+        throw new InternalServerErrorException('Clover token endpoint configuration is missing.');
+    }
+    // Adjust path for v2 if necessary
+    const cloverTokenUrl = `${cloverTokenBaseUrl}/oauth/token`; // For v1, or /oauth/v2/token for v2
+    // const cloverTokenUrl = `${cloverTokenBaseUrl}/oauth/v2/token`;
+
+
     try {
-      statePayload = this.verifyStateJwt(state, 'clover');
-      this.logger.debug(`State verified for merchant: ${merchantId}, userId: ${statePayload.userId}`);
+      const tokenResponse = await axios.post<{ access_token: string }>(
+        cloverTokenUrl,
+        null, // Clover token request typically sends params in query string, not body for code exchange
+        {
+          params: {
+            client_id: clientId,
+            client_secret: clientSecret,
+            code: code,
+            grant_type: 'authorization_code', // Though often not explicitly needed if using 'code'
+            redirect_uri: backendCallbackUrl, // Sometimes required by OAuth providers in token request
+          },
+          headers: {
+            'Accept': 'application/json',
+          },
+        },
+      );
 
-      const appId = this.configService.get<string>('CLOVER_APP_ID');
-      const appSecret = this.configService.get<string>('CLOVER_APP_SECRET');
-      const cloverBaseUrl = this.configService.get<string>('CLOVER_API_BASE_URL');
-      if (!appId || !appSecret) throw new InternalServerErrorException('Clover configuration error.');
-
-      const tokenUrl = new URL('/oauth/token', cloverBaseUrl);
-      const params = new URLSearchParams();
-      params.set('client_id', appId);
-      params.set('client_secret', appSecret);
-      params.set('code', code);
-
-      const response = await fetch(tokenUrl.toString(), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: params,
-      });
-
-      if (!response.ok) {
-        const errorBody = await response.text();
-        this.logger.error(`Clover token exchange failed for merchant ${merchantId}. Status: ${response.status}. Body: ${errorBody}`);
-        throw new InternalServerErrorException(`Failed to exchange Clover code for token. Status: ${response.status}`);
+      if (!tokenResponse.data || !tokenResponse.data.access_token) {
+        this.logger.error('Clover token exchange failed: No access_token in response.', tokenResponse.data);
+        throw new InternalServerErrorException('Failed to obtain access token from Clover.');
       }
-      const tokenData = await response.json();
-      if (!tokenData.access_token) {
-        this.logger.error(`Clover token exchange response missing access_token for merchant ${merchantId}. Response: ${JSON.stringify(tokenData)}`);
-        throw new InternalServerErrorException('Invalid token response from Clover.');
-      }
+
+      const accessToken = tokenResponse.data.access_token;
       this.logger.log(`Successfully obtained Clover access token for merchant: ${merchantId}`);
 
+      // Encrypt and save credentials
+      const credentials = {
+        accessToken: accessToken,
+        merchantId: merchantId, // Store merchantId with credentials
+      };
+
+      // Fetch merchant details to get a display name (optional, but good UX)
+      let displayName = `Clover (${merchantId.substring(0, 7)}...)`; // Fallback display name
+      try {
+          // Use the CLOVER_API_BASE_URL (general API) for fetching merchant details
+          const cloverApiBaseUrl = this.configService.get<string>('CLOVER_API_BASE_URL');
+          if (!cloverApiBaseUrl) {
+              this.logger.warn('CLOVER_API_BASE_URL not configured, cannot fetch merchant name.');
+          } else {
+            const merchantDetailsUrl = `${cloverApiBaseUrl}/v3/merchants/${merchantId}`;
+            const merchantDetailsResponse = await axios.get<{name?: string}>(merchantDetailsUrl, {
+                headers: { 'Authorization': `Bearer ${accessToken}` }
+            });
+            if (merchantDetailsResponse.data?.name) {
+                displayName = merchantDetailsResponse.data.name;
+            }
+          }
+      } catch (e) {
+          this.logger.warn(`Could not fetch Clover merchant name for ${merchantId}: ${e.message}`);
+      }
+
+
       await this.savePlatformConnection({
-        UserId: statePayload.userId,
+        UserId: userIdFromState, // Use userId from the verified state
         PlatformType: 'clover',
-        DisplayName: `Clover (${merchantId})`,
-        Credentials: { accessToken: tokenData.access_token },
-        Status: 'Connected',
+        DisplayName: displayName,
+        Credentials: credentials,
+        Status: 'needs_review', // Or 'syncing' if you auto-start scan
         IsEnabled: true,
         PlatformSpecificData: { merchantId: merchantId },
       });
-      this.logger.log(`Platform connection saved/updated for Clover merchant: ${merchantId}, userId: ${statePayload.userId}`);
+
+      this.logger.log(`Clover connection successfully processed and saved for user ${userIdFromState}, merchant ${merchantId}.`);
 
     } catch (error) {
-      this.logger.error(`Error handling Clover callback for merchant ${merchantId}: ${error.message}`, error.stack);
-      throw error;
+      this.logger.error(
+        `Error during Clover token exchange or saving connection for merchant ${merchantId}: ${error.response?.data || error.message}`,
+        error.stack,
+      );
+      if (axios.isAxiosError(error) && error.response) {
+          throw new InternalServerErrorException(
+              `Clover API error (${error.response.status}): ${JSON.stringify(error.response.data)}`,
+          );
+      }
+      throw new InternalServerErrorException('Failed to process Clover authentication.');
     }
   }
 
