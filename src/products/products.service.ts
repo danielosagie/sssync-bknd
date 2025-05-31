@@ -411,7 +411,7 @@ export class ProductsService {
       });
 
       // Process imageUris for saving
-      const processedImageUrisForDb = mediaDetails.imageUris.map((rawUri, index) => {
+      processedImageUrisForDb = mediaDetails.imageUris.map((rawUri, index) => {
         this.logger.log(`[ImageCleanDB ${index}] Raw URI: "${rawUri}"`);
         let currentUrl = typeof rawUri === 'string' ? rawUri.trim() : '';
         this.logger.log(`[ImageCleanDB ${index}] After trim: "${currentUrl}"`);
