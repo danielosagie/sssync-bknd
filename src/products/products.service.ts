@@ -412,9 +412,15 @@ export class ProductsService {
 
       // Process imageUris for saving
       processedImageUrisForDb = mediaDetails.imageUris.map((rawUri, index) => {
-        this.logger.log(`[ImageCleanDB ${index}] Raw URI: "${rawUri}"`);
+        this.logger.log(`[ImageCleanDB ${index}] Raw URI: \"${rawUri}\"`);
         let currentUrl = typeof rawUri === 'string' ? rawUri.trim() : '';
-        this.logger.log(`[ImageCleanDB ${index}] After trim: "${currentUrl}"`);
+        this.logger.log(`[ImageCleanDB ${index}] After trim: \"${currentUrl}\"`);
+
+        // Direct semicolon removal first
+        if (currentUrl.endsWith(';')) {
+          currentUrl = currentUrl.slice(0, -1);
+          this.logger.log(`[ImageCleanDB ${index}] After direct slice of trailing semicolon: \"${currentUrl}\"`);
+        }
 
         // Step 1: Attempt to extract URL if it matches the specific problematic format like '["some_label"](actual_url_part)'
         const problematicFormatMatch = currentUrl.match(/.*\]\(([^)]*)\)/); // Matches 'anything](URL_PART)'
@@ -433,8 +439,9 @@ export class ProductsService {
         }
 
         // Step 2: Remove trailing semicolons (and any whitespace before them) - Applied to potentially extracted URL
-        currentUrl = currentUrl.replace(/\s*;+\s*$/, '');
-        this.logger.log(`[ImageCleanDB ${index}] After semicolon removal: "${currentUrl}"`);
+        // This regex step might be redundant if the direct slice above works, but kept for other cases.
+        currentUrl = currentUrl.replace(/\\s*;+\\s*$/, '');
+        this.logger.log(`[ImageCleanDB ${index}] After semicolon regex removal: \"${currentUrl}\"`);
 
         // Step 3: Decode URI Components - Applied to potentially extracted URL
         try {
