@@ -772,26 +772,23 @@ export class ProductsService {
 
     variants.forEach(variant => {
       if (variant.Options && typeof variant.Options === 'object') {
-        // Ensure Options is not null and is an object
         const variantOptions = variant.Options as Record<string, string>; 
         Object.entries(variantOptions).forEach(([optionName, optionValue]) => {
-          if (optionName.toLowerCase() === 'shopify') return; // Skip Shopify-internal options namespace
+          if (optionName.toLowerCase() === 'shopify') return;
+          if (optionName.toLowerCase() === 'title') return; // Avoid treating a default "Title" option from canonical as a user-defined one here
 
           if (!optionsMap.has(optionName)) {
             optionsMap.set(optionName, new Set<string>());
           }
-          // Ensure optionValue is a string before adding
           if (typeof optionValue === 'string') {
             optionsMap.get(optionName)!.add(optionValue);
           } else if (optionValue !== null && optionValue !== undefined) {
-            // Attempt to convert to string if it's a primitive
             optionsMap.get(optionName)!.add(String(optionValue));
           }
         });
       }
     });
     
-    // Shopify has a limit of 3 options
     const shopifyOptions: { name: string; values: string[] }[] = [];
     let count = 0;
     for (const [name, valuesSet] of optionsMap.entries()) {
@@ -799,32 +796,35 @@ export class ProductsService {
         shopifyOptions.push({ name, values: Array.from(valuesSet) });
         count++;
       } else {
-        this.logger.warn(`Product has more than 3 options. Shopify only supports up to 3. Option "${name}" will be ignored for Shopify product creation.`);
+        this.logger.warn(`Product has more than 3 options. Shopify only supports up to 3. Option "${name}" will be ignored.`);
         break; 
       }
     }
     
-    // If there are no options derived but there are variants, Shopify might still need a default option.
-    // This is often handled by the variant titles or by ensuring at least one option like "Title" exists.
-    // For simple, single-variant products, this often defaults to "Title" with the variant's title as the value.
-    // If multiple variants exist but no options were parsable, this might lead to issues on Shopify.
-    if (shopifyOptions.length === 0 && variants.length > 1) {
-        this.logger.warn('Multiple variants exist but no common options were determined for Shopify. This might lead to unexpected behavior on Shopify product creation.');
-        // Optionally, create a default "Title" option if variants have distinct titles
-        // This is a fallback and might not be ideal for all cases.
-        const titles = new Set(variants.map(v => v.Title).filter(t => t) as string[]);
-        if (titles.size > 1 && titles.size <= 100) { // Shopify option values limit
-             shopifyOptions.push({ name: "Title", values: Array.from(titles) });
-             this.logger.log('Using "Title" as a default option for Shopify due to multiple variants with no other common options.');
+    // If NO user-defined options were found from variant.Options, 
+    // AND variants exist, Shopify expects productOptions to be defined.
+    // For a single variant product, it's common to use "Title" as the option name 
+    // and the variant's title as the value.
+    if (shopifyOptions.length === 0 && variants.length > 0) {
+        const firstVariantTitle = variants[0].Title;
+        if (firstVariantTitle) {
+            this.logger.log(`No user-defined options found. Defaulting to "Title" option for Shopify using the first variant's title: "${firstVariantTitle}".`);
+            // Collect all unique titles if there are multiple variants and no other options, up to Shopify's limit for option values.
+            const allTitles = Array.from(new Set(variants.map(v => v.Title).filter(t => t) as string[]));
+            const titleValues = variants.length > 1 ? allTitles.slice(0, 100) : [firstVariantTitle]; // Shopify limit: 100 values per option
+            
+            if (titleValues.length > 0) {
+                 shopifyOptions.push({ name: "Title", values: titleValues });
+            } else {
+                // Fallback if no titles are available, though unlikely if variants exist
+                this.logger.warn('No user-defined options and no variant titles available to create default "Title" option for Shopify.');
+                shopifyOptions.push({ name: "Title", values: ["Default Title"] }); // Shopify requires options if variants are present
+            }
+        } else {
+             this.logger.warn('First variant has no title. Defaulting Shopify option to "Title" : ["Default Title"]. Product creation might behave unexpectedly.');
+             shopifyOptions.push({ name: "Title", values: ["Default Title"] }); // Shopify requires options if variants are present
         }
-    } else if (shopifyOptions.length === 0 && variants.length === 1) {
-        // For a single variant with no explicit options, Shopify often defaults to a "Title" option.
-        // The product creation usually handles this by setting the variant's "option1" to its title.
-        // We can add it here for explicitness if desired, but it might also be handled by the API client structure.
-        // Example: shopifyOptions.push({ name: "Title", values: [variants[0].Title || "Default"] });
-        this.logger.debug('Single variant product with no explicit options. Shopify will likely default the option.');
     }
-
 
     return shopifyOptions;
   }
