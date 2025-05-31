@@ -414,15 +414,23 @@ export class ProductsService {
       processedImageUrisForDb = mediaDetails.imageUris.map((rawUri, index) => {
         this.logger.log(`[ImageCleanDB ${index}] Raw URI: \\"${rawUri}\\"`);
         let currentUrl = typeof rawUri === 'string' ? rawUri.trim() : '';
-        this.logger.log(`[ImageCleanDB ${index}] After initial trim: \\"${currentUrl}\\"`);
+        this.logger.log(`[ImageCleanDB ${index}] After initial trim: \\"${currentUrl}\\" (Length: ${currentUrl.length})`);
 
-        // Robust trailing semicolon/whitespace removal
-        const originalUrlForSemicolonCheck = currentUrl;
-        currentUrl = currentUrl.replace(/[\\s;]+$/, ''); 
-        if (originalUrlForSemicolonCheck !== currentUrl) {
-            this.logger.log(`[ImageCleanDB ${index}] After robust trailing semicolon/whitespace removal: \\"${currentUrl}\\"`);
+        // Detailed charCode logging for the end of the string
+        if (currentUrl.length > 0) {
+            this.logger.log(`[ImageCleanDB ${index}] Last 5 charCodes for: "${currentUrl}"`);
+            for (let i = Math.max(0, currentUrl.length - 5); i < currentUrl.length; i++) {
+                this.logger.log(`  Char at ${i}: ${currentUrl.charCodeAt(i)} ('${currentUrl[i]}')`);
+            }
+        }
+
+        // Simplified trailing semicolon removal
+        const originalUrlBeforeSimpleSemicolonRemoval = currentUrl;
+        currentUrl = currentUrl.replace(/;$/, ''); 
+        if (originalUrlBeforeSimpleSemicolonRemoval !== currentUrl) {
+            this.logger.log(`[ImageCleanDB ${index}] After simplified trailing semicolon removal (';$'): \\"${currentUrl}\\"`);
         } else {
-            this.logger.log(`[ImageCleanDB ${index}] No trailing semicolons/whitespace found by robust regex, URL remains: \\"${currentUrl}\\"`);
+            this.logger.log(`[ImageCleanDB ${index}] No trailing semicolon found by simple ';$' regex. URL remains: \\"${currentUrl}\\"`);
         }
 
         // Step 1: Attempt to extract URL if it matches the specific problematic format like '["some_label"](actual_url_part)'

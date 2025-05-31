@@ -200,15 +200,23 @@ export class ProductsController {
         const currentLogger = logger || this.logger || console; // Ensure logger is available
 
         let currentUrl = typeof url === 'string' ? url.trim() : '';
-        currentLogger.log(`[_controllerCleanImageUrl] Initial URL: \"${currentUrl}\"`);
+        currentLogger.log(`[_controllerCleanImageUrl] Initial URL: \"${currentUrl}\" (Length: ${currentUrl.length})`);
 
-        // Robust trailing semicolon/whitespace removal
-        const originalUrlForSemicolonCheck = currentUrl;
-        currentUrl = currentUrl.replace(/[\\s;]+$/, ''); 
-        if (originalUrlForSemicolonCheck !== currentUrl) {
-            currentLogger.log(`[_controllerCleanImageUrl] After robust trailing semicolon/whitespace removal: \"${currentUrl}\\"`);
+        // Detailed charCode logging for the end of the string
+        if (currentUrl.length > 0) {
+            currentLogger.log(`[_controllerCleanImageUrl] Last 5 charCodes for: "${currentUrl}"`);
+            for (let i = Math.max(0, currentUrl.length - 5); i < currentUrl.length; i++) {
+                currentLogger.log(`  Char at ${i}: ${currentUrl.charCodeAt(i)} ('${currentUrl[i]}')`);
+            }
+        }
+
+        // Simplified trailing semicolon removal
+        const originalUrlBeforeSimpleSemicolonRemoval = currentUrl;
+        currentUrl = currentUrl.replace(/;$/, ''); 
+        if (originalUrlBeforeSimpleSemicolonRemoval !== currentUrl) {
+            currentLogger.log(`[_controllerCleanImageUrl] After simplified trailing semicolon removal (';$'): \"${currentUrl}\\"`);
         } else {
-            currentLogger.log(`[_controllerCleanImageUrl] No trailing semicolons/whitespace found by robust regex, URL remains: \\"${currentUrl}\\"`);
+            currentLogger.log(`[_controllerCleanImageUrl] No trailing semicolon found by simple ';$' regex. URL remains: \"${currentUrl}\\"`);
         }
 
         // Decode
