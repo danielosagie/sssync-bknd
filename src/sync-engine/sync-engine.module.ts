@@ -20,6 +20,8 @@ import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.m
 import { 
     RECONCILIATION_QUEUE,
     PUSH_OPERATIONS_QUEUE,
+    INITIAL_SCAN_QUEUE,
+    INITIAL_SYNC_QUEUE,
 } from './sync-engine.constants';
 
 @Module({
@@ -62,7 +64,9 @@ import {
     }),
     BullModule.registerQueue(
       { name: RECONCILIATION_QUEUE },
-      { name: PUSH_OPERATIONS_QUEUE }
+      { name: PUSH_OPERATIONS_QUEUE },
+      { name: INITIAL_SCAN_QUEUE },
+      { name: INITIAL_SYNC_QUEUE }
     ),
   ],
   controllers: [SyncController, WebhookController],

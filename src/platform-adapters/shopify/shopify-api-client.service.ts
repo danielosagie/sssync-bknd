@@ -677,15 +677,15 @@ const GET_PRODUCTS_BY_IDS_QUERY = `
                   edges {
                     node { # ShopifyInventoryLevelNode
                       available # <-- REVERTED TO DIRECT 'available'
-                      location {
-                        id
-                        name
-                        isActive
-                      }
-                    }
-                  }
+                location {
+                  id
+                  name
+                  isActive
                 }
               }
+            }
+          }
+        }
               # selectedOptions and image might need to be fetched differently or mapped from product.media
             }
           }
@@ -1398,7 +1398,7 @@ export class ShopifyApiClient {
 
             const inventoryItemsData = response.data?.inventoryItems?.edges || [];
             const results: Array<{
-                variantId: string; 
+                variantId: string;
                 locationId: string;
                 quantity: number;
             }> = [];

@@ -99,7 +99,7 @@ class MediaDto {
   // @IsUrl({}, { each: true }) // Temporarily removed strict URL validation
   @IsString({ each: true, message: 'Each image URI must be a string.' }) 
   @IsNotEmpty({ message: 'imageUris array cannot be empty if media object is provided.'}) // if media is mandatory
-  imageUris: string[];
+  imageUris: string[]
 
   @IsNumber({}, { message: 'coverImageIndex must be a number.'})
   @Min(0, { message: 'coverImageIndex cannot be negative.'})

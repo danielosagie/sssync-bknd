@@ -84,6 +84,7 @@ CREATE TABLE "ProductVariants" (
     "Options" jsonb,
     "CreatedAt" timestamptz NOT NULL DEFAULT now(),
     "UpdatedAt" timestamptz NOT NULL DEFAULT now(),
+    "status" text,
     UNIQUE ("UserId", "Sku")
 );
 CREATE INDEX idx_productvariants_productid ON "ProductVariants"("ProductId");
@@ -108,7 +109,8 @@ CREATE TABLE "PlatformProductMappings" (
     "CreatedAt" timestamptz NOT NULL DEFAULT now(),
     "UpdatedAt" timestamptz NOT NULL DEFAULT now(),
     UNIQUE ("PlatformConnectionId", "ProductVariantId"),
-    UNIQUE ("PlatformConnectionId", "PlatformProductId", "PlatformVariantId")
+    UNIQUE ("PlatformConnectionId", "PlatformProductId", "PlatformVariantId"),
+    "status" text,
 );
 CREATE INDEX idx_platformproductmappings_platformconnectionid ON "PlatformProductMappings"("PlatformConnectionId");
 CREATE INDEX idx_platformproductmappings_productvariantid ON "PlatformProductMappings"("ProductVariantId");

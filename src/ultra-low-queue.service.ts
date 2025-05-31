@@ -48,7 +48,7 @@ export class UltraLowQueueService implements SimpleQueue {
         id: job.id || `ultra-low-${Date.now()}`,
         data: job.data,
       } as any;
-
+      
       if (job.data.type === 'initial-scan') {
         this.logger.log(`[UltraLowQueue] Delegating to InitialScanProcessor for job ID: ${job.id || 'N/A'}`);
         try {
