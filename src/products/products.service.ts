@@ -412,25 +412,38 @@ export class ProductsService {
 
       // Process imageUris for saving
       processedImageUrisForDb = mediaDetails.imageUris.map((rawUri, index) => {
-        this.logger.log(`[ImageCleanDB ${index}] Raw URI: \\"${rawUri}\\"`);
-        let currentUrl = typeof rawUri === 'string' ? rawUri.trim() : '';
-        this.logger.log(`[ImageCleanDB ${index}] After initial trim: \\"${currentUrl}\\" (Length: ${currentUrl.length})`);
+        this.logger.log(`[ImageCleanDB ${index}] Raw URI (as received by map): \\"${rawUri}\\"`);
+        
+        let currentUrl = typeof rawUri === 'string' ? rawUri : ''; // Assign rawUri first
 
-        // Detailed charCode logging for the end of the string
+        // STEP 1: Aggressively remove trailing semicolon if it's the last char of raw string
+        const originalForTrailingSemicolonRemoval = currentUrl;
+        if (typeof currentUrl === 'string') { // Ensure it is a string before calling replace
+            currentUrl = currentUrl.replace(/;$/, '');
+        }
+        if (originalForTrailingSemicolonRemoval !== currentUrl) {
+            this.logger.log(`[ImageCleanDB ${index}] After initial .replace(/;$/, '') on raw input: \\"${currentUrl}\\"`);
+        } else {
+            this.logger.log(`[ImageCleanDB ${index}] No change from initial .replace(/;$/, '') on raw input. URL: \\"${currentUrl}\\"`);
+        }
+
+        // STEP 2: Trim whitespace
+        const originalForTrim = currentUrl;
+        if (typeof currentUrl === 'string') { // Ensure it is a string before calling trim
+            currentUrl = currentUrl.trim();
+        }
+        if (originalForTrim !== currentUrl) {
+            this.logger.log(`[ImageCleanDB ${index}] After .trim(): \\"${currentUrl}\\" (Length: ${currentUrl.length})`);
+        } else {
+            this.logger.log(`[ImageCleanDB ${index}] No change from .trim(). URL: \\"${currentUrl}\\" (Length: ${currentUrl.length})`);
+        }
+        
+        // Detailed charCode logging for the end of the (now trimmed and potentially semicolon-stripped) string
         if (currentUrl.length > 0) {
             this.logger.log(`[ImageCleanDB ${index}] Last 5 charCodes for: "${currentUrl}"`);
             for (let i = Math.max(0, currentUrl.length - 5); i < currentUrl.length; i++) {
                 this.logger.log(`  Char at ${i}: ${currentUrl.charCodeAt(i)} ('${currentUrl[i]}')`);
             }
-        }
-
-        // Simplified trailing semicolon removal
-        const originalUrlBeforeSimpleSemicolonRemoval = currentUrl;
-        currentUrl = currentUrl.replace(/;$/, ''); 
-        if (originalUrlBeforeSimpleSemicolonRemoval !== currentUrl) {
-            this.logger.log(`[ImageCleanDB ${index}] After simplified trailing semicolon removal (';$'): \\"${currentUrl}\\"`);
-        } else {
-            this.logger.log(`[ImageCleanDB ${index}] No trailing semicolon found by simple ';$' regex. URL remains: \\"${currentUrl}\\"`);
         }
 
         // Step 1: Attempt to extract URL if it matches the specific problematic format like '["some_label"](actual_url_part)'

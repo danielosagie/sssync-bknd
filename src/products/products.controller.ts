@@ -197,26 +197,39 @@ export class ProductsController {
     // Ensure this helper is defined or updated within ProductsController
     private _controllerCleanImageUrl(url: string | null | undefined, logger: Logger): string | null {
         if (!url) return null;
-        const currentLogger = logger || this.logger || console; // Ensure logger is available
+        const currentLogger = logger || this.logger || console;
 
-        let currentUrl = typeof url === 'string' ? url.trim() : '';
-        currentLogger.log(`[_controllerCleanImageUrl] Initial URL: \"${currentUrl}\" (Length: ${currentUrl.length})`);
+        let currentUrl = typeof url === 'string' ? url : ''; // Assign raw url first
+        currentLogger.log(`[_controllerCleanImageUrl] Raw URL (as received by method): \"${currentUrl}\"`);
 
-        // Detailed charCode logging for the end of the string
+        // STEP 1: Aggressively remove trailing semicolon if it's the last char of raw string
+        const originalForTrailingSemicolonRemoval = currentUrl;
+        if (typeof currentUrl === 'string') { // Ensure it is a string before calling replace
+            currentUrl = currentUrl.replace(/;$/, '');
+        }
+        if (originalForTrailingSemicolonRemoval !== currentUrl) {
+            currentLogger.log(`[_controllerCleanImageUrl] After initial .replace(/;$/, '') on raw input: \"${currentUrl}\"`);
+        } else {
+            currentLogger.log(`[_controllerCleanImageUrl] No change from initial .replace(/;$/, '') on raw input. URL: \"${currentUrl}\"`);
+        }
+
+        // STEP 2: Trim whitespace
+        const originalForTrim = currentUrl;
+        if (typeof currentUrl === 'string') { // Ensure it is a string before calling trim
+            currentUrl = currentUrl.trim();
+        }
+        if (originalForTrim !== currentUrl) {
+            currentLogger.log(`[_controllerCleanImageUrl] After .trim(): \"${currentUrl}\" (Length: ${currentUrl.length})`);
+        } else {
+            currentLogger.log(`[_controllerCleanImageUrl] No change from .trim(). URL: \"${currentUrl}\" (Length: ${currentUrl.length})`);
+        }
+
+        // Detailed charCode logging for the end of the (now trimmed and semicolon-stripped) string
         if (currentUrl.length > 0) {
             currentLogger.log(`[_controllerCleanImageUrl] Last 5 charCodes for: "${currentUrl}"`);
             for (let i = Math.max(0, currentUrl.length - 5); i < currentUrl.length; i++) {
                 currentLogger.log(`  Char at ${i}: ${currentUrl.charCodeAt(i)} ('${currentUrl[i]}')`);
             }
-        }
-
-        // Simplified trailing semicolon removal
-        const originalUrlBeforeSimpleSemicolonRemoval = currentUrl;
-        currentUrl = currentUrl.replace(/;$/, ''); 
-        if (originalUrlBeforeSimpleSemicolonRemoval !== currentUrl) {
-            currentLogger.log(`[_controllerCleanImageUrl] After simplified trailing semicolon removal (';$'): \"${currentUrl}\\"`);
-        } else {
-            currentLogger.log(`[_controllerCleanImageUrl] No trailing semicolon found by simple ';$' regex. URL remains: \"${currentUrl}\\"`);
         }
 
         // Decode
