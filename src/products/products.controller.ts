@@ -197,34 +197,20 @@ export class ProductsController {
     // Ensure this helper is defined or updated within ProductsController
     private _controllerCleanImageUrl(url: string | null | undefined, logger: Logger): string | null {
         if (!url) return null;
-        // Ensure logger is passed or use this.logger if class context is certain
-        const currentLogger = logger || this.logger || console;
-
+        const currentLogger = logger || this.logger || console; // Ensure logger is available
 
         let currentUrl = typeof url === 'string' ? url.trim() : '';
-        currentLogger.log(`[_controllerCleanImageUrl] Initial URL: "${currentUrl}"`);
+        currentLogger.log(`[_controllerCleanImageUrl] Initial URL: \"${currentUrl}\"`);
 
-        // Direct semicolon removal first
-        if (currentUrl.endsWith(';')) {
-            currentUrl = currentUrl.slice(0, -1);
-            currentLogger.log(`[_controllerCleanImageUrl] After direct slice: "${currentUrl}"`);
+        // Robust trailing semicolon/whitespace removal
+        const originalUrlForSemicolonCheck = currentUrl;
+        currentUrl = currentUrl.replace(/[\\s;]+$/, ''); 
+        if (originalUrlForSemicolonCheck !== currentUrl) {
+            currentLogger.log(`[_controllerCleanImageUrl] After robust trailing semicolon/whitespace removal: \"${currentUrl}\\"`);
+        } else {
+            currentLogger.log(`[_controllerCleanImageUrl] No trailing semicolons/whitespace found by robust regex, URL remains: \\"${currentUrl}\\"`);
         }
 
-        // Existing cleaning logic from controller logs (adapt as needed)
-        // Example: Markdown-like extraction (if applicable for some reason)
-        // const problematicFormatMatch = currentUrl.match(/.*\]\\(([^)]*)\\)/); 
-        // if (problematicFormatMatch && problematicFormatMatch[1]) {
-        //    currentUrl = problematicFormatMatch[1].trim();
-        //    currentLogger.log(`[_controllerCleanImageUrl] Extracted from problematic format: "${currentUrl}"`);
-        // }
-
-        // Fallback regex for semicolons (might be redundant but safe)
-        const oldUrlBeforeRegex = currentUrl;
-        currentUrl = currentUrl.replace(/\\s*;+\\s*$/, '');
-        if (oldUrlBeforeRegex !== currentUrl) {
-            currentLogger.log(`[_controllerCleanImageUrl] After semicolon regex: "${currentUrl}"`);
-        }
-        
         // Decode
         try {
             const oldUrlBeforeDecode = currentUrl;

@@ -412,14 +412,17 @@ export class ProductsService {
 
       // Process imageUris for saving
       processedImageUrisForDb = mediaDetails.imageUris.map((rawUri, index) => {
-        this.logger.log(`[ImageCleanDB ${index}] Raw URI: \"${rawUri}\"`);
+        this.logger.log(`[ImageCleanDB ${index}] Raw URI: \\"${rawUri}\\"`);
         let currentUrl = typeof rawUri === 'string' ? rawUri.trim() : '';
-        this.logger.log(`[ImageCleanDB ${index}] After trim: \"${currentUrl}\"`);
+        this.logger.log(`[ImageCleanDB ${index}] After initial trim: \\"${currentUrl}\\"`);
 
-        // Direct semicolon removal first
-        if (currentUrl.endsWith(';')) {
-          currentUrl = currentUrl.slice(0, -1);
-          this.logger.log(`[ImageCleanDB ${index}] After direct slice of trailing semicolon: \"${currentUrl}\"`);
+        // Robust trailing semicolon/whitespace removal
+        const originalUrlForSemicolonCheck = currentUrl;
+        currentUrl = currentUrl.replace(/[\\s;]+$/, ''); 
+        if (originalUrlForSemicolonCheck !== currentUrl) {
+            this.logger.log(`[ImageCleanDB ${index}] After robust trailing semicolon/whitespace removal: \\"${currentUrl}\\"`);
+        } else {
+            this.logger.log(`[ImageCleanDB ${index}] No trailing semicolons/whitespace found by robust regex, URL remains: \\"${currentUrl}\\"`);
         }
 
         // Step 1: Attempt to extract URL if it matches the specific problematic format like '["some_label"](actual_url_part)'
@@ -438,12 +441,7 @@ export class ProductsService {
           }
         }
 
-        // Step 2: Remove trailing semicolons (and any whitespace before them) - Applied to potentially extracted URL
-        // This regex step might be redundant if the direct slice above works, but kept for other cases.
-        currentUrl = currentUrl.replace(/\\s*;+\\s*$/, '');
-        this.logger.log(`[ImageCleanDB ${index}] After semicolon regex removal: \"${currentUrl}\"`);
-
-        // Step 3: Decode URI Components - Applied to potentially extracted URL
+        // Step 2: Decode URI Components - Applied to potentially extracted URL
         try {
           let decodedUrl = currentUrl;
           // Iteratively decode if there's still '%'
@@ -457,11 +455,11 @@ export class ProductsService {
           // Keep currentUrl as is if decoding fails
         }
         
-        // Step 4: Remove leading/trailing literal double quotes - Applied to potentially extracted AND decoded URL
+        // Step 3: Remove leading/trailing literal double quotes - Applied to potentially extracted AND decoded URL
         currentUrl = currentUrl.replace(/^"|"$/g, '');
         this.logger.log(`[ImageCleanDB ${index}] After quote removal: "${currentUrl}"`);
         
-        // Step 5: Final check for http/https prefix
+        // Step 4: Final check for http/https prefix
         if (!currentUrl.startsWith('http://') && !currentUrl.startsWith('https://')) {
           this.logger.warn(`[ImageCleanDB ${index}] URL "${currentUrl}" does not start with http(s). May be invalid.`);
         }
