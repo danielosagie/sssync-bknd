@@ -293,4 +293,67 @@ export class PlatformProductMappingsService {
         }
         return data as PlatformProductMapping | null;
     }
+
+    async upsertMapping(mappingInput: Omit<PlatformProductMapping, 'Id' | 'CreatedAt' | 'UpdatedAt'>, userId?: string): Promise<PlatformProductMapping> {
+        const supabase = this.getSupabaseClient();
+        const { PlatformConnectionId, ProductVariantId, PlatformProductId, PlatformVariantId } = mappingInput;
+
+        this.logger.log(`Upserting mapping for CxnId: ${PlatformConnectionId}, VarId: ${ProductVariantId}, PProdId: ${PlatformProductId}, PVarId: ${PlatformVariantId}`);
+
+        // Try to find an existing mapping based on unique constraints that make sense for an upsert.
+        // Common case: A SSSync variant maps to one specific variant on a specific platform connection.
+        // Or, a SSSync variant maps to a specific platform product (if variants aren't used on platform or for product-level mapping).
+        
+        let existingQuery = supabase
+            .from('PlatformProductMappings')
+            .select('*')
+            .eq('PlatformConnectionId', PlatformConnectionId)
+            .eq('ProductVariantId', ProductVariantId);
+
+        // If PlatformVariantId is provided and meaningful, it makes the mapping more unique.
+        // If not, we might be dealing with a product-level mapping or a platform that doesn't use variant IDs explicitly in this context.
+        if (PlatformVariantId) {
+            existingQuery = existingQuery.eq('PlatformVariantId', PlatformVariantId);
+        } else {
+            // If no PlatformVariantId, ensure we handle cases where it might be explicitly NULL in DB
+            // or where PlatformProductId alone defines the product-level link for that SSSync variant.
+            existingQuery = existingQuery.eq('PlatformProductId', PlatformProductId); // Add this for product-level matching when no PVarId
+        }
+        
+        const { data: existing, error: fetchError } = await existingQuery.maybeSingle();
+
+        if (fetchError) {
+            this.logger.error(`Error fetching existing mapping for upsert: CxnId: ${PlatformConnectionId}, VarId: ${ProductVariantId}, PProdId: ${PlatformProductId}, PVarId: ${PlatformVariantId} - ${fetchError.message}`);
+            throw new InternalServerErrorException('Failed to check for existing mapping during upsert.');
+        }
+
+        if (existing) {
+            this.logger.log(`Existing mapping found (ID: ${existing.Id}), updating.`);
+            const { data: updatedData, error: updateError } = await supabase
+                .from('PlatformProductMappings')
+                .update({ ...mappingInput, UpdatedAt: new Date().toISOString() })
+                .eq('Id', existing.Id)
+                .select()
+                .single();
+            if (updateError || !updatedData) {
+                this.logger.error(`Failed to update existing mapping (ID: ${existing.Id}): ${updateError?.message}`);
+                throw new InternalServerErrorException('Could not update existing platform product mapping.');
+            }
+            this.logger.log(`Mapping ID ${existing.Id} updated successfully.`);
+            return updatedData as PlatformProductMapping;
+        } else {
+            this.logger.log(`No existing mapping found, creating new one.`);
+            const { data: createdData, error: createError } = await supabase
+                .from('PlatformProductMappings')
+                .insert({ ...mappingInput, CreatedAt: new Date().toISOString(), UpdatedAt: new Date().toISOString() })
+                .select()
+                .single();
+            if (createError || !createdData) {
+                this.logger.error(`Failed to create new mapping: ${createError?.message}`);
+                throw new InternalServerErrorException('Could not create new platform product mapping.');
+            }
+            this.logger.log(`New mapping created successfully (ID: ${createdData.Id}).`);
+            return createdData as PlatformProductMapping;
+        }
+    }
 } 

@@ -10,7 +10,7 @@ import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard';
 import { PublishProductDto } from './dto/publish-product.dto';
 import { ProductVariant } from '../common/types/supabase.types';
 import { ShopifyProductSetInput, ShopifyProductFile, ShopifyLocationNode, ShopifyInventoryLevelNode } from '../platform-adapters/shopify/shopify-api-client.service';
-import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
+import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service';
 import { ShopifyApiClient } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformProductMappingsService } from '../platform-product-mappings/platform-product-mappings.service';
 import { SupabaseService } from '../common/supabase.service';
@@ -41,6 +41,20 @@ interface LocationWithProducts {
 // Define AuthenticatedRequest interface here
 export interface AuthenticatedRequest extends ExpressRequest {
   user: User & { id: string; aud: string; role: string; email: string };
+}
+
+// Define an interface for the expected structure of the Shopify API client's response
+interface ShopifyProductCreationResponseFromClient {
+  operationId: string;
+  status: string;
+  productId?: string;
+  userErrors: { field: string[] | null; message: string; code: string; }[];
+  variants?: Array<{ // Assuming variants are returned like this for mapping
+    id: string;
+    sku: string;
+    title?: string;
+    // Add other fields if necessary for mapping or logging
+  }>;
 }
 
 @Controller('products')
@@ -180,8 +194,72 @@ export class ProductsController {
         return this.productsService.createProductWithVariant(authUserId, data.variantData);
     }
 
+    // Ensure this helper is defined or updated within ProductsController
+    private _controllerCleanImageUrl(url: string | null | undefined, logger: Logger): string | null {
+        if (!url) return null;
+        // Ensure logger is passed or use this.logger if class context is certain
+        const currentLogger = logger || this.logger || console;
+
+
+        let currentUrl = typeof url === 'string' ? url.trim() : '';
+        currentLogger.log(`[_controllerCleanImageUrl] Initial URL: "${currentUrl}"`);
+
+        // Direct semicolon removal first
+        if (currentUrl.endsWith(';')) {
+            currentUrl = currentUrl.slice(0, -1);
+            currentLogger.log(`[_controllerCleanImageUrl] After direct slice: "${currentUrl}"`);
+        }
+
+        // Existing cleaning logic from controller logs (adapt as needed)
+        // Example: Markdown-like extraction (if applicable for some reason)
+        // const problematicFormatMatch = currentUrl.match(/.*\]\\(([^)]*)\\)/); 
+        // if (problematicFormatMatch && problematicFormatMatch[1]) {
+        //    currentUrl = problematicFormatMatch[1].trim();
+        //    currentLogger.log(`[_controllerCleanImageUrl] Extracted from problematic format: "${currentUrl}"`);
+        // }
+
+        // Fallback regex for semicolons (might be redundant but safe)
+        const oldUrlBeforeRegex = currentUrl;
+        currentUrl = currentUrl.replace(/\\s*;+\\s*$/, '');
+        if (oldUrlBeforeRegex !== currentUrl) {
+            currentLogger.log(`[_controllerCleanImageUrl] After semicolon regex: "${currentUrl}"`);
+        }
+        
+        // Decode
+        try {
+            const oldUrlBeforeDecode = currentUrl;
+            let decodedUrl = currentUrl;
+            // Iteratively decode if there's still '%' - max 3 times
+            for (let i = 0; i < 3 && decodedUrl.includes('%'); i++) { 
+                decodedUrl = decodeURIComponent(decodedUrl);
+            }
+            currentUrl = decodedUrl;
+            if (oldUrlBeforeDecode !== currentUrl) {
+                currentLogger.log(`[_controllerCleanImageUrl] After decodeURIComponent: "${currentUrl}"`);
+            }
+        } catch (e: any) {
+            currentLogger.warn(`[_controllerCleanImageUrl] Error decoding URI for "${currentUrl}": ${e.message}`);
+        }
+
+        // Remove leading/trailing literal double quotes
+        const oldUrlBeforeQuotes = currentUrl;
+        currentUrl = currentUrl.replace(/^"|"$/g, '');
+        if (oldUrlBeforeQuotes !== currentUrl) {
+            currentLogger.log(`[_controllerCleanImageUrl] After quote removal: "${currentUrl}"`);
+        }
+
+        if (!currentUrl.startsWith('http://') && !currentUrl.startsWith('https://')) {
+            currentLogger.warn(`[_controllerCleanImageUrl] URL "${currentUrl}" may be invalid (no http/s prefix).`);
+            // Depending on strictness, you might return null here:
+            // return null; 
+        }
+        currentLogger.log(`[_controllerCleanImageUrl] Final cleaned URL: "${currentUrl}"`);
+        return currentUrl;
+    }
+
+
     @Post(':id/publish/shopify')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @UseGuards(FeatureUsageGuard)
     @Feature('shopify')
     async publishToShopify(
         @Param('id') productId: string,
@@ -194,6 +272,8 @@ export class ProductsController {
                 vendor?: string;
                 productType?: string;
                 tags?: string[];
+                imageUris?: string[]; // Expecting this from frontend
+                coverImageIndex?: number; // Expecting this from frontend
             };
         },
         @Req() req: AuthenticatedRequest
@@ -201,200 +281,226 @@ export class ProductsController {
         this.logger.log(`[publishToShopify] Entered method for productId: ${productId}, user: ${req.user.id}`);
         this.logger.debug(`[publishToShopify] Received publishData: ${JSON.stringify(publishData, null, 2)}`);
 
+        const supabase = this.supabaseService.getServiceClient(); // Use service client for backend operations
         const userId = req.user.id;
         const { platformConnectionId, locations, options } = publishData;
 
         try {
             this.logger.log(`[publishToShopify] Inside try block for productId: ${productId}`);
-            const { product, variants } = await this.productsService.getProduct(productId, userId);
-            if (!product) {
-                throw new NotFoundException(`Product ${productId} not found`);
+
+            // Fetch the PlatformConnection object
+            const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
+            if (!connection) {
+                this.logger.error(`[publishToShopify] PlatformConnection ${platformConnectionId} not found for user ${userId}.`);
+                throw new NotFoundException('Platform connection not found or access denied.');
+            }
+            if (connection.PlatformType !== 'shopify') {
+                this.logger.error(`[publishToShopify] PlatformConnection ${platformConnectionId} is not a Shopify connection.`);
+                throw new BadRequestException('Invalid platform connection type. Expected Shopify.');
+            }
+
+            const { data: product, error: productError } = await supabase
+                .from('Products')
+                .select('*')
+                .eq('Id', productId)
+                .eq('UserId', userId)
+                .single();
+
+            if (productError || !product) {
+                this.logger.error(`[publishToShopify] Product ${productId} not found for user ${userId}: ${productError?.message}`);
+                throw new NotFoundException('Product not found or access denied.');
             }
             this.logger.log(`[publishToShopify] Fetched product: ${JSON.stringify(product)}`);
+
+            const { data: variants, error: variantsError } = await supabase
+                .from('ProductVariants')
+                .select('*')
+                .eq('ProductId', productId)
+                .eq('UserId', userId);
+
+            if (variantsError || !variants || variants.length === 0) {
+                this.logger.error(`[publishToShopify] No variants found for product ${productId}: ${variantsError?.message}`);
+                throw new NotFoundException('No variants found for this product.');
+            }
             this.logger.log(`[publishToShopify] Fetched variants: ${JSON.stringify(variants)}`);
 
-            if (!variants || variants.length === 0) {
-                this.logger.error(`[publishToShopify] No variants found for product ${productId}. Cannot publish to Shopify.`);
-                throw new InternalServerErrorException('No product variants found to publish.');
-            }
+            const shopifyVariantsInput: any[] = [];
+            let productLevelMediaForShopify: { originalSource: string; altText: string; }[] = [];
 
-            const primaryVariant = variants[0];
-
-            const connection = await this.platformConnectionsService.getConnectionById(platformConnectionId, userId);
-            if (!connection || connection.PlatformType !== 'shopify') {
-                throw new BadRequestException('Invalid Shopify platform connection');
-            }
-
-            const shopifyLocations = await this.shopifyApiClient.getAllLocations(connection);
-            const validLocationIds = new Set(shopifyLocations.map(loc => loc.id));
-
-            const invalidLocations = locations.filter(loc => !validLocationIds.has(loc.locationId));
-            if (invalidLocations.length > 0) {
-                throw new BadRequestException(
-                    `Invalid location IDs: ${invalidLocations.map(loc => loc.locationId).join(', ')}`
-                );
-            }
-
-            const supabase = this.supabaseService.getClient();
-            const { data: variantImages, error: imagesError } = await supabase
-                .from('ProductImages')
-                .select('ProductVariantId, ImageUrl, AltText')
-                .in('ProductVariantId', variants.map(v => v.Id));
-                this.logger.log(`[publishToShopify] Fetched variant images: ${JSON.stringify(variantImages, null, 2)}`);
-
-            if (imagesError) {
-                this.logger.error(`Failed to fetch variant images: ${imagesError.message}`);
-                throw new InternalServerErrorException('Failed to fetch variant images');
-            }
-
-            const variantImageMap = new Map(
-                variantImages?.map(img => [img.ProductVariantId, img.ImageUrl]) || []
-            );
-            this.logger.log(`[publishToShopify] Variant image map: ${JSON.stringify(variantImageMap, null, 2)}`);
-
-            // Determine productOptions for Shopify
-            // If the primary variant has no defined .Options, create a default "Title" option
-            // Otherwise, attempt to use the existing Options structure (this part might need more advanced mapping for complex options)
-            const shopifyProductOptions = (!primaryVariant.Options || Object.keys(primaryVariant.Options).length === 0) 
-                ? [{ name: "Title", values: variants.map(v => ({ name: v.Title })) }]
-                : [{ name: "Option", values: variants.map(v => ({ name: v.Title })) }]; // Fallback or more complex mapping needed here if primaryVariant.Options is structured
-            
-            this.logger.log(`[ShopifyPublish] Determined shopifyProductOptions: ${JSON.stringify(shopifyProductOptions)}`);
-
-            const productInput: ShopifyProductSetInput = {
-                title: primaryVariant.Title,
-                descriptionHtml: primaryVariant.Description || undefined,
-                status: options?.status || 'ACTIVE',
-                vendor: options?.vendor,
-                productType: options?.productType,
-                tags: options?.tags,
-                productOptions: shopifyProductOptions, // Use the determined options
-                variants: variants.map(variant => {
-                    const imageUrlFromDb = variantImageMap.get(variant.Id);
-                    let finalImageUrlForShopify: string | undefined = undefined;
-                    let shopifyFilename = `${variant.Sku}.jpg`; // Default filename
-
-                    if (typeof imageUrlFromDb === 'string' && imageUrlFromDb.trim() !== '') {
-                        this.logger.log(`[ShopifyPublish ${variant.Id}] Raw ImageUrl from DB: "${imageUrlFromDb}"`);
-                        let currentUrl = imageUrlFromDb.trim();
-                        this.logger.log(`[ShopifyPublish ${variant.Id}] After trim: "${currentUrl}"`);
-
-                        // Step 1: Extract from Markdown (if applicable)
-                        // Regex assuming format like: ["Link Text"](URLContent)
-                        const markdownMatch = currentUrl.match(/\\\["([^"]*)\"\\\]\\(([^)]*)\\)/);
-                        if (markdownMatch && markdownMatch[2]) { // We want group 2 for the URL
-                            currentUrl = markdownMatch[2].trim();
-                            this.logger.log(`[ShopifyPublish ${variant.Id}] Extracted from specific Markdown format: "${currentUrl}"`);
-                        } else {
-                            this.logger.log(`[ShopifyPublish ${variant.Id}] No specific Markdown link format found or pattern mismatch for: "${currentUrl}". Will proceed with URL as is.`);
-                        }
-
-                        // Step 2: Decode URI Components (multiple passes)
-                        try {
-                            let decodedUrl = currentUrl;
-                            for (let i = 0; i < 3 && decodedUrl.includes('%'); i++) { // Max 3 decodes
-                                decodedUrl = decodeURIComponent(decodedUrl);
-                            }
-                            currentUrl = decodedUrl;
-                            this.logger.log(`[ShopifyPublish ${variant.Id}] After decodeURIComponent: "${currentUrl}"`);
-                        } catch (e) {
-                            this.logger.error(`[ShopifyPublish ${variant.Id}] Error decoding URI for "${currentUrl}": ${e.message}`);
-                        }
-
-                        // Step 3: Remove leading/trailing literal double quotes
-                        currentUrl = currentUrl.replace(/^"|"$/g, '');
-                        this.logger.log(`[ShopifyPublish ${variant.Id}] After quote removal: "${currentUrl}"`);
-
-                        // Step 4: Remove trailing semicolons (and any whitespace before them)
-                        currentUrl = currentUrl.replace(/\s*;+\s*$/, '');
-                        this.logger.log(`[ShopifyPublish ${variant.Id}] After semicolon removal: "${currentUrl}"`);
-
-                        // Step 5: Final check if it looks like a valid HTTP/HTTPS URL
-                        if (currentUrl.startsWith('http')) {
-                            finalImageUrlForShopify = currentUrl;
-                            this.logger.log(`[ShopifyPublish ${variant.Id}] Final clean ImageUrl for Shopify: "${finalImageUrlForShopify}"`);
-
-                            // Attempt to derive filename from the cleaned URL
-                            try {
-                                const urlPath = new URL(finalImageUrlForShopify).pathname;
-                                const pathSegments = urlPath.split('/');
-                                const lastSegment = pathSegments.pop() || '';
-                                if (lastSegment.match(/\\.(jpg|jpeg|png|webp)$/i)) {
-                                    shopifyFilename = lastSegment.replace(/[^a-zA-Z0-9._-]/g, '_'); // Sanitize
-                                    this.logger.log(`[ShopifyPublish ${variant.Id}] Derived filename: "${shopifyFilename}"`);
-                                }
-                            } catch (e) {
-                                this.logger.warn(`[ShopifyPublish ${variant.Id}] Could not parse URL to derive filename: ${e.message}. Using default.`);
-                            }
-                        } else {
-                            this.logger.warn(`[ShopifyPublish ${variant.Id}] ImageUrl for variant after cleaning ("${currentUrl}") does not appear to be a valid http/https URL. Skipping image for Shopify.`);
-                        }
-                    } else {
-                        this.logger.warn(`[ShopifyPublish ${variant.Id}] No ImageUrl found or it is empty in DB.`);
+            // Determine product-level images first (if options.imageUris are provided)
+            if (options?.imageUris && options.imageUris.length > 0) {
+                this.logger.log('[publishToShopify] Using frontend-provided imageUris for product-level media.');
+                options.imageUris.forEach(uri => {
+                    const cleanedUri = this._controllerCleanImageUrl(uri, this.logger);
+                    if (cleanedUri) {
+                        productLevelMediaForShopify.push({ originalSource: cleanedUri, altText: product.Title || 'Product image' });
                     }
+                });
+                this.logger.log(`[publishToShopify] Processed frontend-provided media: ${JSON.stringify(productLevelMediaForShopify)}`);
+            } else {
+                this.logger.log('[publishToShopify] No frontend-provided imageUris in options, will attempt to use DB images per variant.');
+            }
 
-                    const file: ShopifyProductFile | undefined = finalImageUrlForShopify ? {
-                        originalSource: finalImageUrlForShopify,
-                        alt: `${primaryVariant.Title} - ${variant.Title}`,
-                        filename: shopifyFilename, // Use dynamic or default filename
-                        contentType: 'IMAGE'
-                    } : undefined;
-                    
-                    // Determine optionValues for this specific variant
-                    const shopifyOptionValues = (!variant.Options || Object.keys(variant.Options).length === 0)
-                        ? [{ optionName: "Title", name: variant.Title }]
-                        : [{ optionName: "Option", name: variant.Title }]; // Fallback or more complex mapping for structured variant.Options
 
-                    return {
-                        optionValues: shopifyOptionValues, // Use determined option values
-                        price: variant.Price.toString(),
-                        sku: variant.Sku,
+            for (const cv of variants) { // cv for canonicalVariant
+                let imageSourceForVariantFile: string | null = null;
+                let imageAltTextForVariantFile: string = cv.Title || product.Title || 'Product image';
+
+                // If frontend provided images, and this is the first variant, use the cover image for its 'file'
+                // This assumes the 'file' field on a variant is for its *primary* associated image.
+                if (variants.indexOf(cv) === 0 && productLevelMediaForShopify.length > 0) {
+                    const coverIndex = options?.coverImageIndex ?? 0;
+                    if (coverIndex >= 0 && coverIndex < productLevelMediaForShopify.length) {
+                        imageSourceForVariantFile = productLevelMediaForShopify[coverIndex].originalSource;
+                        imageAltTextForVariantFile = productLevelMediaForShopify[coverIndex].altText || imageAltTextForVariantFile;
+                        this.logger.log(`[publishToShopify] Using frontend-provided cover image for primary variant ${cv.Id}: ${imageSourceForVariantFile}`);
+                    } else if (productLevelMediaForShopify.length > 0) { // Fallback if coverIndex invalid
+                        imageSourceForVariantFile = productLevelMediaForShopify[0].originalSource;
+                        imageAltTextForVariantFile = productLevelMediaForShopify[0].altText || imageAltTextForVariantFile;
+                        this.logger.log(`[publishToShopify] Using first frontend-provided image for primary variant ${cv.Id} (coverIndex invalid): ${imageSourceForVariantFile}`);
+                    }
+                } else if (!productLevelMediaForShopify.length) { // Only fetch from DB if no frontend images were given at all
+                    this.logger.log(`[publishToShopify] Attempting to fetch DB image for variant ${cv.Id} as no frontend images were provided.`);
+                    const { data: dbImages, error: dbImagesError } = await supabase
+                        .from('ProductImages')
+                        .select('ImageUrl, AltText, Id')
+                        .eq('ProductVariantId', cv.Id)
+                        .order('Position', { ascending: true });
+
+                    if (dbImagesError) {
+                        this.logger.warn(`[publishToShopify] Error fetching images for variant ${cv.Id} from DB: ${dbImagesError.message}`);
+                    } else if (dbImages && dbImages.length > 0) {
+                        const imageToUse = cv.ImageId ? dbImages.find(img => img.Id === cv.ImageId) : dbImages[0];
+                        const finalDbImage = imageToUse || dbImages[0];
+                        if (finalDbImage && finalDbImage.ImageUrl) {
+                            imageSourceForVariantFile = this._controllerCleanImageUrl(finalDbImage.ImageUrl, this.logger);
+                            imageAltTextForVariantFile = finalDbImage.AltText || cv.Title || product.Title;
+                            this.logger.log(`[publishToShopify] Using DB image for variant ${cv.Id} (after controller cleaning): ${imageSourceForVariantFile}`);
+                        }
+                    }
+                }
+                
+                // Constructing Shopify variant input
+                const shopifyOptionValues: { optionName: string; name: string }[] = [];
+                if (cv.Options && typeof cv.Options === 'object') {
+                    const variantOptions = cv.Options as Record<string, string>;
+                    Object.entries(variantOptions).forEach(([key, value]) => {
+                        if (key !== 'shopify') { // Assuming 'shopify' is not a real product option
+                           shopifyOptionValues.push({ optionName: key, name: value });
+                        }
+                    });
+                }
+                 // If no structured options, use a default based on title for single-variant products
+                if (shopifyOptionValues.length === 0 && variants.length === 1) {
+                    shopifyOptionValues.push({ optionName: 'Title', name: cv.Title || 'Default' });
+                }
+
+
+                const variantInput: any = {
+                    optionValues: shopifyOptionValues,
+                    price: cv.Price?.toString(), // Shopify expects price as string
+                    sku: cv.Sku,
                         inventoryItem: {
-                            tracked: true,
-                            measurement: variant.Weight ? {
+                        tracked: true, // Assuming all items are tracked
+                        measurement: cv.Weight && cv.WeightUnit ? {
                                 weight: {
-                                    value: variant.Weight,
-                                    unit: 'POUNDS'
+                                value: parseFloat(cv.Weight.toString()),
+                                unit: cv.WeightUnit.toUpperCase() // e.g., POUNDS, KILOGRAMS
                                 }
                             } : undefined
                         },
                         inventoryQuantities: locations.map(loc => ({
                             locationId: loc.locationId,
-                            name: 'available',
+                        name: "available", // Shopify typically uses "available" for the main quantity field via API
                             quantity: loc.quantity
                         })),
-                        taxable: true,
-                        barcode: variant.Barcode || undefined,
-                        file
+                    taxable: cv.IsTaxable ?? true, // Default to true if not set
+                    barcode: cv.Barcode || undefined,
+                };
+
+                if (imageSourceForVariantFile) {
+                    variantInput.file = {
+                        originalSource: imageSourceForVariantFile,
+                        alt: imageAltTextForVariantFile,
+                        filename: `${cv.Sku || cv.Id.substring(0, 8)}.jpg`,
+                        contentType: 'IMAGE',
                     };
-                })
+                    this.logger.log(`[publishToShopify] Attaching file to variant ${cv.Sku || cv.Id}: ${imageSourceForVariantFile}`);
+                } else {
+                    this.logger.warn(`[publishToShopify] No image source determined for Shopify variant ${cv.Sku || cv.Id}. Variant will be created without an image file linked this way.`);
+                }
+                shopifyVariantsInput.push(variantInput);
+            }
+
+            const shopifyProductOptionsRaw = this.productsService.determineShopifyProductOptions(variants);
+            // Adapt shopifyProductOptionsRaw to match ShopifyProductOption[] expected by ShopifyProductSetInput
+            const shopifyProductOptionsFormatted = shopifyProductOptionsRaw.map(opt => ({
+                name: opt.name,
+                values: opt.values.map(val => ({ name: val })) // Adjust if ShopifyProductOptionValue is different
+            }));
+
+            const productDescriptionHtml = (product.Description || variants[0]?.Description || product.Title || '');
+
+            const productInputForShopify: ShopifyProductSetInput = { // Explicitly type for clarity
+                title: product.Title || variants[0]?.Title || 'Untitled Product',
+                descriptionHtml: productDescriptionHtml,
+                status: options?.status || 'ACTIVE',
+                vendor: options?.vendor || (variants[0]?.Options as any)?.shopify?.vendor || undefined,
+                productType: options?.productType || (variants[0]?.Options as any)?.shopify?.productType || undefined,
+                tags: options?.tags || (variants[0]?.Options as any)?.shopify?.tags || [],
+                productOptions: shopifyProductOptionsFormatted, // Use the formatted options
+                variants: shopifyVariantsInput,
+            };
+            
+            this.logger.debug(`[publishToShopify] Constructed productInput for Shopify: ${JSON.stringify(productInputForShopify, null, 2)}`);
+
+            const shopifyResponse = await this.shopifyApiClient.createProductAsync(
+                connection, // Pass the fetched PlatformConnection object
+                productInputForShopify,
+                // req.user.id // Pass userId if your apiClient needs it for logging/context
+            ) as ShopifyProductCreationResponseFromClient; // Cast to the extended interface
+
+            this.logger.log(`[publishToShopify] Shopify publish response for product ${productId}: ${JSON.stringify(shopifyResponse)}`);
+            
+            // Update PlatformProductMappings with Shopify IDs
+            if (shopifyResponse.productId && shopifyResponse.variants && shopifyResponse.variants.length > 0) {
+                for (const shopifyVariant of shopifyResponse.variants) {
+                    // Try to find the canonical variant by SKU.
+                    // This assumes SKUs are unique within the product on SSSync side for this mapping.
+                    const canonicalVariant = variants.find(v => v.Sku === shopifyVariant.sku);
+                    if (canonicalVariant) {
+                        await this.platformProductMappingsService.upsertMapping({ // Renamed method
+                    PlatformConnectionId: platformConnectionId,
+                            ProductVariantId: canonicalVariant.Id,
+                            PlatformProductId: shopifyResponse.productId,
+                            PlatformVariantId: shopifyVariant.id, // Use ID from the looped shopifyVariant
+                            PlatformSku: shopifyVariant.sku,     // Use SKU from the looped shopifyVariant
+                            LastSyncedAt: new Date().toISOString(),
+                            SyncStatus: 'synced', // Or 'pending_confirmation' if needed
+                            IsEnabled: true,
+                        }, userId); // Assuming upsertMapping might need userId for audit/context
+                        this.logger.log(`[publishToShopify] Upserted mapping for SKU ${shopifyVariant.sku} (CanonicalVariantID: ${canonicalVariant.Id}) with Shopify ProductID: ${shopifyResponse.productId}, ShopifyVariantID: ${shopifyVariant.id}.`);
+                    } else {
+                        this.logger.warn(`[publishToShopify] Could not find canonical variant matching SKU ${shopifyVariant.sku} from Shopify response for product ${productId}. Skipping mapping for this variant.`);
+                    }
+                }
+            } else {
+                this.logger.warn(`[publishToShopify] Shopify response for product ${productId} did not contain product ID or variant details necessary for mapping. Shopify Response: ${JSON.stringify(shopifyResponse)}`);
+            }
+
+
+            return {
+                success: true,
+                productId: shopifyResponse.productId,
+                operationId: shopifyResponse.operationId,
+                status: shopifyResponse.status,
+                message: 'Product published to Shopify successfully.'
             };
 
-            this.logger.debug(`[publishToShopify] Constructed productInput for Shopify: ${JSON.stringify(productInput, null, 2)}`);
-
-            const result = await this.shopifyApiClient.createProductAsync(connection, productInput);
-
-            if (result.productId && variants.length > 0) {
-                await this.platformProductMappingsService.createMapping({
-                    PlatformConnectionId: platformConnectionId,
-                    ProductVariantId: variants[0].Id, 
-                    PlatformProductId: result.productId,
-                    PlatformVariantId: result.productId, 
-                    PlatformSku: variants[0].Sku,
-                    PlatformSpecificData: {
-                        operationId: result.operationId,
-                        status: result.status
-                    }
-                });
-            }
-
-            return { success: true, productId: result.productId, operationId: result.operationId };
-        } catch (error) {
-            this.logger.error(`Failed to publish product to Shopify: ${error.message}`, error.stack);
-            if (error instanceof HttpException) {
-                throw error;
-            }
-            throw new InternalServerErrorException('Failed to publish product to Shopify');
+        } catch (error: any) {
+            this.logger.error(`[publishToShopify] Failed to publish product ${productId} to Shopify: ${error.message}`, error.stack);
+            // Consider re-throwing a more specific HttpException
+            throw new InternalServerErrorException(error.message || 'Failed to publish product to Shopify due to an internal error.');
         }
     }
 

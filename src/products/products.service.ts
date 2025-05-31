@@ -9,7 +9,7 @@ import { PublishProductDto, PublishIntent } from './dto/publish-product.dto';
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { ActivityLogService } from '../common/activity-log.service';
-import { ProductVariant } from '../common/types/supabase.types';
+import { Product, ProductVariant, ProductImage } from '../common/types/supabase.types';
 import * as QueueManager from '../queue-manager';
 
 // Export the types
@@ -747,37 +747,85 @@ export class ProductsService {
    * Checks if a given SKU is unique for a specific user.
    */
   async isSkuUniqueForUser(userId: string, sku: string): Promise<boolean> {
-    if (!sku || sku.trim() === '') {
-      // Technically, an empty SKU might be caught by DTO validation earlier,
-      // but good to have a service-level check too. 
-      // An empty SKU is not typically considered "taken" but rather invalid.
-      // Depending on strictness, you could throw BadRequestException here.
-      this.logger.warn(`isSkuUniqueForUser called with empty or whitespace SKU for user ${userId}. Returning true as it's not specifically 'taken'.`);
-      return true; 
-    }
-
-    const supabase = this.getSupabaseClient();
-    this.logger.debug(`Checking SKU uniqueness for user ${userId}, SKU: '${sku}'`);
-
-    const { data, error } = await supabase
+    const client = this.getSupabaseClient();
+    const { data, error } = await client
       .from('ProductVariants')
-      .select('Id') // Select a minimal field just to check existence
-      .match({ UserId: userId, Sku: sku })
-      .maybeSingle(); // Use maybeSingle to get null if not found, or one row if found
+      .select('Id')
+      .eq('UserId', userId)
+      .eq('Sku', sku)
+      .maybeSingle();
 
     if (error) {
-      this.logger.error(`Database error while checking SKU uniqueness for user ${userId}, SKU: '${sku}': ${error.message}`, error.stack);
-      // Depending on how critical this check is, you might re-throw or return a default
-      // For a live check, failing open (isUnique: true) might be risky if DB is down.
-      // Failing closed (isUnique: false) prevents user from using SKU but is safer.
-      // Or throw an error to indicate the check failed.
-      throw new InternalServerErrorException('Failed to verify SKU uniqueness due to a database error.');
+      this.logger.error(`Error checking SKU uniqueness for user ${userId}, SKU ${sku}: ${error.message}`);
+      // Depending on policy, you might want to throw or return false (conservative)
+      throw new InternalServerErrorException('Error checking SKU uniqueness');
+    }
+    return data === null; // SKU is unique if no record is found
+  }
+
+  public determineShopifyProductOptions(variants: ProductVariant[]): { name: string; values: string[] }[] {
+    if (!variants || variants.length === 0) {
+      return [];
     }
 
-    // If data is null, it means no record was found with that UserId and Sku -> SKU is unique
-    // If data is not null, a record was found -> SKU is NOT unique
-    const isUnique = data === null;
-    this.logger.debug(`SKU '${sku}' for user ${userId} is unique: ${isUnique}`);
-    return isUnique;
+    const optionsMap = new Map<string, Set<string>>();
+
+    variants.forEach(variant => {
+      if (variant.Options && typeof variant.Options === 'object') {
+        // Ensure Options is not null and is an object
+        const variantOptions = variant.Options as Record<string, string>; 
+        Object.entries(variantOptions).forEach(([optionName, optionValue]) => {
+          if (optionName.toLowerCase() === 'shopify') return; // Skip Shopify-internal options namespace
+
+          if (!optionsMap.has(optionName)) {
+            optionsMap.set(optionName, new Set<string>());
+          }
+          // Ensure optionValue is a string before adding
+          if (typeof optionValue === 'string') {
+            optionsMap.get(optionName)!.add(optionValue);
+          } else if (optionValue !== null && optionValue !== undefined) {
+            // Attempt to convert to string if it's a primitive
+            optionsMap.get(optionName)!.add(String(optionValue));
+          }
+        });
+      }
+    });
+    
+    // Shopify has a limit of 3 options
+    const shopifyOptions: { name: string; values: string[] }[] = [];
+    let count = 0;
+    for (const [name, valuesSet] of optionsMap.entries()) {
+      if (count < 3) {
+        shopifyOptions.push({ name, values: Array.from(valuesSet) });
+        count++;
+      } else {
+        this.logger.warn(`Product has more than 3 options. Shopify only supports up to 3. Option "${name}" will be ignored for Shopify product creation.`);
+        break; 
+      }
+    }
+    
+    // If there are no options derived but there are variants, Shopify might still need a default option.
+    // This is often handled by the variant titles or by ensuring at least one option like "Title" exists.
+    // For simple, single-variant products, this often defaults to "Title" with the variant's title as the value.
+    // If multiple variants exist but no options were parsable, this might lead to issues on Shopify.
+    if (shopifyOptions.length === 0 && variants.length > 1) {
+        this.logger.warn('Multiple variants exist but no common options were determined for Shopify. This might lead to unexpected behavior on Shopify product creation.');
+        // Optionally, create a default "Title" option if variants have distinct titles
+        // This is a fallback and might not be ideal for all cases.
+        const titles = new Set(variants.map(v => v.Title).filter(t => t) as string[]);
+        if (titles.size > 1 && titles.size <= 100) { // Shopify option values limit
+             shopifyOptions.push({ name: "Title", values: Array.from(titles) });
+             this.logger.log('Using "Title" as a default option for Shopify due to multiple variants with no other common options.');
+        }
+    } else if (shopifyOptions.length === 0 && variants.length === 1) {
+        // For a single variant with no explicit options, Shopify often defaults to a "Title" option.
+        // The product creation usually handles this by setting the variant's "option1" to its title.
+        // We can add it here for explicitness if desired, but it might also be handled by the API client structure.
+        // Example: shopifyOptions.push({ name: "Title", values: [variants[0].Title || "Default"] });
+        this.logger.debug('Single variant product with no explicit options. Shopify will likely default the option.');
+    }
+
+
+    return shopifyOptions;
   }
 }
