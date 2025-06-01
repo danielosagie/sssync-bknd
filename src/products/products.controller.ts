@@ -386,18 +386,26 @@ export class ProductsController {
                 };
 
                 if (imageSourceForVariantFile) {
-                    // Critical: Clean the URL one final time right before it's used in the file object
-                    const finalCleanedUrl = this._controllerCleanImageUrl(imageSourceForVariantFile, this.logger);
+                    // Apply multiple cleaning techniques to ensure semicolons are gone
+                    let finalCleanedUrl = this._controllerCleanImageUrl(imageSourceForVariantFile, this.logger) || '';
                     
-                    // Create variant's file object
+                    // Add last-resort direct string manipulation 
+                    // This ensures any escaping or JSON stringification won't reintroduce the semicolon
+                    if (finalCleanedUrl.includes(';')) {
+                        finalCleanedUrl = finalCleanedUrl.split(';')[0];
+                        this.logger.warn(`[CRITICAL FIX] Found semicolon after cleaning - truncating URL at semicolon`);
+                    }
+                    
+                    // Create variant's file object with guaranteed clean URL
                     variantInput.file = {
-                        originalSource: finalCleanedUrl, // Use the cleaned URL here
+                        originalSource: finalCleanedUrl, 
                         alt: imageAltTextForVariantFile || cv.Title || 'Product image',
                         filename: `${cv.Sku || 'product'}.jpg`,
                         contentType: 'IMAGE'
                     };
                     
-                    this.logger.log(`[publishToShopify] FINAL CLEANED URL for Shopify API: ${finalCleanedUrl}`);
+                    this.logger.log(`[publishToShopify] ULTRA CLEAN URL (before JSON): ${finalCleanedUrl}`);
+                    this.logger.log(`[publishToShopify] JSON.stringify test: ${JSON.stringify({test: finalCleanedUrl})}`);
                 } else {
                     this.logger.warn(`[publishToShopify] No image source determined for Shopify variant ${cv.Sku || cv.Id}. Variant will be created without an image file linked this way.`);
                 }
