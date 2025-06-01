@@ -240,8 +240,8 @@ export class ProductsController {
                 vendor?: string;
                 productType?: string;
                 tags?: string[];
-                imageUris?: string[]; // Expecting this from frontend
-                coverImageIndex?: number; // Expecting this from frontend
+                imageUris?: string[]; // This array needs cleaning
+                coverImageIndex?: number;
             };
         },
         @Req() req: AuthenticatedRequest
@@ -252,6 +252,13 @@ export class ProductsController {
         const supabase = this.supabaseService.getServiceClient(); // Use service client for backend operations
         const userId = req.user.id;
         const { platformConnectionId, locations, options } = publishData;
+
+        // Add array-level cleaning for imageUris
+        if (options?.imageUris) {
+            options.imageUris = options.imageUris.map(uri => 
+                this._controllerCleanImageUrl(uri, this.logger) || '' // Ensures null becomes empty string
+            ).filter(uri => uri.length > 0); // Remove any invalid entries
+        }
 
         try {
             this.logger.log(`[publishToShopify] Inside try block for productId: ${productId}`);
