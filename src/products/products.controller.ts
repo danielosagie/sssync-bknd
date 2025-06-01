@@ -260,7 +260,19 @@ export class ProductsController {
             // Depending on strictness, you might return null here:
             // return null; 
         }
-        currentLogger.log(`[_controllerCleanImageUrl] Final cleaned URL: "${currentUrl}"`);
+        
+        // FINAL Semicolon Cleanup - just in case it was reintroduced by decoding or other steps
+        const urlBeforeFinalSemicolonStrip = currentUrl;
+        if (typeof currentUrl === 'string') { // Check type again before replace
+            currentUrl = currentUrl.replace(/;$/, '');
+        }
+        if (urlBeforeFinalSemicolonStrip !== currentUrl) {
+            currentLogger.log(`[_controllerCleanImageUrl] After FINAL .replace(/;$/, ''): \"${currentUrl}\"`);
+        } else {
+            currentLogger.log(`[_controllerCleanImageUrl] No change from FINAL .replace(/;$/, ''). URL: \"${currentUrl}\"`);
+        }
+        
+        currentLogger.log(`[_controllerCleanImageUrl] Final cleaned URL (after all steps): "${currentUrl}"`);
         return currentUrl;
     }
 
