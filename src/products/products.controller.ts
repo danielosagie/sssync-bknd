@@ -207,34 +207,55 @@ export class ProductsController {
             logger.log(`[_controllerCleanImageUrl] Input URL is null or undefined.`);
             return null;
         }
-        logger.log(`[_controllerCleanImageUrl] Initial URL: "${url}"`);
+        logger.log(`[_controllerCleanImageUrl] Initial URL: "${url}" (Length: ${url.length})`);
+        this._logCharCodes(url, 5, logger, "Initial");
 
         let cleaned = url;
 
-        // Attempt 1: Replace semicolon and its encoded form
-        cleaned = cleaned.replace(/;|%3B/g, '');
-        logger.log(`[_controllerCleanImageUrl] After replacing ; and %3B: "${cleaned}"`);
+        // Attempt 1: Replace known semicolon forms (ASCII, common Unicode look-alike, URL encoded)
+        // Common Unicode semicolons: ； (Fullwidth semicolon), ; (Greek Question Mark which looks like a semicolon)
+        cleaned = cleaned.replace(/;|%3B|；|;/g, '');
+        logger.log(`[_controllerCleanImageUrl] After replacing known semicolons: "${cleaned}" (Length: ${cleaned.length})`);
+        this._logCharCodes(cleaned, 5, logger, "After Semicolon Replace");
 
         // Attempt 2: Replace quotes
         cleaned = cleaned.replace(/"|'/g, '');
-        logger.log(`[_controllerCleanImageUrl] After replacing quotes: "${cleaned}"`);
+        logger.log(`[_controllerCleanImageUrl] After replacing quotes: "${cleaned}" (Length: ${cleaned.length})`);
+        this._logCharCodes(cleaned, 5, logger, "After Quote Replace");
 
-        // Attempt 3: Trim whitespace
-        cleaned = cleaned.trim();
-        logger.log(`[_controllerCleanImageUrl] After trim: "${cleaned}"`);
+        // Attempt 3: Trim whitespace (including Unicode spaces)
+        cleaned = cleaned.trim(); // trim() handles various whitespace characters
+        logger.log(`[_controllerCleanImageUrl] After trim: "${cleaned}" (Length: ${cleaned.length})`);
+        this._logCharCodes(cleaned, 5, logger, "After Trim");
 
-        // Attempt 4: Aggressive split if semicolon still detected (mostly for safety)
-        if (cleaned.includes(';')) {
-            logger.warn(`[_controllerCleanImageUrl] Semicolon still detected after replace/trim. Applying split(';')[0]. Original problematic string: "${cleaned}"`);
-            const parts = cleaned.split(';');
-            cleaned = parts[0];
-            logger.log(`[_controllerCleanImageUrl] After split(';')[0]: "${cleaned}"`);
+        // Attempt 4: Aggressive character-by-character check for anything that looks like a semicolon or is not a standard URL char
+        // This is a more robust way than just includes(';')
+        if (/[^A-Za-z0-9\/:\.\?=\&_\-%~#]/.test(cleaned.slice(-1))) { // Check last character
+             logger.warn(`[_controllerCleanImageUrl] Last character might be problematic: '${cleaned.slice(-1)}' (Code: ${cleaned.charCodeAt(cleaned.length - 1)}). Original: "${url}"`);
+             // If it's a semicolon by char code, or still one of the problematic ones, attempt to remove it directly.
+             // We are primarily concerned about a trailing character here.
+             if (cleaned.charCodeAt(cleaned.length - 1) === 59 || cleaned.charCodeAt(cleaned.length - 1) === 65307 || cleaned.charCodeAt(cleaned.length - 1) === 958) {
+                logger.warn(`[_controllerCleanImageUrl] Attempting to slice off trailing problematic char.`);
+                cleaned = cleaned.slice(0, -1);
+                logger.log(`[_controllerCleanImageUrl] After slicing trailing char: "${cleaned}"`);
+                this._logCharCodes(cleaned, 5, logger, "After Slice");
+             }
         }
 
-        logger.log(`[_controllerCleanImageUrl] Final Cleaned URL for return: "${cleaned}"`);
+        logger.log(`[_controllerCleanImageUrl] Final Cleaned URL for return: "${cleaned}" (Length: ${cleaned.length})`);
+        this._logCharCodes(cleaned, 5, logger, "Final Return");
         return cleaned;
     }
 
+    private _logCharCodes(str: string, count: number, logger: Logger, stage: string) {
+        if (!str) return;
+        const len = str.length;
+        const start = Math.max(0, len - count);
+        logger.log(`    [CharCodes - ${stage}] Last ${Math.min(count, len)} chars of "${str.substring(start)}":`);
+        for (let i = start; i < len; i++) {
+            logger.log(`      Char at ${i}: ${str.charCodeAt(i)} ('${str[i]}')`);
+        }
+    }
 
     @Post(':id/publish/shopify')
     @UseGuards(FeatureUsageGuard)
