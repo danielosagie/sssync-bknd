@@ -338,10 +338,13 @@ export class ProductsController {
             if (options?.imageUris && options.imageUris.length > 0) {
                 this.logger.log('[publishToShopify] Using frontend-provided imageUris for product-level media.');
                 options.imageUris.forEach(uri => {
-                    const cleanedUri = this._controllerCleanImageUrl(uri, this.logger);
+                    let cleanedUri = this._controllerCleanImageUrl(uri, this.logger);
                     if (cleanedUri) {
+                        cleanedUri = cleanedUri.replace(/^"|"$/g, '').replace(/;$/, '');
+                        this.logger.log(`[publishToShopify] Processed frontend-provided media: ${cleanedUri}`);
                         productLevelMediaForShopify.push({ originalSource: cleanedUri, altText: product.Title || 'Product image' });
                     }
+
                 });
                 this.logger.log(`[publishToShopify] Processed frontend-provided media: ${JSON.stringify(productLevelMediaForShopify)}`);
             } else {
