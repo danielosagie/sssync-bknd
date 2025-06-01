@@ -203,14 +203,35 @@ export class ProductsController {
 
     // Update the cleaning helper to remove quotes and semicolons completely
     private _controllerCleanImageUrl(url: string | null | undefined, logger: Logger): string | null {
-        if (!url) return null;
+        if (!url) {
+            logger.log(`[_controllerCleanImageUrl] Input URL is null or undefined.`);
+            return null;
+        }
+        logger.log(`[_controllerCleanImageUrl] Initial URL: "${url}"`);
 
-        // Remove all semicolons, quotes, and encoded semicolons from the entire URL
-        let cleaned = url
-            .replace(/;|%3B|"|'/g, '') // Remove all semicolons, quotes, and encoded versions
-            .trim();
+        let cleaned = url;
 
-        logger.log(`[Full Clean] Final URL: "${cleaned}"`);
+        // Attempt 1: Replace semicolon and its encoded form
+        cleaned = cleaned.replace(/;|%3B/g, '');
+        logger.log(`[_controllerCleanImageUrl] After replacing ; and %3B: "${cleaned}"`);
+
+        // Attempt 2: Replace quotes
+        cleaned = cleaned.replace(/"|'/g, '');
+        logger.log(`[_controllerCleanImageUrl] After replacing quotes: "${cleaned}"`);
+
+        // Attempt 3: Trim whitespace
+        cleaned = cleaned.trim();
+        logger.log(`[_controllerCleanImageUrl] After trim: "${cleaned}"`);
+
+        // Attempt 4: Aggressive split if semicolon still detected (mostly for safety)
+        if (cleaned.includes(';')) {
+            logger.warn(`[_controllerCleanImageUrl] Semicolon still detected after replace/trim. Applying split(';')[0]. Original problematic string: "${cleaned}"`);
+            const parts = cleaned.split(';');
+            cleaned = parts[0];
+            logger.log(`[_controllerCleanImageUrl] After split(';')[0]: "${cleaned}"`);
+        }
+
+        logger.log(`[_controllerCleanImageUrl] Final Cleaned URL for return: "${cleaned}"`);
         return cleaned;
     }
 
