@@ -356,23 +356,20 @@ export class ProductsController {
                 let imageSourceForVariantFile: string | null = null;
                 let imageAltTextForVariantFile: string = cv.Title || product.Title || 'Product image';
 
-                // If frontend provided images, and this is the first variant, use the cover image for its 'file'
-                // This assumes the 'file' field on a variant is for its *primary* associated image.
+                // Determine the image source, primarily for logging or a future separate image update step
                 if (variants.indexOf(cv) === 0 && productLevelMediaForShopify.length > 0) {
                     const coverIndex = options?.coverImageIndex ?? 0;
                     if (coverIndex >= 0 && coverIndex < productLevelMediaForShopify.length) {
                         imageSourceForVariantFile = productLevelMediaForShopify[coverIndex].originalSource;
-                        imageAltTextForVariantFile = productLevelMediaForShopify[coverIndex].altText || imageAltTextForVariantFile;
-                        this.logger.log(`[publishToShopify] Using frontend-provided cover image for primary variant ${cv.Id}: ${imageSourceForVariantFile}`);
-                    } else if (productLevelMediaForShopify.length > 0) { // Fallback if coverIndex invalid
+                        // imageAltTextForVariantFile is already set
+                    } else if (productLevelMediaForShopify.length > 0) { // Fallback
                         imageSourceForVariantFile = productLevelMediaForShopify[0].originalSource;
-                        imageAltTextForVariantFile = productLevelMediaForShopify[0].altText || imageAltTextForVariantFile;
-                        this.logger.log(`[publishToShopify] Using first frontend-provided image for primary variant ${cv.Id} (coverIndex invalid): ${imageSourceForVariantFile}`);
                     }
-                } else if (!productLevelMediaForShopify.length) { // Only fetch from DB if no frontend images were given at all
-                    this.logger.log(`[publishToShopify] Attempting to fetch DB image for variant ${cv.Id} as no frontend images were provided.`);
+                    this.logger.log(`[publishToShopify] Determined imageSource (from frontend options) for variant ${cv.Id}: ${imageSourceForVariantFile}`);
+                } else if (!productLevelMediaForShopify.length) {
+                    this.logger.log(`[publishToShopify] Attempting to fetch DB image for variant ${cv.Id} as no frontend images provided initially.`);
                     const { data: dbImages, error: dbImagesError } = await supabase
-                .from('ProductImages')
+                        .from('ProductImages')
                         .select('ImageUrl, AltText, Id')
                         .eq('ProductVariantId', cv.Id)
                         .order('Position', { ascending: true });
@@ -384,11 +381,11 @@ export class ProductsController {
                         const finalDbImage = imageToUse || dbImages[0];
                         if (finalDbImage && finalDbImage.ImageUrl) {
                             imageSourceForVariantFile = this._controllerCleanImageUrl(finalDbImage.ImageUrl, this.logger);
-                            imageAltTextForVariantFile = finalDbImage.AltText || cv.Title || product.Title;
+                            // imageAltTextForVariantFile is already set or uses default
                             this.logger.log(`[publishToShopify] Using DB image for variant ${cv.Id} (after controller cleaning): ${imageSourceForVariantFile}`);
                         }
                     }
-                        }
+                }
 
                 // Constructing Shopify variant input
                 const shopifyOptionValues: { optionName: string; name: string }[] = [];
@@ -428,35 +425,31 @@ export class ProductsController {
                     barcode: cv.Barcode || undefined,
                 };
 
-                if (imageSourceForVariantFile) {
-                    // Apply multiple cleaning techniques to ensure semicolons are gone
-                    let finalCleanedUrl = this._controllerCleanImageUrl(imageSourceForVariantFile, this.logger) || '';
-                    
-                    // Add last-resort direct string manipulation 
-                    // This ensures any escaping or JSON stringification won't reintroduce the semicolon
-                    if (finalCleanedUrl.includes(';')) {
-                        finalCleanedUrl = finalCleanedUrl.split(';')[0];
-                        this.logger.warn(`[CRITICAL FIX] Found semicolon after cleaning - truncating URL at semicolon`);
-                    }
-                    
-                    // Create variant's file object with guaranteed clean URL
-                    variantInput.file = {
-                        originalSource: finalCleanedUrl, 
-                        alt: imageAltTextForVariantFile || cv.Title || 'Product image',
-                        filename: `${cv.Sku || 'product'}.jpg`,
-                        contentType: 'IMAGE'
-                    };
-                    
-                    this.logger.log(`[publishToShopify] ULTRA CLEAN URL (before JSON): ${finalCleanedUrl}`);
-                    this.logger.log(`[publishToShopify] JSON.stringify test: ${JSON.stringify({test: finalCleanedUrl})}`);
-                } else {
-                    this.logger.warn(`[publishToShopify] No image source determined for Shopify variant ${cv.Sku || cv.Id}. Variant will be created without an image file linked this way.`);
-                }
+                // TEMPORARILY OMITTING `variantInput.file` TO AVOID SEMICOLON ISSUE
+                // The logic for imageSourceForVariantFile and its cleaning is kept for logging 
+                // and for a potential future separate image update step.
+                this.logger.warn(`[publishToShopify] TEMPORARILY OMITTING variantInput.file for Shopify variant ${cv.Sku || cv.Id} to isolate semicolon issue.`);
+                
+                // if (imageSourceForVariantFile) {
+                //     let finalCleanedUrl = this._controllerCleanImageUrl(imageSourceForVariantFile, this.logger) || '';
+                //     if (finalCleanedUrl.includes(';')) {
+                //         finalCleanedUrl = finalCleanedUrl.split(';')[0];
+                //         this.logger.warn(`[CRITICAL FIX] Found semicolon after cleaning - truncating URL at semicolon`);
+                //     }
+                //     variantInput.file = {
+                //         originalSource: finalCleanedUrl, 
+                //         alt: imageAltTextForVariantFile || cv.Title || 'Product image',
+                //         filename: `${cv.Sku || 'product'}.jpg`,
+                //         contentType: 'IMAGE'
+                //     };
+                //     this.logger.log(`[publishToShopify] Prepared variantInput.file.originalSource (but currently omitted): ${finalCleanedUrl}`);
+                // } else {
+                //     this.logger.warn(`[publishToShopify] No image source determined for Shopify variant ${cv.Sku || cv.Id}. Variant would be created without an image file.`);
+                // }
                 shopifyVariantsInput.push(variantInput);
             }
 
             const shopifyProductOptionsRaw = this.productsService.determineShopifyProductOptions(variants);
-            // Adapt shopifyProductOptionsRaw to match ShopifyProductOption[] expected by ShopifyProductSetInput
             const shopifyProductOptionsFormatted = shopifyProductOptionsRaw.map(opt => ({
                 name: opt.name,
                 values: opt.values.map(val => ({ name: val })) // Adjust if ShopifyProductOptionValue is different
@@ -485,6 +478,30 @@ export class ProductsController {
 
             this.logger.log(`[publishToShopify] Shopify publish response for product ${productId}: ${JSON.stringify(shopifyResponse)}`);
             
+            // If product creation was successful and we have a Shopify Product ID, and images were provided in options
+            if (shopifyResponse.productId && productLevelMediaForShopify.length > 0) {
+                this.logger.log(`[publishToShopify] Product created (ID: ${shopifyResponse.productId}). Now attempting to associate ${productLevelMediaForShopify.length} product-level images.`);
+                try {
+                    // Convert productLevelMediaForShopify to ShopifyProductFile[] format
+                    const shopifyImageInputs: ShopifyProductFile[] = productLevelMediaForShopify.map((media, index) => ({
+                        originalSource: media.originalSource, // This was cleaned when productLevelMediaForShopify was populated
+                        alt: media.altText || `Product image ${index + 1}`,
+                        filename: `${product.Title || 'product'}_${index + 1}.jpg`.replace(/[^a-zA-Z0-9_\.\-]/g, '_'), // Basic filename sanitization
+                        contentType: 'IMAGE' 
+                    }));
+
+                    this.logger.debug(`[publishToShopify] Calling shopifyApiClient.updateProductImagesAsync with productId: ${shopifyResponse.productId} and images: ${JSON.stringify(shopifyImageInputs)}`);
+                    // Placeholder for the actual call - this method needs to exist in ShopifyApiClient
+                    // const imageUpdateResponse = await this.shopifyApiClient.updateProductImagesAsync(connection, shopifyResponse.productId, shopifyImageInputs);
+                    // this.logger.log(`[publishToShopify] Shopify image update response: ${JSON.stringify(imageUpdateResponse)}`);
+                    this.logger.warn(`[publishToShopify] shopifyApiClient.updateProductImagesAsync is not yet implemented. Images were not uploaded to product ID: ${shopifyResponse.productId}`);
+
+                } catch (imgError: any) {
+                    this.logger.error(`[publishToShopify] Failed to update/associate images for Shopify product ${shopifyResponse.productId}: ${imgError.message}`, imgError.stack);
+                    // Do not re-throw here to let the main product creation be considered a partial success
+                }
+            }
+
             // Update PlatformProductMappings with Shopify IDs
             if (shopifyResponse.productId && shopifyResponse.variants && shopifyResponse.variants.length > 0) {
                 for (const shopifyVariant of shopifyResponse.variants) {
