@@ -173,6 +173,13 @@ export class ProductsController {
         @Body() publishProductDto: PublishProductDto,
         @Req() req: AuthenticatedRequest,
     ): Promise<{ message: string }> {
+        // Clean imageUris before processing
+        if (publishProductDto.media?.imageUris) {
+            publishProductDto.media.imageUris = publishProductDto.media.imageUris
+                .map(uri => this._controllerCleanImageUrl(uri, this.logger) || '')
+                .filter(uri => uri.length > 0);
+        }
+
         const userId = req.user.id;
         this.logger.log(`[POST /publish] User: ${userId} - Received ${publishProductDto.publishIntent} request for variant ${publishProductDto.variantId}`);
         await this.productsService.saveOrPublishListing(userId, publishProductDto);
@@ -194,34 +201,16 @@ export class ProductsController {
         return this.productsService.createProductWithVariant(authUserId, data.variantData);
     }
 
-    // Ensure this helper is defined or updated within ProductsController
+    // Update the cleaning helper to handle encoded semicolons in middle of URL
     private _controllerCleanImageUrl(url: string | null | undefined, logger: Logger): string | null {
         if (!url) return null;
 
-        // New: Handle encoded semicolons first
+        // Remove all semicolons and encoded semicolons throughout the URL
         let cleaned = url
-            .replace(/;+$/, '') // Remove trailing semicolons
-            .replace(/%3B+$/i, '') // Remove URL-encoded semicolons at end
+            .replace(/;|%3B/gi, '') // Remove all semicolons and encoded versions
             .trim();
 
-        logger.log(`[Phase 1] After semicolon cleanup: "${cleaned}"`);
-
-        try {
-            cleaned = decodeURIComponent(cleaned);
-            logger.log(`[Phase 2] After URI decoding: "${cleaned}"`);
-        } catch (e) {
-            logger.warn(`URI decoding failed for URL: ${cleaned}`);
-        }
-
-        // New: Final cleanup after decoding
-        cleaned = cleaned
-            .replace(/;+$/, '') // Remove any semicolons that emerged from decoding
-            .replace(/%3B+$/i, '') // Handle any re-encoded semicolons
-            .trim();
-
-        logger.log(`[Phase 3] Final cleaned URL: "${cleaned}"`);
-        logger.debug(`Final URL length: ${cleaned.length}, last 5 chars: ${cleaned.slice(-5)}`);
-
+        logger.log(`[Full Clean] Final URL: "${cleaned}"`);
         return cleaned || null;
     }
 
@@ -340,7 +329,7 @@ export class ProductsController {
                 } else if (!productLevelMediaForShopify.length) { // Only fetch from DB if no frontend images were given at all
                     this.logger.log(`[publishToShopify] Attempting to fetch DB image for variant ${cv.Id} as no frontend images were provided.`);
                     const { data: dbImages, error: dbImagesError } = await supabase
-                        .from('ProductImages')
+                .from('ProductImages')
                         .select('ImageUrl, AltText, Id')
                         .eq('ProductVariantId', cv.Id)
                         .order('Position', { ascending: true });
