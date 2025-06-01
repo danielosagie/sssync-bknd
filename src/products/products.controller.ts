@@ -229,7 +229,7 @@ export class ProductsController {
                 vendor?: string;
                 productType?: string;
                 tags?: string[];
-                imageUris?: string[]; // This array needs cleaning
+                imageUris?: string[];
                 coverImageIndex?: number;
             };
         },
@@ -242,11 +242,12 @@ export class ProductsController {
         const userId = req.user.id;
         const { platformConnectionId, locations, options } = publishData;
 
-        // Add array-level cleaning for imageUris
-        if (options?.imageUris) {
-            options.imageUris = options.imageUris.map(uri => 
-                this._controllerCleanImageUrl(uri, this.logger) || '' 
-            ).filter(uri => uri.length > 0);
+        // Final cleaning of image URLs before passing to Shopify API
+        const cleanedImageUris = options?.imageUris?.map(uri => this._controllerCleanImageUrl(uri, this.logger)) || [];
+        this.logger.log(`[publishToShopify] Final cleaned image URIs for Shopify request: ${cleanedImageUris.join(', ')}`);
+        // Update the publishData with cleaned URIs
+        if (options && options.imageUris) {
+            options.imageUris = cleanedImageUris as string[];
         }
 
         try {
