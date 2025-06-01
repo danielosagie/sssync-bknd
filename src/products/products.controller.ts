@@ -201,17 +201,17 @@ export class ProductsController {
         return this.productsService.createProductWithVariant(authUserId, data.variantData);
     }
 
-    // Update the cleaning helper to handle encoded semicolons in middle of URL
+    // Update the cleaning helper to remove quotes and semicolons completely
     private _controllerCleanImageUrl(url: string | null | undefined, logger: Logger): string | null {
         if (!url) return null;
 
-        // Remove all semicolons and encoded semicolons throughout the URL
+        // Remove all semicolons, quotes, and encoded semicolons from the entire URL
         let cleaned = url
-            .replace(/;|%3B/gi, '') // Remove all semicolons and encoded versions
+            .replace(/;|%3B|"|'/g, '') // Remove all semicolons, quotes, and encoded versions
             .trim();
 
         logger.log(`[Full Clean] Final URL: "${cleaned}"`);
-        return cleaned || null;
+        return cleaned;
     }
 
 
@@ -245,8 +245,8 @@ export class ProductsController {
         // Add array-level cleaning for imageUris
         if (options?.imageUris) {
             options.imageUris = options.imageUris.map(uri => 
-                this._controllerCleanImageUrl(uri, this.logger) || '' // Ensures null becomes empty string
-            ).filter(uri => uri.length > 0); // Remove any invalid entries
+                this._controllerCleanImageUrl(uri, this.logger) || '' 
+            ).filter(uri => uri.length > 0);
         }
 
         try {
@@ -345,8 +345,8 @@ export class ProductsController {
                             this.logger.log(`[publishToShopify] Using DB image for variant ${cv.Id} (after controller cleaning): ${imageSourceForVariantFile}`);
                         }
                     }
-                }
-                
+                        }
+
                 // Constructing Shopify variant input
                 const shopifyOptionValues: { optionName: string; name: string }[] = [];
                 if (cv.Options && typeof cv.Options === 'object') {
@@ -386,13 +386,18 @@ export class ProductsController {
                 };
 
                 if (imageSourceForVariantFile) {
+                    // Critical: Clean the URL one final time right before it's used in the file object
+                    const finalCleanedUrl = this._controllerCleanImageUrl(imageSourceForVariantFile, this.logger);
+                    
+                    // Create variant's file object
                     variantInput.file = {
-                        originalSource: imageSourceForVariantFile,
-                        alt: imageAltTextForVariantFile,
-                        filename: `${cv.Sku || cv.Id.substring(0, 8)}.jpg`,
-                        contentType: 'IMAGE',
+                        originalSource: finalCleanedUrl, // Use the cleaned URL here
+                        alt: imageAltTextForVariantFile || cv.Title || 'Product image',
+                        filename: `${cv.Sku || 'product'}.jpg`,
+                        contentType: 'IMAGE'
                     };
-                    this.logger.log(`[publishToShopify] Attaching file to variant ${cv.Sku || cv.Id}: ${imageSourceForVariantFile}`);
+                    
+                    this.logger.log(`[publishToShopify] FINAL CLEANED URL for Shopify API: ${finalCleanedUrl}`);
                 } else {
                     this.logger.warn(`[publishToShopify] No image source determined for Shopify variant ${cv.Sku || cv.Id}. Variant will be created without an image file linked this way.`);
                 }
@@ -418,7 +423,7 @@ export class ProductsController {
                 productOptions: shopifyProductOptionsFormatted, // Use the formatted options
                 variants: shopifyVariantsInput,
             };
-            
+
             this.logger.debug(`[publishToShopify] Constructed productInput for Shopify: ${JSON.stringify(productInputForShopify, null, 2)}`);
 
             const shopifyResponse = await this.shopifyApiClient.createProductAsync(
