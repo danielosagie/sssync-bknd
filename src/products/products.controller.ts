@@ -197,83 +197,32 @@ export class ProductsController {
     // Ensure this helper is defined or updated within ProductsController
     private _controllerCleanImageUrl(url: string | null | undefined, logger: Logger): string | null {
         if (!url) return null;
-        const currentLogger = logger || this.logger || console;
 
-        let currentUrl = typeof url === 'string' ? url : ''; // Assign raw url first
-        currentLogger.log(`[_controllerCleanImageUrl] Raw URL (as received by method): \"${currentUrl}\"`);
+        // New: Handle encoded semicolons first
+        let cleaned = url
+            .replace(/;+$/, '') // Remove trailing semicolons
+            .replace(/%3B+$/i, '') // Remove URL-encoded semicolons at end
+            .trim();
 
-        // STEP 1: Aggressively remove trailing semicolon if it's the last char of raw string
-        const originalForTrailingSemicolonRemoval = currentUrl;
-        if (typeof currentUrl === 'string') { // Ensure it is a string before calling replace
-            currentUrl = currentUrl.replace(/;$/, '');
-        }
-        if (originalForTrailingSemicolonRemoval !== currentUrl) {
-            currentLogger.log(`[_controllerCleanImageUrl] After initial .replace(/;$/, '') on raw input: \"${currentUrl}\"`);
-        } else {
-            currentLogger.log(`[_controllerCleanImageUrl] No change from initial .replace(/;$/, '') on raw input. URL: \"${currentUrl}\"`);
-        }
+        logger.log(`[Phase 1] After semicolon cleanup: "${cleaned}"`);
 
-        // STEP 2: Trim whitespace
-        const originalForTrim = currentUrl;
-        if (typeof currentUrl === 'string') { // Ensure it is a string before calling trim
-            currentUrl = currentUrl.trim();
-        }
-        if (originalForTrim !== currentUrl) {
-            currentLogger.log(`[_controllerCleanImageUrl] After .trim(): \"${currentUrl}\" (Length: ${currentUrl.length})`);
-        } else {
-            currentLogger.log(`[_controllerCleanImageUrl] No change from .trim(). URL: \"${currentUrl}\" (Length: ${currentUrl.length})`);
-        }
-
-        // Detailed charCode logging for the end of the (now trimmed and semicolon-stripped) string
-        if (currentUrl.length > 0) {
-            currentLogger.log(`[_controllerCleanImageUrl] Last 5 charCodes for: "${currentUrl}"`);
-            for (let i = Math.max(0, currentUrl.length - 5); i < currentUrl.length; i++) {
-                currentLogger.log(`  Char at ${i}: ${currentUrl.charCodeAt(i)} ('${currentUrl[i]}')`);
-            }
-        }
-
-        // Decode
         try {
-            const oldUrlBeforeDecode = currentUrl;
-            let decodedUrl = currentUrl;
-            // Iteratively decode if there's still '%' - max 3 times
-            for (let i = 0; i < 3 && decodedUrl.includes('%'); i++) { 
-                decodedUrl = decodeURIComponent(decodedUrl);
-            }
-            currentUrl = decodedUrl;
-            if (oldUrlBeforeDecode !== currentUrl) {
-                currentLogger.log(`[_controllerCleanImageUrl] After decodeURIComponent: "${currentUrl}"`);
-            }
-        } catch (e: any) {
-            currentLogger.warn(`[_controllerCleanImageUrl] Error decoding URI for "${currentUrl}": ${e.message}`);
+            cleaned = decodeURIComponent(cleaned);
+            logger.log(`[Phase 2] After URI decoding: "${cleaned}"`);
+        } catch (e) {
+            logger.warn(`URI decoding failed for URL: ${cleaned}`);
         }
 
-        // Remove leading/trailing literal double quotes
-        const oldUrlBeforeQuotes = currentUrl;
-        currentUrl = currentUrl.replace(/^"|"$/g, '');
-        if (oldUrlBeforeQuotes !== currentUrl) {
-            currentLogger.log(`[_controllerCleanImageUrl] After quote removal: "${currentUrl}"`);
-        }
+        // New: Final cleanup after decoding
+        cleaned = cleaned
+            .replace(/;+$/, '') // Remove any semicolons that emerged from decoding
+            .replace(/%3B+$/i, '') // Handle any re-encoded semicolons
+            .trim();
 
-        if (!currentUrl.startsWith('http://') && !currentUrl.startsWith('https://')) {
-            currentLogger.warn(`[_controllerCleanImageUrl] URL "${currentUrl}" may be invalid (no http/s prefix).`);
-            // Depending on strictness, you might return null here:
-            // return null; 
-        }
-        
-        // FINAL Semicolon Cleanup - just in case it was reintroduced by decoding or other steps
-        const urlBeforeFinalSemicolonStrip = currentUrl;
-        if (typeof currentUrl === 'string') { // Check type again before replace
-            currentUrl = currentUrl.replace(/;$/, '');
-        }
-        if (urlBeforeFinalSemicolonStrip !== currentUrl) {
-            currentLogger.log(`[_controllerCleanImageUrl] After FINAL .replace(/;$/, ''): \"${currentUrl}\"`);
-        } else {
-            currentLogger.log(`[_controllerCleanImageUrl] No change from FINAL .replace(/;$/, ''). URL: \"${currentUrl}\"`);
-        }
-        
-        currentLogger.log(`[_controllerCleanImageUrl] Final cleaned URL (after all steps): "${currentUrl}"`);
-        return currentUrl;
+        logger.log(`[Phase 3] Final cleaned URL: "${cleaned}"`);
+        logger.debug(`Final URL length: ${cleaned.length}, last 5 chars: ${cleaned.slice(-5)}`);
+
+        return cleaned || null;
     }
 
 
