@@ -41,7 +41,7 @@ export interface ConfirmedMatch {
 }
 
 // Structure stored in PlatformSpecificData
-interface StoredConfirmationData {
+export interface StoredConfirmationData {
     confirmedMatches: ConfirmedMatch[];
     confirmedAt: string; // ISO timestamp
 }

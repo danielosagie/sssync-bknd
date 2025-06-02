@@ -174,19 +174,30 @@ export class ShopifyMapper {
             return acc;
         }, {});
 
+        // Variant-specific image is not directly available on ShopifyVariantNode from the typical fetch query.
+        // Images are on productNode.media. If a variant needs a specific image, it's usually an association.
+        // Cost is also not directly on ShopifyVariantNode.inventoryItem (ShopifyInventoryItemNode) but on input types.
+
         return {
             // Id: Will be set by DB or ProductsService
             ProductId: canonicalProductId, // Link to the canonical product
             UserId: userId,
             Sku: variantNode.sku || null,
             Barcode: variantNode.barcode || null,
-            Title: productNode.title,
-            Description: productNode.descriptionHtml || null,
+            Title: productNode.title, // Variant title is derived from product title + options in Shopify UI
+                                     // For canonical data, productNode.title is the distinct field.
+            Description: productNode.descriptionHtml || null, // Fallback to product description
             Price: parseFloat(variantNode.price),
             CompareAtPrice: variantNode.compareAtPrice ? parseFloat(variantNode.compareAtPrice) : null,
+            Cost: null, // Not available on ShopifyVariantNode.inventoryItem (ShopifyInventoryItemNode)
             Weight: variantNode.inventoryItem?.measurement?.weight?.value ?? null,
             WeightUnit: variantNode.inventoryItem?.measurement?.weight?.unit?.toLowerCase() ?? null,
             Options: optionsMap || null,
+            RequiresShipping: undefined, // Not directly available on ShopifyVariantNode or its inventoryItem
+            IsTaxable: variantNode.taxable === null ? undefined : variantNode.taxable,
+            TaxCode: variantNode.taxCode || null,
+            ImageId: null, // No direct variant-specific image ID on ShopifyVariantNode
+            // ImageUrls: [], // No direct variant-specific image URLs on ShopifyVariantNode
         };
     }
 
@@ -239,14 +250,87 @@ export class ShopifyMapper {
         }
     }
 
+    /**
+     * Maps the first variant of a Shopify product to CanonicalProductVariant details.
+     * Used when SyncRules.productDetailsSoT === 'PLATFORM' for a link action.
+     */
+    mapShopifyProductToCanonicalDetails(
+        productNode: ShopifyProductNode,
+        userId: string,
+        // sssyncVariantId: string, // Not strictly needed here if we map the first variant as per current processor call pattern
+    ): Partial<CanonicalProductVariant> {
+        if (!productNode?.variants?.edges || productNode.variants.edges.length === 0) {
+            this.logger.warn(`Product ${productNode?.id} has no variants to map for canonical details.`);
+            return {};
+        }
+        const firstVariantNode = productNode.variants.edges[0].node;
+
+        // Reuse the logic of _mapSingleVariant, but it expects a canonicalProductId which we don't have here directly.
+        // We are returning Partial<CanonicalProductVariant>, so ProductId isn't strictly needed from this method.
+        // Let's adapt the core mapping logic from _mapSingleVariant:
+
+        const optionsMap = firstVariantNode.selectedOptions?.reduce((acc, opt) => {
+            acc[opt.name] = opt.value;
+            return acc;
+        }, {});
+        
+        // Cost, variant-specific image, and requiresShipping are not directly on firstVariantNode or its inventoryItem
+
+        return {
+            // ProductId: undefined, // Not setting this, as it's a Partial update for an existing SSSync variant
+            UserId: userId, // Or should this be omitted if not updating UserId?
+            Sku: firstVariantNode.sku || null,
+            Barcode: firstVariantNode.barcode || null,
+            Title: productNode.title, // Using product title as per _mapSingleVariant logic
+            Description: productNode.descriptionHtml || null,
+            Price: parseFloat(firstVariantNode.price),
+            CompareAtPrice: firstVariantNode.compareAtPrice ? parseFloat(firstVariantNode.compareAtPrice) : null,
+            Cost: null, 
+            Weight: firstVariantNode.inventoryItem?.measurement?.weight?.value ?? null,
+            WeightUnit: firstVariantNode.inventoryItem?.measurement?.weight?.unit?.toLowerCase() ?? null,
+            Options: optionsMap || null,
+            RequiresShipping: undefined,
+            IsTaxable: firstVariantNode.taxable === null ? undefined : firstVariantNode.taxable,
+            TaxCode: firstVariantNode.taxCode || null,
+            ImageId: null,
+        };
+    }
+
     mapCanonicalVariantToShopify(variantData: CanonicalProductVariant): any {
         this.logger.warn('mapCanonicalVariantToShopify not implemented');
         return {};
     }
 
-     mapShopifyInventory(inventoryData: any): any {
-         this.logger.warn('mapShopifyInventory not implemented');
-         return {};
+    /**
+     * Maps inventory levels for a specific linked Shopify variant to CanonicalInventoryLevel array.
+     * @param linkedShopifyVariantNode The specific ShopifyVariantNode whose inventory is to be mapped.
+     * @param sssyncVariantId The ID of the SSSync variant to which this inventory belongs.
+     * @param platformConnectionId The ID of the platform connection.
+     * @returns An array of CanonicalInventoryLevel objects.
+     */
+     mapShopifyInventoryToCanonical(
+        linkedShopifyVariantNode: ShopifyVariantNode,
+        sssyncVariantId: string, 
+        platformConnectionId: string
+    ): CanonicalInventoryLevel[] {
+        const canonicalInventoryLevels: CanonicalInventoryLevel[] = [];
+
+        if (!linkedShopifyVariantNode?.inventoryItem?.inventoryLevels?.edges) {
+            this.logger.warn(`No inventory levels found for Shopify variant ${linkedShopifyVariantNode?.id} to map.`);
+            return [];
+        }
+
+        for (const invLevelEdge of linkedShopifyVariantNode.inventoryItem.inventoryLevels.edges) {
+            const shopifyInvLevel = invLevelEdge.node;
+            canonicalInventoryLevels.push({
+                // Id: Will be set by DB or InventoryService
+                ProductVariantId: sssyncVariantId, // Link to the SSSync canonical variant
+                PlatformConnectionId: platformConnectionId,
+                PlatformLocationId: shopifyInvLevel.location.id, // Shopify Location GID
+                Quantity: shopifyInvLevel.available ?? 0,
+            });
+        }
+        return canonicalInventoryLevels;
      }
 
     mapCanonicalProductToShopifyInput(

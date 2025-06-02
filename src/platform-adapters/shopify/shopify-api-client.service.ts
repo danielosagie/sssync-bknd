@@ -202,96 +202,7 @@ interface ShopifyProductSetOperation {
     }>;
 }
 
-// Updated location query
-const GET_ALL_LOCATIONS_QUERY = `
-  query GetAllLocations {
-    locations(first: 50) {
-      edges {
-        node {
-          id
-          name
-          address {
-            formatted
-          }
-          isActive
-          createdAt
-        }
-      }
-    }
-  }
-`;
-
-// Updated product creation mutation
-const CREATE_PRODUCT_ASYNC_MUTATION = `
-  mutation CreateProductAsyncWithMedia($productInput: ProductSetInput!) {
-    productSet(input: $productInput, synchronous: false) {
-      product {
-        id
-        title
-      }
-      productSetOperation {
-        id
-        status
-        product {
-          id
-          title
-          status
-          options {
-            name
-            values
-          }
-          media(first: 10) {
-            nodes {
-              id
-              alt
-              mediaContentType
-              status
-              preview {
-                image {
-                  url
-                }
-              }
-            }
-          }
-          variants {
-            nodes {
-              id
-              title
-              price
-              sku
-              media(first: 1) {
-                nodes {
-                  id
-                  alt
-                  mediaContentType
-                  status
-                  preview {
-                    image {
-                      url
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        userErrors {
-          field
-          message
-          code
-        }
-      }
-      userErrors {
-        field
-        message
-        code
-      }
-    }
-  }
-`;
-
-// Types for product creation input
-interface ShopifyProductOptionValue {
+export interface ShopifyProductOptionValue {
     name: string;
 }
 
@@ -350,7 +261,7 @@ export interface ShopifyProductSetInput {
     status?: 'ACTIVE' | 'DRAFT' | 'ARCHIVED';
     tags?: string[];
     productOptions?: ShopifyProductOption[];
-    files?: ShopifyProductFile[];
+    files?: ShopifyProductFile[]; // This is for productCreate, not ideal for updates or appending.
     variants: ShopifyVariantInput[];
 }
 
@@ -551,12 +462,12 @@ const UPDATE_PRODUCT_MUTATION = `
 
 // Query to update inventory levels
 const UPDATE_INVENTORY_LEVELS_MUTATION = `
-  mutation UpdateInventoryLevels($inventoryItemId: ID!, $locationId: ID!, $available: Int!) {
+  mutation UpdateInventoryLevels($inventoryItemId: ID!, $locationId: ID!, $availableDelta: Int!) {
     inventoryAdjustQuantity(
       input: {
         inventoryItemId: $inventoryItemId
         locationId: $locationId
-        availableDelta: $available
+        availableDelta: $availableDelta
       }
     ) {
       inventoryLevel {
@@ -701,6 +612,99 @@ const GET_PRODUCTS_BY_IDS_QUERY = `
     }
   }
 `;
+
+const GET_ALL_LOCATIONS_QUERY = `
+  query GetAllLocations {
+    locations(first: 50) {
+      edges {
+        node {
+          id
+          name
+          address {
+            formatted
+          }
+          isActive
+          createdAt
+        }
+      }
+    }
+  }
+`;
+
+const CREATE_PRODUCT_ASYNC_MUTATION = `
+  mutation CreateProductAsyncWithMedia($productInput: ProductSetInput!) {
+    productSet(input: $productInput, synchronous: false) {
+      product {
+        id
+        title
+      }
+      productSetOperation {
+        id
+        status
+        product {
+          id
+          title
+          status
+          options {
+            name
+            values
+          }
+          media(first: 10) {
+            nodes {
+              id
+              alt
+              mediaContentType
+              status
+              preview {
+                image {
+                  url
+                }
+              }
+            }
+          }
+          variants {
+            nodes {
+              id
+              title
+              price
+              sku
+              media(first: 1) {
+                nodes {
+                  id
+                  alt
+                  mediaContentType
+                  status
+                  preview {
+                    image {
+                      url
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        userErrors {
+          field
+          message
+          code
+        }
+      }
+      userErrors {
+        field
+        message
+        code
+      }
+    }
+  }
+`;
+
+// New interface for productAppendMedia
+export interface ShopifyMediaInput {
+    originalSource: string;
+    alt?: string;
+    mediaContentType: 'IMAGE' | 'VIDEO' | 'EXTERNAL_VIDEO' | 'MODEL_3D';
+}
 
 @Injectable()
 export class ShopifyApiClient {
@@ -1593,6 +1597,77 @@ export class ShopifyApiClient {
                 `Shopify product update failed for ${productId}: ${error.message}`, 
                 error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR
             );
+        }
+    }
+
+    // New method to append media to a product
+    async productAppendMedia(
+        connection: PlatformConnection,
+        productId: string, // Shopify Product GID
+        mediaInputs: ShopifyMediaInput[]
+    ): Promise<{
+        product: { id: string; media: { nodes: Array<{ id: string; status: string }> } } | null;
+        userErrors: Array<{ field: string[] | null; message: string; code: string }>;
+    }> {
+        this.logger.log(`[productAppendMedia] Attempting to append ${mediaInputs.length} media items to product ${productId} for shop ${connection.PlatformSpecificData?.shop}`);
+        const client = await this.getGraphQLClient(connection);
+        if (!client) {
+            this.logger.error('[productAppendMedia] Failed to get GraphQL client.');
+            throw new InternalServerErrorException('Failed to initialize Shopify client for appending media.');
+        }
+
+        const mutation = `
+            mutation ProductAppendMedia($productId: ID!, $media: [CreateMediaInput!]!) {
+                productAppendMedia(productId: $productId, media: $media) {
+                    product {
+                        id
+                        media(first: ${mediaInputs.length * 2}) { # Fetch enough to see new and potentially some existing
+                            nodes {
+                                id
+                                status
+                                ... on MediaImage {
+                                    preview { image { url } }
+                                }
+                            }
+                        }
+                    }
+                    userErrors {
+                        field
+                        message
+                        code
+                    }
+                }
+            }
+        `;
+
+        try {
+            // Adjust the expected response type to be more flexible
+            const response = await client.query<any>({
+                data: {
+                    query: mutation,
+                    variables: { productId, media: mediaInputs },
+                },
+            });
+
+            const productAppendMediaResult = response.body?.data?.productAppendMedia;
+
+            if (productAppendMediaResult?.userErrors?.length) {
+                this.logger.warn(`[productAppendMedia] User errors on appending media to product ${productId}: ${JSON.stringify(productAppendMediaResult.userErrors)}`);
+            }
+            if (!productAppendMediaResult?.product) {
+                this.logger.error(`[productAppendMedia] Failed to append media. Product data not returned. Errors: ${JSON.stringify(productAppendMediaResult?.userErrors)}`);
+            }
+
+            return productAppendMediaResult || { product: null, userErrors: [{ field: null, message: "Unknown error during productAppendMedia", code: "UNKNOWN" }] };
+
+        } catch (error: any) {
+            this.logger.error(`[productAppendMedia] GraphQL error for product ${productId}: ${error.message}`, error.stack);
+            const gqlErrors = error.response?.errors;
+            if (gqlErrors && Array.isArray(gqlErrors) && gqlErrors.length > 0) {
+                 const formattedErrors = gqlErrors.map(e => ({ field: e.extensions?.field || null, message: e.message, code: e.extensions?.code || 'GRAPHQL_ERROR' }));
+                 return { product: null, userErrors: formattedErrors };
+            }
+            throw new InternalServerErrorException(`Failed to append media to product ${productId}: ${error.message}`);
         }
     }
 
