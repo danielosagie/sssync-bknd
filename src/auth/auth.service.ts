@@ -179,6 +179,11 @@ export class AuthService {
     const scopes = this.configService.get<string>('SHOPIFY_SCOPES');
     const redirectUri = this.configService.get<string>('SHOPIFY_REDIRECT_URI');
 
+    this.logger.debug(`[AuthService.getShopifyAuthUrl] Entered. Shop: ${shop}, UserID: ${userId}, finalRedirectUri (for state): ${finalRedirectUri}`);
+    this.logger.debug(`[AuthService.getShopifyAuthUrl] Configured API_BASE_URL: ${this.configService.get<string>('API_BASE_URL')}`);
+    this.logger.debug(`[AuthService.getShopifyAuthUrl] Configured SHOPIFY_API_KEY: ${this.configService.get<string>('SHOPIFY_API_KEY')}`);
+    this.logger.debug(`[AuthService.getShopifyAuthUrl] Configured SHOPIFY_SCOPES: ${this.configService.get<string>('SHOPIFY_SCOPES')}`); 
+
     if (!apiKey || !scopes || !redirectUri || !shop) {
       throw new InternalServerErrorException('Shopify configuration is missing or invalid.');
     }
