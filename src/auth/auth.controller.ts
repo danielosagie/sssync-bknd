@@ -108,10 +108,9 @@ export class AuthController {
     @Query() query: { code: string; shop: string; state: string; hmac: string; timestamp: string },
     @Res() res: Response,
   ) {
-    this.logger.log(`Received Shopify callback for shop: ${query.shop}`);
-    // Define statePayload outside try to access it in catch block
+    this.logger.log(`Received Shopify callback for shop: ${query.shop} to /shopify/callback`);
     let statePayload: StatePayload | null = null;
-    let errorRedirectTarget = this.frontendRedirectBase; // Default redirect target on error
+    let errorRedirectTarget = this.frontendRedirectBase;
 
     try {
       if (!query.code || !query.state || !query.shop || !query.hmac || !query.timestamp) {
@@ -132,7 +131,6 @@ export class AuthController {
 
        // 2. Verify state JWT and extract payload (including finalRedirectUri)
        statePayload = this.authService.verifyStateJwt(query.state, 'shopify');
-       // If state is verified, update the error redirect target immediately
        errorRedirectTarget = statePayload.finalRedirectUri;
        this.logger.debug(`State JWT verified. Final redirect target: ${statePayload.finalRedirectUri}`);
 
