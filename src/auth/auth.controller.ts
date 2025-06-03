@@ -91,6 +91,7 @@ export class AuthController {
     this.logger.log(`Initiating Shopify login for userId: ${userId}, shop: ${shop}, redirecting to: ${redirectTarget}`);
 
     try {
+        this.logger.debug(`[AuthController.shopifyLogin] About to call authService.getShopifyAuthUrl with shop: ${shop}, userId: ${userId}, redirectTarget: ${redirectTarget}`);
         // Pass the *intended* final redirect URI to the service method
         const authUrl = this.authService.getShopifyAuthUrl(shop, userId, redirectTarget);
         res.redirect(authUrl);
