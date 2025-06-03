@@ -103,7 +103,7 @@ export class AuthController {
     }
   }
 
-  @Get('shopify/oauth-callback')
+  @Get('shopify/callback')
   async shopifyCallback(
     @Query() query: { code: string; shop: string; state: string; hmac: string; timestamp: string },
     @Res() res: Response,
