@@ -362,13 +362,18 @@ export class ProductsController {
 
             const determinedOptions = this.productsService.determineShopifyProductOptions(canonicalVariantsFull);
             // Shopify's ProductOptionInput expects { name: string, values: [{name: string}] }
+            this.logger.debug(`[publishToShopify] Determined product-level options by service: ${JSON.stringify(determinedOptions)}`);
+
             const shopifyProductOptions: ShopifyProductOption[] = determinedOptions.map(opt => ({
                 name: opt.name,
                 values: opt.values.map(valName => ({ name: valName })) // Corrected mapping for ShopifyProductOptionValue
             }));
-            this.logger.debug(`[publishToShopify] Determined Shopify product options: ${JSON.stringify(shopifyProductOptions)}`);
+            this.logger.debug(`[publishToShopify] Determined Shopify product options for API: ${JSON.stringify(shopifyProductOptions)}`);
 
             const shopifyVariants: ShopifyVariantInput[] = canonicalVariantsFull.map((cv, variantIndex) => {
+                this.logger.debug(`[publishToShopify] Processing variant (canonical): SKU '${cv.Sku}', Title '${cv.Title}'`);
+                this.logger.debug(`[publishToShopify] Canonical Variant (cv) Options for SKU ${cv.Sku}: ${JSON.stringify(cv.Options)}`);
+
                 let variantImageFile: ShopifyProductFile | undefined = undefined;
                 // Try to find a specific image for this variant from the product-level list if one was designated as cover for it implicitly or explicitly
                 // This logic assumes the options.imageUris are the primary source for images.
@@ -409,6 +414,7 @@ export class ProductsController {
                           name: String(value) // Ensure value is a string
                       }))
                     : [];
+                this.logger.debug(`[publishToShopify] Mapped shopifyOptionValues for SKU ${cv.Sku}: ${JSON.stringify(shopifyOptionValues)}`);
 
                 const mappedWeightUnit = this.mapWeightUnitToShopify(cv.WeightUnit);
                 let inventoryItemMeasurement: ShopifyInventoryItem['measurement'] = undefined;
