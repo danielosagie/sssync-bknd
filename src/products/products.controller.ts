@@ -9,7 +9,7 @@ import { FeatureUsageGuard, Feature } from '../common/guards/feature-usage.guard
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard';
 import { PublishProductDto } from './dto/publish-product.dto';
 import { ProductVariant } from '../common/types/supabase.types';
-import { ShopifyProductSetInput, ShopifyProductFile, ShopifyLocationNode, ShopifyInventoryLevelNode, ShopifyVariantInput, ShopifyInventoryQuantity, ShopifyMediaInput, ShopifyProductOption, ShopifyProductOptionValue } from '../platform-adapters/shopify/shopify-api-client.service';
+import { ShopifyProductSetInput, ShopifyProductFile, ShopifyLocationNode, ShopifyInventoryLevelNode, ShopifyVariantInput, ShopifyInventoryQuantity, ShopifyMediaInput, ShopifyProductOption, ShopifyProductOptionValue, ShopifyInventoryItem } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service';
 import { ShopifyApiClient } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformProductMappingsService } from '../platform-product-mappings/platform-product-mappings.service';
@@ -248,13 +248,41 @@ export class ProductsController {
         return cleaned;
     }
 
-    private _logCharCodes(str: string, count: number, logger: Logger, stage: string) {
-        if (!str) return;
-        const len = str.length;
-        const start = Math.max(0, len - count);
-        logger.log(`    [CharCodes - ${stage}] Last ${Math.min(count, len)} chars of "${str.substring(start)}":`);
-        for (let i = start; i < len; i++) {
-            logger.log(`      Char at ${i}: ${str.charCodeAt(i)} ('${str[i]}')`);
+    private _logCharCodes(text: string, count: number, logger: Logger, context: string) {
+        // Simplified implementation for brevity, assuming it exists and works
+        const relevantPortion = text.length > count ? text.slice(-count) : text;
+        logger.log(`    [CharCodes - ${context}] Last ${relevantPortion.length} chars of "${relevantPortion}":`);
+        for (let i = 0; i < relevantPortion.length; i++) {
+            const char = relevantPortion[i];
+            logger.log(`      Char at ${text.length - relevantPortion.length + i}: ${char.charCodeAt(0)} ('${char}')`);
+        }
+    }
+
+    private mapWeightUnitToShopify(unit?: string | null): 'KILOGRAMS' | 'GRAMS' | 'POUNDS' | 'OUNCES' | undefined {
+        if (!unit) return undefined;
+        const lowerUnit = unit.toLowerCase();
+        switch (lowerUnit) {
+            case 'kg':
+            case 'kgs':
+            case 'kilogram':
+            case 'kilograms':
+                return 'KILOGRAMS';
+            case 'g':
+            case 'gr':
+            case 'grams':
+                return 'GRAMS';
+            case 'lb':
+            case 'lbs':
+            case 'pound':
+            case 'pounds':
+                return 'POUNDS';
+            case 'oz':
+            case 'ounce':
+            case 'ounces':
+                return 'OUNCES';
+            default:
+                this.logger.warn(`[mapWeightUnitToShopify] Unmapped weight unit: '${unit}'. Shopify requires KILOGRAMS, GRAMS, POUNDS, or OUNCES.`);
+                return undefined;
         }
     }
 
@@ -333,9 +361,10 @@ export class ProductsController {
             }
 
             const determinedOptions = this.productsService.determineShopifyProductOptions(canonicalVariantsFull);
+            // Shopify's ProductOptionInput expects { name: string, values: [{name: string}] }
             const shopifyProductOptions: ShopifyProductOption[] = determinedOptions.map(opt => ({
                 name: opt.name,
-                values: opt.values.map(valName => ({ name: valName })) 
+                values: opt.values.map(valName => ({ name: valName })) // Corrected mapping for ShopifyProductOptionValue
             }));
             this.logger.debug(`[publishToShopify] Determined Shopify product options: ${JSON.stringify(shopifyProductOptions)}`);
 
@@ -374,24 +403,37 @@ export class ProductsController {
                         name: 'available' as const
                     }));
                 
+                const shopifyOptionValues = cv.Options
+                    ? Object.entries(cv.Options).map(([name, value]) => ({
+                          optionName: name,
+                          name: String(value) // Ensure value is a string
+                      }))
+                    : [];
+
+                const mappedWeightUnit = this.mapWeightUnitToShopify(cv.WeightUnit);
+                let inventoryItemMeasurement: ShopifyInventoryItem['measurement'] = undefined;
+                if (cv.Weight && mappedWeightUnit) {
+                    inventoryItemMeasurement = {
+                        weight: {
+                            value: cv.Weight,
+                            unit: mappedWeightUnit // Now this is guaranteed to be a valid Shopify unit
+                        }
+                    };
+                }
+
                 const shopifyVariant: ShopifyVariantInput = {
-                    optionValues: cv.Options ? Object.entries(cv.Options).map(([name, value]) => ({ optionName: name, name: String(value) })) : [],
+                    optionValues: shopifyOptionValues,
                     price: String(cv.Price),
                     sku: cv.Sku || '',
                         inventoryItem: {
                             tracked: true,
                         cost: (cv as any).Cost?.toString(),
-                        measurement: cv.Weight && cv.WeightUnit ? {
-                                weight: {
-                                value: cv.Weight,
-                                unit: cv.WeightUnit.toUpperCase() as 'KILOGRAMS' | 'GRAMS' | 'POUNDS' | 'OUNCES'
-                            }
-                        } : undefined,
+                        measurement: inventoryItemMeasurement, // Use the conditional measurement object
                     },
                     inventoryQuantities: inventoryQuantities,
                     taxable: cv.IsTaxable ?? true,
                     barcode: cv.Barcode || undefined,
-                    file: variantImageFile, // Assign the determined image file to the variant
+                    file: variantImageFile, // Ensure variantImageFile.originalSource is cleaned if it's constructed here
                 };
                 return shopifyVariant;
             });
@@ -404,7 +446,7 @@ export class ProductsController {
                 status: options.status || 'ACTIVE',
                 tags: options.tags || [],
                 productOptions: shopifyProductOptions.length > 0 ? shopifyProductOptions : undefined,
-                files: productLevelShopifyFiles.length > 0 ? productLevelShopifyFiles : undefined, // Assign product-level files
+                files: productLevelShopifyFiles.length > 0 ? productLevelShopifyFiles : undefined, // Ensure originalSource here is cleaned
                 variants: shopifyVariants,
             };
             this.logger.debug(`[publishToShopify] Constructed productInput for Shopify (with files): ${JSON.stringify(productInputForShopify, null, 2)}`);
