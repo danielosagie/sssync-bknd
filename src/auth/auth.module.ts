@@ -5,6 +5,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SupabaseAuthGuard } from './guards/supabase-auth.guard';
 import { CommonModule } from '../common/common.module';
+import { PlatformConnectionsModule } from '../platform-connections/platform-connections.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { CommonModule } from '../common/common.module';
       }),
     }),
     CommonModule,
+    PlatformConnectionsModule,
   ],
   controllers: [AuthController],
   providers: [

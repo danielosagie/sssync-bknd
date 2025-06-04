@@ -13,18 +13,9 @@ import axios from 'axios';
 import { randomBytes } from 'crypto';
 import { SupabaseClient, PostgrestSingleResponse } from '@supabase/supabase-js';
 import { StatePayload } from './interfaces/state-payload.interface';
+import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service';
 
 // Define the shape of the state JWT payload
-interface PlatformConnectionInput {
-  UserId: string;
-  PlatformType: string;
-  DisplayName: string;
-  Credentials: Record<string, any>; // Store encrypted credentials as JSON object
-  Status: string;
-  IsEnabled: boolean;
-  LastSyncSuccessAt?: string;
-  PlatformSpecificData?: Record<string, any>; // Optional field for other IDs etc.
-}
 
 @Injectable()
 export class AuthService {
@@ -37,6 +28,7 @@ export class AuthService {
     private readonly supabaseService: SupabaseService,
     private readonly encryptionService: EncryptionService,
     private readonly jwtService: JwtService, // Inject JwtService
+    private readonly platformConnectionsService: PlatformConnectionsService, // Injected PlatformConnectionsService
   ) {
     this.jwtSecret = this.configService.get<string>('JWT_SECRET')!;
     if (!this.jwtSecret) {
@@ -77,53 +69,6 @@ export class AuthService {
   }
 
   // --- Common Platform Connection Saving ---
-
-  /**
-   * Upserts platform connection details into Supabase.
-   */
-  private async savePlatformConnection(
-    input: PlatformConnectionInput,
-  ): Promise<PostgrestSingleResponse<any>> {
-    // Use service client to bypass RLS for backend connection management
-    const supabase = this.supabaseService.getServiceClient();
-
-    const encryptedCredentials = this.encryptionService.encrypt(input.Credentials);
-
-    const connectionData = {
-      UserId: input.UserId,
-      PlatformType: input.PlatformType,
-      DisplayName: input.DisplayName,
-      Credentials: encryptedCredentials, // Save the encrypted string/object
-      Status: input.Status,
-      IsEnabled: input.IsEnabled,
-      LastSyncSuccessAt: input.LastSyncSuccessAt ?? new Date().toISOString(),
-      PlatformSpecificData: input.PlatformSpecificData, // Store extra info if needed
-      UpdatedAt: new Date().toISOString(),
-    };
-
-    // Use the exact column names from your sssync-db.md schema
-    const { data, error } = await supabase
-      .from('PlatformConnections') // Ensure this table name is correct
-      .upsert(connectionData, { onConflict: 'UserId, PlatformType' }) // Adjust conflict columns if needed
-      .select()
-      .single();
-
-    if (error) {
-      this.logger.error(
-        `Failed to save ${input.PlatformType} connection for user ${input.UserId}: ${error.message}`,
-        error,
-      );
-      throw new InternalServerErrorException(
-        `Could not save ${input.PlatformType} platform connection.`,
-        error.message,
-      );
-    }
-
-    this.logger.log(
-      `${input.PlatformType} connection saved successfully for user: ${input.UserId}`,
-    );
-    return data;
-  }
 
   // --- Shopify ---
 
@@ -263,16 +208,17 @@ export class AuthService {
 
       this.logger.log(`Successfully obtained Shopify access token for shop: ${shop}`);
 
-      await this.savePlatformConnection({
-        UserId: statePayload.userId,
-        PlatformType: 'shopify',
-        DisplayName: shop,
-        Credentials: { accessToken: tokenData.access_token },
-        Status: 'Connected',
-        IsEnabled: true,
-        PlatformSpecificData: { shop: shop },
-      });
-      this.logger.log(`Platform connection saved/updated for Shopify shop: ${shop}, userId: ${statePayload.userId}`);
+      // Use PlatformConnectionsService to create or update the connection
+      await this.platformConnectionsService.createOrUpdateConnection(
+        statePayload.userId,
+        'shopify',
+        shop, // DisplayName will be the shop domain
+        { accessToken: tokenData.access_token }, // rawCredentials
+        'active', // Status - if it's an update, it becomes active. If new, createOrUpdateConnection makes it 'pending'. Let's make it active on successful auth.
+        { shop: shop }, // platformSpecificData
+      );
+
+      this.logger.log(`Platform connection processing complete for Shopify shop: ${shop}, userId: ${statePayload.userId}`);
   
 
     } catch (error) {
@@ -395,15 +341,14 @@ export class AuthService {
       }
 
 
-      await this.savePlatformConnection({
-        UserId: userIdFromState, // Use userId from the verified state
-        PlatformType: 'clover',
-        DisplayName: displayName,
-        Credentials: credentials,
-        Status: 'needs_review', // Or 'syncing' if you auto-start scan
-        IsEnabled: true,
-        PlatformSpecificData: { merchantId: merchantId },
-      });
+      await this.platformConnectionsService.createOrUpdateConnection(
+        userIdFromState,
+        'clover',
+        displayName,
+        credentials,
+        'needs_review', // Or 'syncing' if you auto-start scan
+        { merchantId: merchantId },
+      );
 
       this.logger.log(`Clover connection successfully processed and saved for user ${userIdFromState}, merchant ${merchantId}.`);
 
@@ -494,19 +439,18 @@ export class AuthService {
       }
       this.logger.log(`Successfully obtained Square access token for userId: ${statePayload.userId}`);
 
-      await this.savePlatformConnection({
-        UserId: statePayload.userId,
-        PlatformType: 'square',
-        DisplayName: `Square (${tokenData.merchant_id || 'Account'})`,
-        Credentials: {
+      await this.platformConnectionsService.createOrUpdateConnection(
+        statePayload.userId,
+        'square',
+        `Square (${tokenData.merchant_id || 'Account'})`,
+        {
           accessToken: tokenData.access_token,
           refreshToken: tokenData.refresh_token,
           expiresAt: tokenData.expires_at,
         },
-        Status: 'Connected',
-        IsEnabled: true,
-        PlatformSpecificData: { merchantId: tokenData.merchant_id },
-      });
+        'active',
+        { merchantId: tokenData.merchant_id },
+      );
       this.logger.log(`Platform connection saved/updated for Square merchant: ${tokenData.merchant_id}, userId: ${statePayload.userId}`);
 
     } catch (error) {

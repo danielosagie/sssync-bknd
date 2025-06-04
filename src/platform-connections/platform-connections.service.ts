@@ -11,7 +11,14 @@ export interface PlatformConnection {
   PlatformType: string; // 'shopify', 'square', 'csv', etc.
   DisplayName: string;
   Credentials: any; // Encrypted
-  Status: 'connecting' | 'scanning' | 'needs_review' | 'syncing' | 'paused' | 'error' | 'disconnected';
+  Status: // Updated to lowercase string literals
+    | 'active'
+    | 'inactive'
+    | 'pending'
+    | 'needs_review'
+    | 'scanning'
+    | 'syncing'
+    | 'error';
   IsEnabled: boolean;
   LastSyncAttemptAt?: Date | string | null;
   LastSyncSuccessAt?: Date | string | null;
@@ -41,52 +48,110 @@ export class PlatformConnectionsService {
         platformType: string,
         displayName: string,
         rawCredentials: Record<string, any>, // This is the object
-        status: PlatformConnection['Status'],
+        status: PlatformConnection['Status'], // Status for update, new ones will be 'pending'
         platformSpecificData?: Record<string, any>,
     ): Promise<PlatformConnection> {
-        const supabase = this.getSupabaseClient(); // Get client here
+        const supabase = this.getSupabaseClient();
         let encryptedCredentialsResult: any;
         try {
-            // --- FIX ---
-            // Pass the rawCredentials OBJECT directly to encrypt
             encryptedCredentialsResult = this.encryptionService.encrypt(rawCredentials);
-            // We ASSUME encrypt returns a string suitable for DB storage.
-            // If it returns an object/buffer, it needs conversion BEFORE saving.
             if (typeof encryptedCredentialsResult !== 'string') {
-                // This might be needed if encrypt returns, e.g., { iv: '...', content: '...' }
-                // encryptedCredentialsResult = JSON.stringify(encryptedCredentialsResult);
                 this.logger.warn(`Encrypt result is not a string. Storing as is. Type: ${typeof encryptedCredentialsResult}`);
             }
-            // --- END FIX ---
         } catch (error) {
              this.logger.error(`Failed to encrypt credentials for ${platformType} user ${userId}: ${error.message}`);
              throw new InternalServerErrorException('Credential processing failed.');
         }
 
-        const connectionData = {
-            UserId: userId,
-            PlatformType: platformType,
-            DisplayName: displayName,
-            Credentials: encryptedCredentialsResult, // Store the direct result of encryption
-            Status: status,
-            IsEnabled: true,
-            PlatformSpecificData: platformSpecificData ?? {},
-            UpdatedAt: new Date().toISOString(),
-        };
+        let existingConnection: PlatformConnection | null = null;
 
-        this.logger.log(`Upserting connection for user ${userId}, platform ${platformType}`);
-        const { data, error } = await supabase
-            .from('PlatformConnections')
-            .upsert(connectionData, { onConflict: 'UserId, PlatformType' })
-            .select()
-            .single();
+        // For Shopify, try to find an existing connection for this specific shop
+        if (platformType.toLowerCase() === 'shopify' && platformSpecificData?.shop) {
+            const { data: shopSpecificConnection, error: findError } = await supabase
+                .from('PlatformConnections')
+                .select('*')
+                .eq('UserId', userId)
+                .eq('PlatformType', platformType)
+                .eq('PlatformSpecificData->>shop', platformSpecificData.shop) // Check specific shop
+                .maybeSingle();
 
-        if (error || !data) {
-            this.logger.error(`Failed to save ${platformType} connection for user ${userId}: ${error?.message}`, error);
-            throw new InternalServerErrorException(`Could not save ${platformType} platform connection.`);
+            if (findError) {
+                this.logger.error(`Error finding shop-specific connection for user ${userId}, shop ${platformSpecificData.shop}: ${findError.message}`);
+                // Decide if to throw or log and continue to create (safer to throw if DB error)
+                throw new InternalServerErrorException('Error checking for existing shop connection.');
+            }
+            existingConnection = shopSpecificConnection as PlatformConnection | null;
+        } else if (platformType.toLowerCase() !== 'shopify') {
+            // For other platforms, use the old onConflict behavior implicitly by trying to find one
+            // or implement specific find logic if they also have unique sub-identifiers.
+            // For now, this example focuses on Shopify uniqueness.
+            // A generic upsert with onConflict on UserId, PlatformType might still be used for them
+            // if we decide they can't have multiple instances.
+            // To be safe and explicit, let's try a find for non-Shopify too, assuming one per type for now.
+             const { data: genericConnection, error: findError } = await supabase
+                .from('PlatformConnections')
+                .select('*')
+                .eq('UserId', userId)
+                .eq('PlatformType', platformType)
+                .maybeSingle(); // Assuming only one for non-Shopify types for now
+            if (findError) {
+                this.logger.error(`Error finding generic connection for user ${userId}, platform ${platformType}: ${findError.message}`);
+                throw new InternalServerErrorException('Error checking for existing platform connection.');
+            }
+            existingConnection = genericConnection as PlatformConnection | null;
         }
-        this.logger.log(`Connection ${data.Id} saved/updated for user ${userId}, platform ${platformType}`);
-        return data as PlatformConnection;
+
+
+        if (existingConnection) {
+            // Update existing connection
+            this.logger.log(`Updating existing connection ${existingConnection.Id} for user ${userId}, platform ${platformType}, shop ${platformSpecificData?.shop || 'N/A'}`);
+            const { data, error } = await supabase
+                .from('PlatformConnections')
+                .update({
+                    DisplayName: displayName, // Update display name if it changed
+                    Credentials: encryptedCredentialsResult,
+                    Status: status, // Use the provided status for updates (e.g. 'active' after re-auth)
+                    IsEnabled: true, // Typically re-enable on update/re-auth
+                    PlatformSpecificData: { ...existingConnection.PlatformSpecificData, ...platformSpecificData },
+                    LastSyncAttemptAt: new Date().toISOString(), // Good to mark an attempt
+                    UpdatedAt: new Date().toISOString(),
+                })
+                .eq('Id', existingConnection.Id)
+                .select()
+                .single();
+
+            if (error || !data) {
+                this.logger.error(`Failed to update connection ${existingConnection.Id}: ${error?.message}`, error);
+                throw new InternalServerErrorException(`Could not update ${platformType} platform connection.`);
+            }
+            this.logger.log(`Connection ${data.Id} updated successfully.`);
+            return data as PlatformConnection;
+        } else {
+            // Create new connection
+            this.logger.log(`Creating new connection for user ${userId}, platform ${platformType}, shop ${platformSpecificData?.shop || 'N/A'}`);
+            const { data, error } = await supabase
+                .from('PlatformConnections')
+                .insert({
+                    UserId: userId,
+                    PlatformType: platformType,
+                    DisplayName: displayName,
+                    Credentials: encryptedCredentialsResult,
+                    Status: 'pending', // Brand new connections start as 'pending'
+                    IsEnabled: true,
+                    PlatformSpecificData: platformSpecificData ?? {},
+                    CreatedAt: new Date().toISOString(), // Set CreatedAt for new records
+                    UpdatedAt: new Date().toISOString(),
+                })
+                .select()
+                .single();
+
+            if (error || !data) {
+                this.logger.error(`Failed to create new ${platformType} connection for user ${userId}: ${error?.message}`, error);
+                throw new InternalServerErrorException(`Could not create new ${platformType} platform connection.`);
+            }
+            this.logger.log(`New connection ${data.Id} created successfully.`);
+            return data as PlatformConnection;
+        }
     }
 
     async getConnectionById(connectionId: string, userId: string): Promise<PlatformConnection | null> {
