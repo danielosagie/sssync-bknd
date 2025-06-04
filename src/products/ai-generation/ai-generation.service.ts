@@ -158,7 +158,8 @@ Fabric Warmth Description	Lightweight))`;
         square:  `- Square: Suggest 'categorySuggestion', 'gtin' (extract from match barcode if present), 'locations' (suggest "All Available Locations").`,
         ebay:    `- eBay: Suggest 'categorySuggestion', 'condition' ("New", "Used", etc.), 'listingFormat' ("FixedPrice"), 'duration' ("GTC"), 'dispatchTime' ("1 business day"), 'returnPolicy' (basic text like "30-day returns accepted"), 'shippingService' (e.g., "USPS Ground Advantage"), 'itemLocationPostalCode' (if inferable), and 'itemSpecifics' (object with key/value pairs like "Brand", "Size", "Color", "Material" based on image/context).`,
         amazon:  `- Amazon: Suggest 'categorySuggestion', 'condition', 'brand', 'bullet_points' (3-5 concise points), 'search_terms' (array of keywords), 'amazonProductType' (the Amazon product type string, e.g., "CLOTHING"), and 'productIdType' (like 'UPC', 'EAN', 'ASIN' if match suggests it).`,
-        facebook:`- Facebook MP: Suggest 'categorySuggestion', 'brand', 'condition', and 'availability' ("in stock").`
+        facebook:`- Facebook MP: Suggest 'categorySuggestion', 'brand', 'condition', and 'availability' ("in stock").`,
+        clover: `- Clover: Suggest 'categorySuggestion', 'brand', 'condition', and 'availability' ("in stock").`
     };
 
     targetPlatforms.forEach(platform => {
@@ -181,7 +182,7 @@ Example for ["shopify", "amazon"]:
     "categorySuggestion": "Apparel & Accessories > Clothing > Shirts & Tops",
     "tags": ["cotton", "graphic tee", "casual"],
     "weight": 0.2,
-    "weightUnit": "kg",
+    "weightUnit": "POUNDS", // POUNDS, KILOGRAMS, OUNCES, and GRAMS are the only weight units that are accepted by Shopify
     "brand": "ExampleBrand",
     "condition": "New",
     "status": "active",
@@ -195,7 +196,7 @@ Example for ["shopify", "amazon"]:
     "compareAtPrice": null, // or omit
     "categorySuggestion": "Clothing, Shoes & Jewelry > Men > Clothing > Shirts > T-Shirts",
     "weight": 0.2,
-    "weightUnit": "kg",
+    "weightUnit": "lb",
     "brand": "ExampleBrand",
     "condition": "New",
     "bullet_points": ["100% Cotton", "...", "..."],

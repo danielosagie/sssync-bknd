@@ -213,38 +213,33 @@ export class ProductsController {
 
         let cleaned = url;
 
-        // Attempt 1: Replace known semicolon forms (ASCII, common Unicode look-alike, URL encoded)
-        // Common Unicode semicolons: ； (Fullwidth semicolon), ; (Greek Question Mark which looks like a semicolon)
-        cleaned = cleaned.replace(/;|%3B|；|;/g, '');
-        logger.log(`[_controllerCleanImageUrl] After replacing known semicolons: "${cleaned}" (Length: ${cleaned.length})`);
-        this._logCharCodes(cleaned, 5, logger, "After Semicolon Replace");
-
-        // Attempt 2: Replace quotes
+        // Match and remove any trailing ";," pattern
+        cleaned = cleaned.replace(/;,/g, '');
+        
+        // Remove all semicolons (ASCII, Unicode variants, URL encoded)
+        cleaned = cleaned.replace(/;|%3B|；|;/g, '');
+        
+        // Remove quotes
         cleaned = cleaned.replace(/"|'/g, '');
-        logger.log(`[_controllerCleanImageUrl] After replacing quotes: "${cleaned}" (Length: ${cleaned.length})`);
-        this._logCharCodes(cleaned, 5, logger, "After Quote Replace");
-
-        // Attempt 3: Trim whitespace (including Unicode spaces)
-        cleaned = cleaned.trim(); // trim() handles various whitespace characters
-        logger.log(`[_controllerCleanImageUrl] After trim: "${cleaned}" (Length: ${cleaned.length})`);
-        this._logCharCodes(cleaned, 5, logger, "After Trim");
-
-        // Attempt 4: Aggressive character-by-character check for anything that looks like a semicolon or is not a standard URL char
-        // This is a more robust way than just includes(';')
-        if (/[^A-Za-z0-9\/:\.\?=\&_\-%~#]/.test(cleaned.slice(-1))) { // Check last character
-             logger.warn(`[_controllerCleanImageUrl] Last character might be problematic: '${cleaned.slice(-1)}' (Code: ${cleaned.charCodeAt(cleaned.length - 1)}). Original: "${url}"`);
-             // If it's a semicolon by char code, or still one of the problematic ones, attempt to remove it directly.
-             // We are primarily concerned about a trailing character here.
-             if (cleaned.charCodeAt(cleaned.length - 1) === 59 || cleaned.charCodeAt(cleaned.length - 1) === 65307 || cleaned.charCodeAt(cleaned.length - 1) === 958) {
-                logger.warn(`[_controllerCleanImageUrl] Attempting to slice off trailing problematic char.`);
-                cleaned = cleaned.slice(0, -1);
-                logger.log(`[_controllerCleanImageUrl] After slicing trailing char: "${cleaned}"`);
-                this._logCharCodes(cleaned, 5, logger, "After Slice");
-             }
-        }
-
-        logger.log(`[_controllerCleanImageUrl] Final Cleaned URL for return: "${cleaned}" (Length: ${cleaned.length})`);
-        this._logCharCodes(cleaned, 5, logger, "Final Return");
+        
+        // Trim whitespace
+        cleaned = cleaned.trim();
+        
+        // Very aggressive cleaning - filter for only valid URL characters
+        cleaned = cleaned.split('').filter(char => {
+            const code = char.charCodeAt(0);
+            return (
+                (code >= 48 && code <= 57) || // 0-9
+                (code >= 65 && code <= 90) || // A-Z
+                (code >= 97 && code <= 122) || // a-z
+                char === '/' || char === ':' || char === '.' || 
+                char === '?' || char === '=' || char === '&' || 
+                char === '_' || char === '-' || char === '%' || 
+                char === '~' || char === '#'
+            );
+        }).join('');
+        
+        logger.log(`[_controllerCleanImageUrl] Final Cleaned URL: "${cleaned}" (Length: ${cleaned.length})`);
         return cleaned;
     }
 
@@ -408,12 +403,7 @@ export class ProductsController {
                         name: 'available' as const
                     }));
                 
-                const shopifyOptionValues = cv.Options
-                    ? Object.entries(cv.Options).map(([name, value]) => ({
-                          optionName: name,
-                          name: String(value) // Ensure value is a string
-                      }))
-                    : [];
+                const shopifyOptionValues = this._mapShopifyOptionValues(cv, shopifyProductOptions);
                 this.logger.debug(`[publishToShopify] Mapped shopifyOptionValues for SKU ${cv.Sku}: ${JSON.stringify(shopifyOptionValues)}`);
 
                 const mappedWeightUnit = this.mapWeightUnitToShopify(cv.WeightUnit);
@@ -920,6 +910,46 @@ export class ProductsController {
             this.logger.log(`[GET /sku-check] User: ${userId} - SKU '${sku}' is already in use.`);
             return { isUnique: false, message: 'This SKU is already in use by you.' };
         }
+    }
+
+    private _mapShopifyOptionValues(canonicalVariant: ProductVariant, productOptions: ShopifyProductOption[]): { optionName: string; name: string }[] {
+        const result: { optionName: string; name: string }[] = [];
+        
+        // If the variant has Options structure, try to match them with product options
+        if (canonicalVariant.Options) {
+            // For each defined product option, find matching value in variant Options
+            for (const option of productOptions) {
+                const optionName = option.name;
+                
+                // Default to first value if not found (extract name from ShopifyProductOptionValue)
+                let optionValue = option.values && option.values.length > 0 ? option.values[0].name : ''; 
+                
+                // If the variant has a title and this is the "Title" option, use the variant title
+                if (optionName === 'Title' && canonicalVariant.Title) {
+                    optionValue = canonicalVariant.Title;
+                }
+                // Try to find option value in variant.Options
+                else if (canonicalVariant.Options[optionName]) {
+                    // Ensure value is a string
+                    optionValue = String(canonicalVariant.Options[optionName]);
+                }
+                
+                result.push({
+                    optionName,
+                    name: optionValue
+                });
+            }
+        } 
+        // Fallback to using Title option
+        else if (canonicalVariant.Title && productOptions.some(opt => opt.name === 'Title')) {
+            result.push({
+                optionName: 'Title',
+                name: canonicalVariant.Title
+            });
+        }
+        
+        this.logger.debug(`[_mapShopifyOptionValues] Mapped option values for SKU ${canonicalVariant.Sku}: ${JSON.stringify(result)}`);
+        return result;
     }
 
     // ... (TODO endpoints) ...
