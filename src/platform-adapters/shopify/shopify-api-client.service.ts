@@ -240,6 +240,8 @@ export interface ShopifyInventoryItem {
 
 // Export this interface
 export interface ShopifyVariantInput {
+    title?: string;
+    descriptionHtml?: string | null;
     optionValues: Array<{
         optionName: string;
         name: string;

@@ -261,19 +261,23 @@ export class ProductsController {
             case 'kgs':
             case 'kilogram':
             case 'kilograms':
+            case 'KILOGRAMS':
                 return 'KILOGRAMS';
             case 'g':
             case 'gr':
             case 'grams':
+            case 'GRAMS':
                 return 'GRAMS';
             case 'lb':
             case 'lbs':
             case 'pound':
             case 'pounds':
+            case 'POUNDS':
                 return 'POUNDS';
             case 'oz':
             case 'ounce':
             case 'ounces':
+            case 'OUNCES':
                 return 'OUNCES';
             default:
                 this.logger.warn(`[mapWeightUnitToShopify] Unmapped weight unit: '${unit}'. Shopify requires KILOGRAMS, GRAMS, POUNDS, or OUNCES.`);
@@ -365,6 +369,9 @@ export class ProductsController {
             }));
             this.logger.debug(`[publishToShopify] Determined Shopify product options for API: ${JSON.stringify(shopifyProductOptions)}`);
 
+            // First, get a representative variant for product-level info
+            const primaryVariant = canonicalVariantsFull[0];
+
             const shopifyVariants: ShopifyVariantInput[] = canonicalVariantsFull.map((cv, variantIndex) => {
                 this.logger.debug(`[publishToShopify] Processing variant (canonical): SKU '${cv.Sku}', Title '${cv.Title}'`);
                 this.logger.debug(`[publishToShopify] Canonical Variant (cv) Options for SKU ${cv.Sku}: ${JSON.stringify(cv.Options)}`);
@@ -435,14 +442,16 @@ export class ProductsController {
             });
 
             const productInputForShopify: ShopifyProductSetInput = {
-                title: canonicalProduct.Title || 'Untitled Product',
-                descriptionHtml: canonicalProduct.Description || undefined,
+                title: canonicalProduct.Title || primaryVariant.Title || 'Untitled Product',
+                descriptionHtml: canonicalProduct.Description || 
+                               (primaryVariant.Options?.shopify && typeof primaryVariant.Options.shopify === 'object' ? 
+                                primaryVariant.Options.shopify['description'] : undefined),
                 vendor: options.vendor || undefined,
                 productType: options.productType || undefined,
                 status: options.status || 'ACTIVE',
                 tags: options.tags || [],
                 productOptions: shopifyProductOptions.length > 0 ? shopifyProductOptions : undefined,
-                files: productLevelShopifyFiles.length > 0 ? productLevelShopifyFiles : undefined, // Ensure originalSource here is cleaned
+                files: productLevelShopifyFiles.length > 0 ? productLevelShopifyFiles : undefined,
                 variants: shopifyVariants,
             };
             this.logger.debug(`[publishToShopify] Constructed productInput for Shopify (with files): ${JSON.stringify(productInputForShopify, null, 2)}`);
