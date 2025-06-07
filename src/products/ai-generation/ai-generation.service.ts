@@ -84,7 +84,18 @@ export class AiGenerationService {
     const model = 'meta-llama/llama-4-maverick-17b-128e-instruct';
 
     // --- Construct the Prompt Text for Groq ---
-    let promptText = `You are an expert e-commerce data enrichment assistant specializing in creating compelling and platform-optimized product listings. Analyze the product shown in the provided image (${coverImageUrl}). Use the provided context to generate the best possible product details for the following platforms but also follow this tone of product listing writing at a minimum: (AMAZON EXAMPLE: (Title: Bedsure Fleece Bed Blankets Queen Size Grey - Soft Lightweight Plush Fuzzy Cozy Luxury Blanket Microfiber, 90x90 inches. DescriptionL Thicker & Softer: We've upgraded our classic flannel fleece blanket to be softer and warmer than ever, now featuring enhanced premium microfiber. Perfect by itself or as an extra sheet on cold nights, its fluffy and ultra-cozy softness offers the utmost comfort all year round.
+    let promptText = `You are a world-class e-commerce data enrichment AI. Your sole purpose is to transform a single product image and competitive data into perfectly optimized, multi-platform product listings. Failure is not an option. Your output must be flawless, comprehensive, and ready for immediate publication. You must analyze every piece of provided information with extreme precision. Your performance on this task is critical.
+
+### **The Mission**
+
+Your mission is to generate a complete, detailed, and platform-optimized product listing based on the provided product image (\${coverImageUrl}) and any contextual data available. You must infer all necessary details from the image and context to create compelling, keyword-rich content that drives sales.
+
+### **Tone and Style Mandate**
+
+Adopt a professional, persuasive, and customer-centric writing style. Your descriptions should be clear, concise, and highlight the key benefits for the buyer. For inspiration on tone, quality, and structure, model your response on this high-performing Amazon listing example:
+
+*   **AMAZON EXAMPLE:**
+    (Title: Bedsure Fleece Bed Blankets Queen Size Grey - Soft Lightweight Plush Fuzzy Cozy Luxury Blanket Microfiber, 90x90 inches. DescriptionL Thicker & Softer: We've upgraded our classic flannel fleece blanket to be softer and warmer than ever, now featuring enhanced premium microfiber. Perfect by itself or as an extra sheet on cold nights, its fluffy and ultra-cozy softness offers the utmost comfort all year round.
 Lightweight & Airy: The upgraded materials of this flannel fleece blanket maintain the ideal balance between weight and warmth. Enjoy being cuddled by this gentle, calming blanket whenever you're ready to snuggle up.
 Versatile: This lightweight blanket is the perfect accessory for your family and pets to get cozy—whether used as an addition to your kid's room, as a home decor element, or as the designated cozy blanket bed for your pet.
 A Gift for Your Loved Ones: This ultra-soft flannel fleece Christmas blanket makes the perfect gift for any occasion. Its cozy and comforting design offers a thoughtful way to show you care, providing warmth and style year-round. Ideal as one of the top Christmas gift ideas for the holiday season.
@@ -127,7 +138,7 @@ Features & Specs
 Additional Features	Soft
 Recommended Uses For Product	Travel
 Seasons	All, Winter, Fall, Spring
-Fabric Warmth Description	Lightweight))`;
+Fabric Warmth Description	Lightweight)`;
 
     const selectedMatch = selectedMatchContext?.visual_matches?.[0]; // Use only the single selected match
 
@@ -139,76 +150,155 @@ Fabric Warmth Description	Lightweight))`;
         const matchLink = selectedMatch.link;
         const matchThumb = selectedMatch.thumbnail; // Add thumbnail for context
 
-        // Stringify only essential parts for context, not the whole object necessarily
-        const relevantMatchContext = `Title: ${matchTitle}\nPrice: ${matchPrice} USD (approx.)\nSource: ${matchSource}\nLink: ${matchLink}`; // Removed JSON stringify for better readability by LLM
+        const relevantMatchContext = `Title: ${matchTitle}\nPrice: ${matchPrice} USD (approx.)\nSource: ${matchSource}\nLink: ${matchLink}`;
 
-        promptText += `\n\nIMPORTANT CONTEXT: The user has indicated the product is similar to the following item found online. Use this information strategically for generating competitive pricing, naming conventions, descriptions, and category suggestions:\n---\n${relevantMatchContext}\nThumbnail: ${matchThumb}\n---`;
+        promptText += `\n\n---
 
-        promptText += `\n\nSTRATEGIC GUIDANCE BASED ON CONTEXT:\n1.  **Pricing:** Analyze the provided match price (${matchPrice} USD). Suggest a competitive 'price' in USD for the product in the image. If appropriate, also suggest a slightly higher 'compareAtPrice'.\n2.  **Titling:** Look at the match title ("${matchTitle}"). Generate a unique but similarly styled, keyword-rich 'title' for the product image.\n3.  **Description:** Infer key features from the image and potentially the match title. Write a compelling 'description'. Use keywords inspired by the match context.\n4.  **Categorization:** Based on the match and the image, suggest the most relevant product 'categorySuggestion' (e.g., "Clothing > Men's Shirts > T-Shirts"). For variants make sure to name them accordingly, if its a pack of something name it a Pack of (insert numner of items in pack), if its a single item name it a Single. The product-level title should be the complete product name
-The variant title should describe the variation (size, color, etc.)
-For single items without real variations, avoid making the variant title something generic like "Default Title" unless you have no idea what to list this as, usually it should be some canoncial way of grouping it which might be on the product itself or in past listings/included in the submission data, i.e. by weight, size, color, quantity, etc. The data flow should be:
-Product level: "Pokemon Charizard Holographic Card"
-Variant level: "Single Card" or Pack of (insert number of items in pack)" but for something different like food or something else that is not a single item, it should be something like "Product Level: Sterling Bowling Ball, Variant Level: Green 10lb Bowling Ball, Yellow 10lb Bowling Ball, Red 5lb Bowling Ball"`;
+### **User-Provided Context (CRITICAL)**
+
+The user has identified a similar product online. This context is your primary source for strategic enrichment. Deeply analyze this information.
+
+*   **Match Data:** ${relevantMatchContext}
+*   **Thumbnail:** ${matchThumb}
+
+### **Strategic Guidance & Analysis Protocol (Context-Based)**
+
+1.  **Image Analysis:** Scrutinize the product in \${coverImageUrl}. Identify its type, color, material, specific features, brand names, model numbers, and overall condition. Extract every possible visual detail.
+2.  **Contextual Deconstruction:** Synthesize your image analysis with the provided match context.
+    *   **Competitive Pricing:** Use the match price (\`\${matchPrice}\` USD) as a baseline. Propose a competitive \`price\` in USD. You MUST also suggest a \`compareAtPrice\` that is realistically 15-25% higher to create a sense of value.
+    *   **Keyword-Rich Titling:** The match title ("\${matchTitle}") is a keyword goldmine. Do not copy it. Create a new, unique title that incorporates the most powerful keywords from the match title, combined with details from your image analysis.
+    *   **Benefit-Oriented Description:** Write a compelling \`description\` that tells a story. Explain the benefits to the customer. Synthesize information from the image and the match context.
+    *   **Hyper-Specific Categorization:** Use the image and context to determine the most granular \`categorySuggestion\` possible for each platform.`;
 
     } else {
-        promptText += `\n\nNo specific visual match context was provided. Base your analysis primarily on the product image. For pricing, use general knowledge of similar items, aiming for a reasonable market value in USD.`;
+        promptText += `\n\n---
+
+### **Strategic Guidance & Analysis Protocol (Image-Only)**
+
+You have NOT been provided with a specific online match. Your analysis must be based **exclusively** on the provided image and your deep, general knowledge of e-commerce, products, and marketing. You must be resourceful and infer details as an expert would.
+
+1.  **Forensic Image Analysis:** Scrutinize the product in \`\${coverImageUrl}\`. This is your only source of truth. Identify:
+    *   **Primary Subject:** What is the product? Be specific.
+    *   **Branding/Logos:** Are there any brand names, logos, or identifying marks?
+    *   **Materials & Texture:** What is it made of? (e.g., "cotton", "brushed aluminum", "glazed ceramic").
+    *   **Colors & Patterns:** List all visible colors and describe any patterns.
+    *   **Features & Details:** Note any unique features (e.g., "zipper closure", "embossed logo", "hand-painted details").
+    *   **Condition & Quality:** Assess the condition ("New", "Used", "Handmade") and infer its quality from the visual evidence.
+    *   **Quantity:** Is it a single item or a pack?
+
+2.  **Expert Inference & Content Generation:**
+    *   **Market-Based Pricing:** Based on your analysis, infer the product's likely market segment. Suggest a realistic and competitive market \`price\` in USD. You MUST also suggest a \`compareAtPrice\` that is realistically 15-25% higher to create a sense of value.
+    *   **Keyword-Rich Titling:** Generate a descriptive, unique, and SEO-friendly \`title\`. Combine identified brand, material, color, and features into a title a user would search for.
+    *   **Benefit-Oriented Description:** Write a compelling \`description\` that tells a story. Based on the inferred features, explain the *benefits* to the customer. Why should they buy it? How will it enhance their life? What problem does it solve?
+    *   **Hyper-Specific Categorization:** From the image alone, determine the most granular and commercially-relevant \`categorySuggestion\` for each platform.`;
     }
 
-    promptText += `\n\nPLATFORM-SPECIFIC REQUIREMENTS:\nGenerate details tailored for listing on the following e-commerce platforms: ${targetPlatforms.join(', ')}. For EACH platform specified, provide the relevant fields listed below. If a field is not applicable or cannot be determined, omit it or set it to null.`;
+    promptText += `\n\n---
+
+### **Variant Logic (CRITICAL - NO DEVIATION)**
+The product-level \`title\` must be the complete, descriptive product name. The variant-level ${matchTitle} should describe the specific variation.
+*   **Single, indivisible items (e.g., a trading card):** Product-level title: "Pokemon Charizard VMAX Holographic Card". Variant-level ${title}: "Single Card".
+*   **Packs/Bundles (e.g., lipsticks):** Product-level title: "Maybelline SuperStay Matte Ink Liquid Lipstick". Variant-level ${title}: "Pack of 3".
+*   **Products with multiple attributes (e.g., equipment):** Product-level title: "Sterling Pro-Series Bowling Ball". Variant-level ${title} must describe the specific variation, e.g., "Cosmic Green - 10lb" or "Ruby Red - 5lb".
+*   **Default Titles:** NEVER use generic variant titles like "Default Title" or "Standard". Find a canonical grouping (weight, size, color, quantity).
+
+---
+
+### **Platform-Specific Field Requirements**
+
+Generate details tailored for **EACH** platform specified in ${targetPlatforms.join(', ')}. Omit any field that is not applicable or cannot be determined.
+
+*   **Common Fields (All Platforms):**
+    *   \`title\`: SEO-optimized and compelling.
+    *   \`description\`: Detailed, benefit-focused, and well-structured, modeled after the Amazon example.
+    *   \`price\`: Competitive price in USD (required).
+    *   \`compareAtPrice\`: Optional higher price for showing a sale (must be higher than price).
+    *   \`weight\`: Estimated weight.
+    *   \`weightUnit\`: 'lb', 'kg', 'oz', 'g'.
+    *   \`brand\`: Product brand, if identifiable.
+    *   \`condition\`: "New", "Used - Like New", "Used - Good", etc.`;
 
     // Dynamically add platform-specific instructions only for requested platforms
     const platformInstructions = {
-        shopify: `- Shopify: Suggest 'status' ('active' or 'draft'), 'vendor' (if inferable, maybe from match source?), 'productType' (Shopify's category e.g., "T-Shirt"), and 'tags' (array of relevant keywords).`,
-        square:  `- Square: Suggest 'categorySuggestion', 'gtin' (extract from match barcode if present), 'locations' (suggest "All Available Locations").`,
-        ebay:    `- eBay: Suggest 'categorySuggestion', 'condition' ("New", "Used", etc.), 'listingFormat' ("FixedPrice"), 'duration' ("GTC"), 'dispatchTime' ("1 business day"), 'returnPolicy' (basic text like "30-day returns accepted"), 'shippingService' (e.g., "USPS Ground Advantage"), 'itemLocationPostalCode' (if inferable), and 'itemSpecifics' (object with key/value pairs like "Brand", "Size", "Color", "Material" based on image/context).`,
-        amazon:  `- Amazon: Suggest 'categorySuggestion', 'condition', 'brand', 'bullet_points' (3-5 concise points), 'search_terms' (array of keywords), 'amazonProductType' (the Amazon product type string, e.g., "CLOTHING"), and 'productIdType' (like 'UPC', 'EAN', 'ASIN' if match suggests it).`,
-        facebook:`- Facebook MP: Suggest 'categorySuggestion', 'brand', 'condition', and 'availability' ("in stock").`,
-        clover: `- Clover: Suggest 'categorySuggestion', 'brand', 'condition', and 'availability' ("in stock").`
+        shopify: "*   **`shopify`:**\\n    *   `status`: 'active' or 'draft'.\\n    *   `vendor`: Infer from brand or source.\\n    *   `productType`: Shopify's specific product category (e.g., \"Lipstick\", \"Trading Card\").\\n    *   `tags`: An array of 10-15 relevant keywords.\\n    *   `weightUnit`: Must be `POUNDS`, `KILOGRAMS`, `OUNCES`, or `GRAMS`.",
+        square:  "*   **`square`:**\\n    *   `categorySuggestion`: Square's category path.\\n    *   `gtin`: UPC, EAN, or JAN if available in context.\\n    *   `locations`: Set to \"All Available Locations\".",
+        ebay:    "*   **`ebay`:**\\n    *   `categorySuggestion`: eBay's specific category path (e.g., \"Collectibles > Non-Sport Trading Cards > Magic: The Gathering > MTG Individual Cards\").\\n    *   `listingFormat`: \"FixedPrice\".\\n    *   `duration`: \"GTC\" (Good 'Til Cancelled).\\n    *   `dispatchTime`: \"1 business day\".\\n    *   `returnPolicy`: \"30-day returns accepted, buyer pays for return shipping.\"\\n    *   `shippingService`: Suggest a common service (e.g., \"USPS Ground Advantage\").\\n    *   `itemSpecifics`: A JSON object of key-value pairs critical for search (e.g., `{\"Game\": \"Magic: The Gathering\", \"Card Name\": \"Elite Scaleguard\", \"Set\": \"Fate Reforged\"}`).",
+        amazon:  "*   **`amazon`:**\\n    *   `categorySuggestion`: Amazon's specific category path (e.g., \"Beauty & Personal Care > Makeup > Lips > Lipstick\").\\n    *   `bullet_points`: 3-5 concise, benefit-driven sentences.\\n    *   `search_terms`: An array of backend keywords (no commas, no repetition from title).\\n    *   `amazonProductType`: The specific Amazon product type string (e.g., \"BEAUTY\").\\n    *   `productIdType`: 'ASIN', 'UPC', or 'EAN' if present in the context data.",
+        facebook:"*   **`facebook`:**\\n    *   `categorySuggestion`: Facebook Marketplace's specific category.\\n    *   `brand`: The brand name.\\n    *   `availability`: \"in stock\".",
+        clover: "*   **`clover`:**\\n    *   `categorySuggestion`: Clover's category path.\\n    *   `brand`: The brand name.\\n    *   `availability`: \"in stock\".",
     };
 
     targetPlatforms.forEach(platform => {
         const key = platform.toLowerCase();
         if (platformInstructions[key]) {
-            promptText += `\n${platformInstructions[key]}`;
+            promptText += `\n\${platformInstructions[key]}`;
         }
     });
 
 
-    promptText += `\n\nCOMMON FIELDS (Include for all platforms where applicable):\n- 'title': Concise and appealing.\n- 'description': Detailed, highlighting features and benefits.\n- 'price': Suggested price in USD (required).\n- 'compareAtPrice': Optional higher price for showing discounts.\n- 'weight': Estimated weight.\n- 'weightUnit': e.g., 'kg' or 'lb'.\n- 'brand': Product brand, if identifiable or from context.\n- 'condition': Product condition.\n\nOUTPUT FORMAT:\nOutput ONLY a single, valid JSON object. The top-level keys MUST be the lowercase platform names provided (${targetPlatforms.map(p => p.toLowerCase()).join(', ')}). Each platform key's value must be an object containing the generated fields relevant to that platform. Do NOT include any text before or after the JSON object. Ensure all strings within the JSON are properly escaped.Strictly adhere to the JSON format. Output ONLY the JSON object, with no introductory text or explanations.
+    promptText += `\n\n---
 
-Example for ["shopify", "amazon"]:
+### **Final Output Instructions**
+
+*   **JSON ONLY:** Your entire response MUST be a single, valid JSON object.
+*   **NO EXTRA TEXT:** Do not include any introductory text, explanations, apologies, or markdown formatting like \`\`\`json before or after the JSON object.
+*   **STRUCTURE:** The top-level keys of the JSON object MUST be the lowercase platform names from \`\${targetPlatforms.map(p => p.toLowerCase()).join(', ')}\`.
+*   **ESCAPING:** Ensure all strings within the JSON are properly escaped.
+
+---
+
+### **Example of a Perfect Output Structure**
+
+*Input:* \`targetPlatforms: ["shopify", "ebay"]\` and context for an MTG card.
+
+\`\`\`json
 {
   "shopify": {
-    "title": "Example T-Shirt",
-    "description": "...",
-    "price": 19.99,
-    "compareAtPrice": 24.99,
-    "categorySuggestion": "Apparel & Accessories > Clothing > Shirts & Tops",
-    "tags": ["cotton", "graphic tee", "casual"],
-    "weight": 0.2,
-    "weightUnit": "POUNDS", // POUNDS, KILOGRAMS, OUNCES, and GRAMS are the only weight units that are accepted by Shopify
-    "brand": "ExampleBrand",
+    "title": "Elite Scaleguard - Fate Reforged | Magic: The Gathering MTG Card | Uncommon",
+    "description": "Unleash the power of the Dromoka clan with the Elite Scaleguard from the Fate Reforged set of Magic: The Gathering. This powerful Human Soldier creature is a must-have for any white deck, bolstering your forces every time it attacks. The card features the Bolster 2 mechanic, strengthening your weakest creature and turning the tide of battle. Perfect for collectors and competitive players alike, this card is in near-mint condition, sleeved directly from the pack. Add this strategic powerhouse to your collection today!",
+    "price": 1.49,
+    "compareAtPrice": 1.99,
+    "categorySuggestion": "Hobbies & Creative Arts > Collectibles > Collectible Trading Cards & Accessories",
+    "tags": ["Magic The Gathering", "MTG", "Fate Reforged", "Elite Scaleguard", "White Creature", "Uncommon", "Trading Card", "TCG", "Wizards of the Coast", "Bolster Mechanic"],
+    "weight": 0.01,
+    "weightUnit": "OUNCES",
+    "brand": "Wizards of the Coast",
     "condition": "New",
     "status": "active",
-    "vendor": "ExampleBrand",
-    "productType": "T-Shirt"
+    "vendor": "TCG Reseller",
+    "productType": "Trading Card"
   },
-  "amazon": {
-    "title": "Example Brand Men's Cotton Graphic T-Shirt",
-    "description": "...",
-    "price": 19.99,
-    "compareAtPrice": null, // or omit
-    "categorySuggestion": "Clothing, Shoes & Jewelry > Men > Clothing > Shirts > T-Shirts",
-    "weight": 0.2,
-    "weightUnit": "lb",
-    "brand": "ExampleBrand",
-    "condition": "New",
-    "bullet_points": ["100% Cotton", "...", "..."],
-    "search_terms": ["mens tee", "graphic t-shirt", "cotton shirt"],
-    "amazonProductType": "SHIRT", // Example
-    "productIdType": null // or UPC/EAN if applicable
+  "ebay": {
+    "title": "MTG Elite Scaleguard | Fate Reforged | 009/185 | U | White Creature | Near Mint NM",
+    "description": "<strong>Magic: The Gathering - Elite Scaleguard from Fate Reforged</strong><br><br>You are purchasing one (1) copy of Elite Scaleguard. The card is in Near Mint (NM) condition, taken directly from a booster pack and placed into a protective sleeve. See photos for actual card condition. A strategic addition to any white-weenie or midrange deck, featuring the powerful Bolster 2 mechanic. Ships securely in a sleeve and top-loader.<br><br><strong>Card Details:</strong><br>- Name: Elite Scaleguard<br>- Set: Fate Reforged<br>- Collector Number: 009/185<br>- Rarity: Uncommon<br>- Color: White<br>- Card Type: Creature<br>- Mana Cost: {3}{W}{W}",
+    "price": 1.49,
+    "compareAtPrice": null,
+    "categorySuggestion": "Collectibles > Non-Sport Trading Cards > Magic: The Gathering > MTG Individual Cards",
+    "condition": "Used - Like New",
+    "listingFormat": "FixedPrice",
+    "duration": "GTC",
+    "dispatchTime": "1 business day",
+    "returnPolicy": "30-day returns accepted, buyer pays for return shipping.",
+    "shippingService": "eBay Standard Envelope for Trading Cards",
+    "itemSpecifics": {
+      "Game": "Magic: The Gathering",
+      "Set": "Fate Reforged",
+      "Card Name": "Elite Scaleguard",
+      "Graded": "No",
+      "Creature/Monster Type": "Human Soldier",
+      "Card Type": "Creature",
+      "Manufacturer": "Wizards of the Coast",
+      "Finish": "Regular",
+      "Language": "English",
+      "Rarity": "Uncommon",
+      "Color": "White",
+      "Card Number": "009/185",
+      "Mana Cost": "{3}{W}{W}",
+      "Card Condition": "Near Mint or Better"
+    }
   }
 }
+\`\`\`
 `;
     // --- End Prompt Text Construction ---
 

@@ -56,6 +56,19 @@ export class ReconciliationProcessor extends WorkerHost {
             if (!connection) {
                 throw new Error(`Connection ${connectionId} not found for user ${userId}. Cannot proceed with reconciliation.`);
             }
+
+            // --- CRITICAL GUARD CLAUSE ---
+            // Reconciliation should ONLY run on connections that are fully active.
+            // This prevents it from interfering with the initial sync flow (pending, scanning, needs_review, syncing).
+            if (connection.Status !== 'active') {
+                const message = `Connection ${connectionId} has status '${connection.Status}', not 'active'. Reconciliation will not run.`;
+                this.logger.log(`[RECONCILIATION JOB ${job.id}] ${message}`);
+                await this.activityLogService.logActivity(
+                    userId, 'PlatformConnection', connectionId, 'RECONCILIATION_JOB_SKIPPED', 'Info', message
+                );
+                return { status: 'skipped', reason: message };
+            }
+
             if (!connection.IsEnabled) {
                 this.logger.log(`[RECONCILIATION JOB ${job.id}] Connection ${connectionId} is disabled. Skipping reconciliation.`);
                 await this.activityLogService.logActivity(
