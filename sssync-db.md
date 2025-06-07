@@ -53,11 +53,19 @@ CREATE TABLE "PlatformConnections" (
     "IsEnabled" boolean NOT NULL DEFAULT true,
     "LastSyncAttemptAt" timestamptz,
     "LastSyncSuccessAt" timestamptz,
+    "PlatformSpecificData" jsonb, -- e.g., { shop: '...', merchantId: '...', scanSummary: {...}, mappingSuggestions: [...] }
+    "SyncRules" jsonb, -- e.g., { "productDetailsSoT": "SSSYNC", "inventorySoT": "PLATFORM", "allowCreate": true }
     "CreatedAt" timestamptz NOT NULL DEFAULT now(),
     "UpdatedAt" timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX idx_platformconnections_userid ON "PlatformConnections"("UserId");
 CREATE INDEX idx_platformconnections_platformtype ON "PlatformConnections"("PlatformType");
+
+-- Partial unique indexes to allow multiple connections of the same platform type per user,
+-- as long as the platform-specific identifier (shop, merchantId) is different.
+CREATE UNIQUE INDEX "platformconnections_shopify_unique_idx" ON "PlatformConnections" ("UserId", ("PlatformSpecificData"->>'shop')) WHERE "PlatformType" = 'shopify';
+CREATE UNIQUE INDEX "platformconnections_square_unique_idx" ON "PlatformConnections" ("UserId", ("PlatformSpecificData"->>'merchantId')) WHERE "PlatformType" = 'square';
+CREATE UNIQUE INDEX "platformconnections_clover_unique_idx" ON "PlatformConnections" ("UserId", ("PlatformSpecificData"->>'merchantId')) WHERE "PlatformType" = 'clover';
 
 -- Product Structure (Depends on Users)
 CREATE TABLE "Products" (
@@ -79,9 +87,14 @@ CREATE TABLE "ProductVariants" (
     "Description" text,
     "Price" decimal NOT NULL,
     "CompareAtPrice" decimal,
+    "Cost" decimal,
     "Weight" decimal,
     "WeightUnit" text,
     "Options" jsonb,
+    "RequiresShipping" boolean,
+    "IsTaxable" boolean,
+    "TaxCode" text,
+    "ImageId" uuid REFERENCES "ProductImages"("Id") ON DELETE SET NULL,
     "CreatedAt" timestamptz NOT NULL DEFAULT now(),
     "UpdatedAt" timestamptz NOT NULL DEFAULT now(),
     "status" text,
@@ -92,6 +105,20 @@ CREATE INDEX idx_productvariants_userid ON "ProductVariants"("UserId");
 CREATE INDEX idx_productvariants_sku ON "ProductVariants"("Sku");
 CREATE INDEX idx_productvariants_barcode ON "ProductVariants"("Barcode");
 CREATE INDEX idx_productvariants_userid_barcode ON "ProductVariants"("UserId", "Barcode");
+
+CREATE TABLE "ProductEmbeddings" (
+    "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    "ProductVariantId" uuid REFERENCES "ProductVariants"("Id") ON DELETE CASCADE,
+    "AiGeneratedContentId" uuid REFERENCES "AiGeneratedContent"("Id") ON DELETE SET NULL, -- Optional link
+    "SourceType" text NOT NULL, -- e.g., 'canonical_title', 'canonical_description', 'serpapi_match_title', 'generated_shopify_description'
+    "ContentText" text NOT NULL, -- The text that was embedded
+    embedding vector(384) NOT NULL, -- Or 768, 1536 depending on model
+    "ModelName" text NOT NULL, -- e.g., 'all-MiniLM-L6-v2'
+    "CreatedAt" timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX idx_productembeddings_variant_id ON "ProductEmbeddings"("ProductVariantId");
+CREATE INDEX idx_productembeddings_embedding ON "ProductEmbeddings" USING ivfflat (Embedding vector_cosine_ops) WITH (lists = 100); -- Example HNSW or IVFFlat index
+
 
 -- Mappings and Levels (Depend on Products/Variants and Connections)
 CREATE TABLE "PlatformProductMappings" (
@@ -109,6 +136,8 @@ CREATE TABLE "PlatformProductMappings" (
     "CreatedAt" timestamptz NOT NULL DEFAULT now(),
     "UpdatedAt" timestamptz NOT NULL DEFAULT now(),
     UNIQUE ("PlatformConnectionId", "ProductVariantId"),
+    -- This constraint may be too strict if a platform product can have multiple variants that map to different sssync variants.
+    -- Consider if this should be (PlatformConnectionId, PlatformVariantId) if PlatformVariantId is always unique.
     UNIQUE ("PlatformConnectionId", "PlatformProductId", "PlatformVariantId"),
     "status" text,
 );

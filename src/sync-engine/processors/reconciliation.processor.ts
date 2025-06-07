@@ -117,6 +117,15 @@ export class ReconciliationProcessor extends WorkerHost {
                             const savedProduct = await this.productsService.saveProduct({ UserId: cp.UserId, IsArchived: cp.IsArchived });
                             
                             const variantsToSave = canonicalVariants.map(cv => ({ ...cv, ProductId: savedProduct.Id, UserId: userId }));
+
+                            // Generate temporary SKUs for variants that are missing one before saving.
+                            for (const variant of variantsToSave) {
+                                if (!variant.Sku) {
+                                    this.logger.warn(`[RECONCILIATION JOB ${job.id}] Variant for new product ${platformProduct.id} is missing an SKU. Generating a temporary one.`);
+                                    variant.Sku = `TEMP-SKU-${platformProduct.id.split('/').pop()}-${variant.Id || Math.random().toString(36).substring(2, 9)}`;
+                                }
+                            }
+
                             const savedVariants = await this.productsService.saveVariants(variantsToSave as any[]); 
 
                             if (savedVariants.length > 0 && savedVariants[0].Id) {

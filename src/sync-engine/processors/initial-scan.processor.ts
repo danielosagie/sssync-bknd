@@ -11,6 +11,7 @@ import { InventoryService, CanonicalInventoryLevel } from '../../canonical-data/
 import { ShopifyProductNode, ShopifyVariantNode } from '../../platform-adapters/shopify/shopify-api-client.service';
 import { CanonicalProduct, CanonicalProductVariant } from '../../platform-adapters/shopify/shopify.mapper';
 import { ProductVariant } from '../../common/types/supabase.types';
+import { ActivityLogService } from '../../common/activity-log.service';
 
 @Processor(INITIAL_SCAN_QUEUE) // <<< Temporarily comment out to stop direct BullMQ polling
 export class InitialScanProcessor extends WorkerHost {
@@ -25,6 +26,7 @@ export class InitialScanProcessor extends WorkerHost {
         private readonly adapterRegistry: PlatformAdapterRegistry,
         private readonly productsService: ProductsService,
         private readonly inventoryService: InventoryService,
+        private readonly activityLogService: ActivityLogService,
     ) {
         super();
         // Log when processor starts
@@ -66,123 +68,121 @@ export class InitialScanProcessor extends WorkerHost {
 
             // Map and save the data
             const mapper = adapter.getMapper();
-            const { canonicalProducts, canonicalVariants, canonicalInventoryLevels } = 
-                mapper.mapShopifyDataToCanonical(platformData, userId, connectionId);
-
-            // Save to database
-            this.logger.log(`[ACTIVE JOB] Saving ${canonicalProducts.length} products, ${canonicalVariants.length} variants for connection ${connectionId}`);
-
-            // 1. Fetch Data
-            this.logger.log(`Job ${job.id}: Fetching data from ${platformType}...`);
-            if (!platformData || !platformData.products) {
-                throw new InternalServerErrorException('Failed to fetch products from platform API.');
-            }
-
-            // 2. Map data to canonical structures
-            this.logger.log(`Job ${job.id}: Mapping fetched data to canonical structures...`);
             const { 
                 canonicalProducts: mappedProducts, 
                 canonicalVariants: mappedVariants, 
                 canonicalInventoryLevels: mappedInventoryLevels 
             } = mapper.mapShopifyDataToCanonical(platformData, userId, connectionId);
+
+            await job.updateProgress(30);
             
-            // 3. Save Canonical Products and get their DB IDs
-            this.logger.log(`Job ${job.id}: Saving ${mappedProducts.length} canonical products...`);
-            const savedProductsMap = new Map<string, string>(); // Map tempId to actual DB Id
-            const finalCanonicalProducts: CanonicalProduct[] = [];
+            // --- New Batch-Optimized Database Save Logic ---
+            this.logger.log(`Job ${job.id}: Beginning optimized database save for ${mappedProducts.length} products.`);
+            await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'SCAN_DATABASE_SAVE_START', 'Info', `Starting database save for ${mappedProducts.length} products.`);
 
-            for (const tempProduct of mappedProducts) {
-                const { Id: tempId, UserId, IsArchived, ImageUrls } = tempProduct; // Destructure known direct fields
-                // Create an object specifically for saving, matching expected columns for the Products table
-                const productTableData = { 
-                    UserId,
-                    IsArchived 
-                    // Add any other direct column fields from CanonicalProduct that should be saved to Products table
-                };
-                const savedProduct = await this.productsService.saveProduct(productTableData);
-                if (tempId) savedProductsMap.set(tempId, savedProduct.Id!); // Store mapping from tempId to actual Id
-                // We keep the full mappedProduct (including ImageUrls) for later use if needed, 
-                // but only save the direct table data.
-                // To avoid confusion, ensure finalCanonicalProducts stores the saved DB representation if its structure differs significantly
-                // For now, assuming savedProduct is compatible with CanonicalProduct for what we need later (Id).
-                finalCanonicalProducts.push({ ...tempProduct, Id: savedProduct.Id! }); // Store original mapped data with new DB Id
-            }
-            this.logger.log(`Job ${job.id}: Saved ${finalCanonicalProducts.length} products.`);
+            // 3. Batch-save Canonical Products
+            this.logger.log(`Job ${job.id}: Batch saving ${mappedProducts.length} canonical products...`);
+            const productInputs = mappedProducts.map(({ Id, ...rest }) => rest); // Prepare for bulk insert
+            const savedProducts = await this.productsService.saveProducts(productInputs);
 
-            // 4. Update ProductId in Canonical Variants and Save them
-            this.logger.log(`Job ${job.id}: Updating ProductIds and saving ${mappedVariants.length} canonical variants...`);
+            // Create a map from the temporary ID (used during mapping) to the final database Product object
+            const tempIdToSavedProductMap = new Map<string, CanonicalProduct>();
+            savedProducts.forEach((savedProduct, index) => {
+                const tempId = mappedProducts[index].Id;
+                if (tempId) {
+                    tempIdToSavedProductMap.set(tempId, { 
+                        ...savedProduct, 
+                        Title: mappedProducts[index].Title,
+                        ImageUrls: mappedProducts[index].ImageUrls 
+                    });
+                }
+            });
+            this.logger.log(`Job ${job.id}: Saved ${savedProducts.length} products.`);
+            await job.updateProgress(50);
+
+
+            // 4. Prepare Canonical Variants with correct ProductIds
+            this.logger.log(`Job ${job.id}: Preparing ${mappedVariants.length} variants for saving...`);
             const variantsToSave: Array<Omit<CanonicalProductVariant, 'Id'>> = [];
-            const savedVariantsMap = new Map<string, string>(); // Map tempVariantId from mapper to actual DB Id
-            const variantToTempProductMap = new Map<string, CanonicalProduct>(); // Map tempVariantId to its original mapped Product (for images)
+            const tempVariantIdToImagesMap = new Map<string, string[]>();
 
             for (const tempVariant of mappedVariants) {
                 const { Id: tempVariantId, ProductId: tempProductId, ...variantData } = tempVariant;
-
-                if (variantData.Sku === null || variantData.Sku === undefined) {
-                    this.logger.warn(`Job ${job.id}: Skipping variant with tempId ${tempVariantId} because its Sku is null.`);
-                    continue; 
-                }
-
-                const actualProductId = savedProductsMap.get(tempProductId!);
-                if (!actualProductId) {
-                    this.logger.warn(`Job ${job.id}: Could not find actual DB ProductId for temp ProductId: ${tempProductId} on variant SKU: ${variantData.Sku}. Skipping variant.`);
+                const parentProduct = tempIdToSavedProductMap.get(tempProductId!);
+                
+                if (!parentProduct || !parentProduct.Id) {
+                    this.logger.warn(`Job ${job.id}: Could not find a saved parent product for temp ProductId: ${tempProductId}. Skipping variant SKU: ${variantData.Sku}.`);
                     continue;
                 }
-                variantsToSave.push({ ...variantData, Sku: variantData.Sku, ProductId: actualProductId, UserId: userId });
-                // Store the original mapped product for this variant for later image association
-                const originalProduct = mappedProducts.find(p => p.Id === tempProductId);
-                if (originalProduct && tempVariantId) {
-                    variantToTempProductMap.set(tempVariantId, originalProduct);
+
+                variantsToSave.push({ ...variantData, ProductId: parentProduct.Id, UserId: userId });
+                
+                // Store image URLs associated with this variant's parent for later batch processing
+                if (tempVariantId && parentProduct.ImageUrls && parentProduct.ImageUrls.length > 0) {
+                    tempVariantIdToImagesMap.set(tempVariantId, parentProduct.ImageUrls);
                 }
             }
+            await job.updateProgress(60);
 
-            const finalCanonicalVariants = await this.productsService.saveVariants(
+            // 5. Batch-save Canonical Variants
+            this.logger.log(`Job ${job.id}: Batch saving ${variantsToSave.length} canonical variants...`);
+            const savedVariants = await this.productsService.saveVariants(
                 variantsToSave as Array<Omit<ProductVariant, 'Id' | 'CreatedAt' | 'UpdatedAt'>>
             );
-            mappedVariants.forEach((tempVar, index) => {
-                if (tempVar.Id && finalCanonicalVariants[index]) {
-                     savedVariantsMap.set(tempVar.Id, finalCanonicalVariants[index].Id!);
+            this.logger.log(`Job ${job.id}: Saved ${savedVariants.length} variants.`);
+            await job.updateProgress(75);
+
+            // Create a map from the temporary variant ID to the final saved variant ID
+            const tempIdToSavedVariantIdMap = new Map<string, string>();
+            savedVariants.forEach((savedVariant, index) => {
+                 const tempId = mappedVariants.find(mv => mv.Sku === savedVariant.Sku && mv.ProductId === tempIdToSavedProductMap.get(savedVariant.ProductId)?.Id)?.Id;
+                 if (tempId && savedVariant.Id) {
+                    tempIdToSavedVariantIdMap.set(tempId, savedVariant.Id);
+                 }
+            });
+
+            // 6. Batch-save Product Images
+            this.logger.log(`Job ${job.id}: Preparing images for ${tempVariantIdToImagesMap.size} variants...`);
+            const imagesToSave: Array<{ ProductVariantId: string; ImageUrl: string; Position: number }> = [];
+            tempVariantIdToImagesMap.forEach((imageUrls, tempVariantId) => {
+                const finalVariantId = tempIdToSavedVariantIdMap.get(tempVariantId);
+                if (finalVariantId) {
+                    imageUrls.forEach((url, index) => {
+                        imagesToSave.push({ ProductVariantId: finalVariantId, ImageUrl: url, Position: index });
+                    });
                 }
             });
-            this.logger.log(`Job ${job.id}: Saved ${finalCanonicalVariants.length} variants.`);
 
-            // 4.5 Save Product Images (associating product-level images with each variant)
-            this.logger.log(`Job ${job.id}: Saving product images...`);
-            for (const tempVariant of mappedVariants) {
-                if (!tempVariant.Id) continue; // Should have tempId if processed
-                const actualVariantId = savedVariantsMap.get(tempVariant.Id);
-                const originalProductForVariant = variantToTempProductMap.get(tempVariant.Id);
-
-                if (actualVariantId && originalProductForVariant?.ImageUrls && originalProductForVariant.ImageUrls.length > 0) {
-                    try {
-                        await this.productsService.saveVariantImages(actualVariantId, originalProductForVariant.ImageUrls);
-                        this.logger.debug(`Job ${job.id}: Associated product images with variant ${actualVariantId}`);
-                    } catch (imgError) {
-                        this.logger.error(`Job ${job.id}: Failed to save images for variant ${actualVariantId}: ${imgError.message}`, imgError.stack);
-                        // Continue processing other variants even if image saving fails for one
-                    }
-                }
+            if (imagesToSave.length > 0) {
+                this.logger.log(`Job ${job.id}: Batch saving ${imagesToSave.length} product images...`);
+                await this.productsService.saveBulkVariantImages(imagesToSave);
+                this.logger.log(`Job ${job.id}: Saved product images.`);
             }
-            this.logger.log(`Job ${job.id}: Finished processing product images.`);
+            await job.updateProgress(85);
 
-            // 5. Update ProductVariantId in Canonical Inventory Levels and Save them
-            this.logger.log(`Job ${job.id}: Updating ProductVariantIds and saving ${mappedInventoryLevels.length} inventory levels...`);
-            const inventoryLevelsToSave: CanonicalInventoryLevel[] = [];
-            for (const tempInventoryLevel of mappedInventoryLevels) {
-                const { ProductVariantId: tempVariantId, ...levelData } = tempInventoryLevel;
-                const actualVariantId = savedVariantsMap.get(tempVariantId!);
-                if (!actualVariantId) {
-                    this.logger.warn(`Job ${job.id}: Could not find actual DB VariantId for temp VariantId: ${tempVariantId}. Skipping inventory level.`);
-                    continue;
-                }
-                inventoryLevelsToSave.push({ ...levelData, ProductVariantId: actualVariantId, PlatformConnectionId: connectionId } as CanonicalInventoryLevel);
+            // 7. Prepare and Batch-save Inventory Levels
+            this.logger.log(`Job ${job.id}: Updating ProductVariantIds and preparing ${mappedInventoryLevels.length} inventory levels...`);
+            const inventoryLevelsToSave: CanonicalInventoryLevel[] = mappedInventoryLevels.map(tempLevel => {
+                const finalVariantId = tempIdToSavedVariantIdMap.get(tempLevel.ProductVariantId!);
+                if (!finalVariantId) return null;
+                return {
+                    ...tempLevel,
+                    ProductVariantId: finalVariantId,
+                    PlatformConnectionId: connectionId,
+                } as CanonicalInventoryLevel;
+            }).filter((level): level is CanonicalInventoryLevel => level !== null);
+
+            if (inventoryLevelsToSave.length > 0) {
+                await this.inventoryService.saveBulkInventoryLevels(inventoryLevelsToSave);
+                this.logger.log(`Job ${job.id}: Saved ${inventoryLevelsToSave.length} inventory levels.`);
             }
-            await this.inventoryService.saveBulkInventoryLevels(inventoryLevelsToSave);
-            this.logger.log(`Job ${job.id}: Saved ${inventoryLevelsToSave.length} inventory levels.`);
+            await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'SCAN_DATABASE_SAVE_FINISH', 'Info', `Database save complete. Saved ${savedProducts.length} products and ${savedVariants.length} variants.`);
+            await job.updateProgress(90);
 
-            // --- Original Post-Fetch Logic (Summary & Suggestions) ---
+
+            // --- Generate and Store Suggestions ---
             this.logger.log(`Job ${job.id}: Analyzing fetched data for summary...`);
-            const scanSummary = this.analyzePlatformData(platformData); // Use original platformData for summary
+            const scanSummary = this.analyzePlatformData(platformData);
             await this.connectionService.saveScanSummary(connectionId, userId, scanSummary);
             this.logger.log(`Job ${job.id}: Scan summary saved: ${JSON.stringify(scanSummary)}`);
 

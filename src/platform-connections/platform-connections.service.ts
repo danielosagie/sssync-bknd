@@ -172,17 +172,17 @@ export class PlatformConnectionsService {
 
     async getConnectionById(connectionId: string, userId: string): Promise<PlatformConnection | null> {
         const supabase = this.getSupabaseClient();
-        const { data, error } = await supabase
-            .from('PlatformConnections')
-            .select('*')
-            .eq('Id', connectionId)
-            .eq('UserId', userId) // Ensure ownership
-            .maybeSingle();
+         const { data, error } = await supabase
+             .from('PlatformConnections')
+             .select('*')
+             .eq('Id', connectionId)
+             .eq('UserId', userId) // Ensure ownership
+             .maybeSingle();
 
-        if (error) {
-            this.logger.error(`Error fetching connection ${connectionId} for user ${userId}: ${error.message}`);
-            throw new InternalServerErrorException('Failed to retrieve connection.');
-        }
+         if (error) {
+              this.logger.error(`Error fetching connection ${connectionId} for user ${userId}: ${error.message}`);
+              throw new InternalServerErrorException('Failed to retrieve connection.');
+         }
         return this.mapRowToConnection(data) as PlatformConnection;
     }
 
@@ -220,11 +220,11 @@ export class PlatformConnectionsService {
     }
 
      async updateConnectionStatus(connectionId: string, userId: string, status: PlatformConnection['Status']): Promise<void> {
-        await this.updateConnectionData(connectionId, userId, { Status: status });
+          await this.updateConnectionData(connectionId, userId, { Status: status });
      }
 
      async saveSyncRules(connectionId: string, userId: string, rules: Record<string, any>): Promise<void> {
-        await this.updateConnectionData(connectionId, userId, { SyncRules: rules });
+          await this.updateConnectionData(connectionId, userId, { SyncRules: rules });
      }
 
     async disconnectConnection(connectionId: string, userId: string): Promise<void> {
@@ -235,7 +235,7 @@ export class PlatformConnectionsService {
         });
         // We are not deleting the record, just marking it as disabled.
         // This preserves mappings and history, and allows for easy reconnection.
-    }
+     }
 
     async deleteConnection(connectionId: string, userId: string): Promise<void> {
         const supabase = this.getSupabaseClient();
@@ -259,8 +259,8 @@ export class PlatformConnectionsService {
     }
 
     async getDecryptedCredentials(connection: PlatformConnection): Promise<Record<string, any>> {
-        const encryptedData = connection.Credentials; // Get raw stored data
-        if (!encryptedData) {
+         const encryptedData = connection.Credentials; // Get raw stored data
+         if (!encryptedData) {
             this.logger.error(`Credentials for connection ${connection.Id} are missing.`);
             throw new Error(`Credentials not found for connection ${connection.Id}`);
         }

@@ -3,6 +3,9 @@ import { SimpleQueue } from './queue.interface';
 import { JobData } from './sync-engine/initial-sync.service'; // Or a common types file
 import { UltraLowQueueService } from './ultra-low-queue.service';
 import { BullMQQueueService } from './bullmq-queue.service';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue, Job } from 'bullmq';
+import { INITIAL_SCAN_QUEUE, INITIAL_SYNC_QUEUE, PUSH_OPERATIONS_QUEUE, RECONCILIATION_QUEUE } from './sync-engine/sync-engine.constants';
 
 // Constants for dynamic switching logic
 const HIGH_TRAFFIC_THRESHOLD_REQUESTS_PER_SECOND = 100;
@@ -16,13 +19,25 @@ export class QueueManagerService {
   private highThroughputMode = false;
   private requestTimestamps: number[] = [];
   private lastRequestTimestamp: number = 0;
+  private readonly queues: Record<string, Queue>;
 
   constructor(
     private readonly ultraLowQueueService: UltraLowQueueService,
     private readonly bullMQQueueService: BullMQQueueService,
+    @InjectQueue(INITIAL_SCAN_QUEUE) private initialScanQueue: Queue,
+    @InjectQueue(INITIAL_SYNC_QUEUE) private initialSyncQueue: Queue,
+    @InjectQueue(PUSH_OPERATIONS_QUEUE) private pushOperationsQueue: Queue,
+    @InjectQueue(RECONCILIATION_QUEUE) private reconciliationQueue: Queue,
   ) {
     this.currentQueue = this.ultraLowQueueService;
     this.logger.log('QueueManagerService initialized, starting with UltraLowQueueService.');
+
+    this.queues = {
+      [INITIAL_SCAN_QUEUE]: this.initialScanQueue,
+      [INITIAL_SYNC_QUEUE]: this.initialSyncQueue,
+      [PUSH_OPERATIONS_QUEUE]: this.pushOperationsQueue,
+      [RECONCILIATION_QUEUE]: this.reconciliationQueue,
+    };
 
     setInterval(() => this.checkAndScaleDown(), SCALE_DOWN_IDLE_SECONDS * 1000 / 2); // Check frequently
   }
@@ -96,5 +111,19 @@ export class QueueManagerService {
     // If processAllJobs is truly needed for BullMQ, it would need a more complex implementation
     // to fetch and process all waiting jobs, which is not standard for a live worker.
     this.logger.warn('processAllJobs for BullMQQueueService is a no-op as worker handles processing.');
+  }
+
+  async getJobById(jobId: string): Promise<Job | null> {
+    this.logger.debug(`Attempting to find job with ID: ${jobId}`);
+    for (const queueName in this.queues) {
+      const queue = this.queues[queueName];
+      const job = await queue.getJob(jobId);
+      if (job) {
+        this.logger.debug(`Found job ${jobId} in queue ${queueName}`);
+        return job;
+      }
+    }
+    this.logger.warn(`Job with ID ${jobId} not found in any managed queues.`);
+    return null;
   }
 } 

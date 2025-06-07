@@ -77,6 +77,18 @@ export class SyncController {
          return { jobId };
      }
 
+    @Get('jobs/:jobId/progress')
+    async getJobProgress(
+      @Request() req,
+      @Param('jobId') jobId: string,
+    ): Promise<{ isActive: boolean, isCompleted: boolean, isFailed: boolean, progress: number, description: string | null }> {
+      // Note: We don't check userId here as jobIds are unique UUIDs and unguessable.
+      // A user would only know the job ID if they initiated the action.
+      // For higher security, we could store a userId mapping on the job data and verify it.
+      this.logger.debug(`Request for progress of job ${jobId}`);
+      return this.initialSyncService.getJobProgress(jobId);
+    }
+
     @Post('connection/:connectionId/reconcile')
     @HttpCode(HttpStatus.ACCEPTED)
     async triggerReconciliation(

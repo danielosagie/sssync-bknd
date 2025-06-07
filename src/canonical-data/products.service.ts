@@ -50,6 +50,27 @@ export class ProductsService {
         return data as Product;
     }
 
+    async saveProducts(products: Array<Omit<Product, 'Id' | 'CreatedAt' | 'UpdatedAt'>>): Promise<Product[]> {
+        const supabase = this.getSupabaseClient();
+        if (!products || products.length === 0) {
+            return [];
+        }
+        this.logger.log(`Saving ${products.length} products in bulk...`);
+
+        const { data, error } = await supabase
+            .from('Products')
+            .insert(products)
+            .select();
+
+        if (error) {
+            this.logger.error(`Failed to save products in bulk: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Could not save products: ${error.message}`);
+        }
+
+        this.logger.log(`Successfully saved ${data.length} products in bulk.`);
+        return data as Product[];
+    }
+
     async saveVariants(variants: Array<Omit<ProductVariant, 'Id' | 'CreatedAt' | 'UpdatedAt'>>): Promise<ProductVariant[]> {
         if (!variants || variants.length === 0) {
             this.logger.log('No variants to save.');
@@ -131,12 +152,10 @@ export class ProductsService {
     }
 
     async saveVariantImages(variantId: string, imageUrls: string[]): Promise<void> {
+        const supabase = this.getSupabaseClient();
         if (!imageUrls || imageUrls.length === 0) {
-            this.logger.debug(`No image URLs provided for variant ${variantId}. Skipping image save.`);
             return;
         }
-        const supabase = this.getSupabaseClient();
-        this.logger.log(`Saving ${imageUrls.length} images for variant ${variantId}.`);
 
         const imagesToInsert = imageUrls.map((url, index) => ({
             ProductVariantId: variantId,
@@ -149,10 +168,35 @@ export class ProductsService {
             .insert(imagesToInsert);
 
         if (error) {
-            this.logger.error(`Failed to save images for variant ${variantId}: ${error.message}`, error);
-        } else {
-            this.logger.log(`Successfully saved ${imagesToInsert.length} images for variant ${variantId}.`);
+            this.logger.error(`Failed to save images for variant ${variantId}: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Could not save images for variant ${variantId}: ${error.message}`);
         }
+    }
+
+    async saveBulkVariantImages(images: Array<{ ProductVariantId: string; ImageUrl: string; Position: number }>): Promise<void> {
+        const supabase = this.getSupabaseClient();
+        if (!images || images.length === 0) {
+            return;
+        }
+        
+        this.logger.log(`Bulk saving ${images.length} images...`);
+
+        // Supabase insert has a recommended limit on the number of rows.
+        // Let's process in chunks of 500.
+        const chunkSize = 500;
+        for (let i = 0; i < images.length; i += chunkSize) {
+            const chunk = images.slice(i, i + chunkSize);
+            const { error } = await supabase
+                .from('ProductImages')
+                .insert(chunk);
+
+            if (error) {
+                this.logger.error(`Failed to save a chunk of images: ${error.message}`, error.stack);
+                throw new InternalServerErrorException(`Could not bulk save images: ${error.message}`);
+            }
+        }
+
+        this.logger.log(`Successfully saved ${images.length} images in bulk.`);
     }
 
     async getProductById(productId: string): Promise<Product | null> {

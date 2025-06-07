@@ -488,18 +488,16 @@ const UPDATE_INVENTORY_LEVELS_MUTATION = `
 
 // Add new query for fetching inventory levels
 const GET_INVENTORY_LEVELS_QUERY = `
-  query GetInventoryLevels($inventoryItemIds: [ID!]!) {
-    inventoryItems(first: 50, ids: $inventoryItemIds) { # Assuming inventoryItemIds are GIDs
-      edges {
-        node { # This is InventoryItem
-          id
-          inventoryLevels(first: 10) { # inventoryLevels on InventoryItem
+  query GetInventoryLevelsForVariants($variantIds: [ID!]!) {
+    nodes(ids: $variantIds) {
+      ... on ProductVariant {
+        id
+        inventoryItem {
+          inventoryLevels(first: 10) {
             edges {
-              node { # This is InventoryLevel
+              node {
                 location {
                   id
-                  name
-                  isActive
                 }
               }
             }
@@ -1346,91 +1344,64 @@ export class ShopifyApiClient {
         locationId: string;
         quantity: number;
     }>> {
-        const client = await this.getGraphQLClient(connection);
+        if (!variantIds || variantIds.length === 0) {
+            return [];
+        }
+
         this.logger.log(`Fetching inventory levels for ${variantIds.length} variants`);
 
-        if (!variantIds || variantIds.length === 0) {
-            this.logger.debug('getInventoryLevels called with no variant IDs.');
-            return [];
+        const idChunks: string[][] = [];
+        for (let i = 0; i < variantIds.length; i += 100) {
+            idChunks.push(variantIds.slice(i, i + 100));
         }
 
-        // The GET_INVENTORY_LEVELS_QUERY expects InventoryItem GIDs.
-        // We need to fetch ProductVariants first to get their inventoryItem.id
-        // This is a multi-step process if we only have variant GIDs.
-        // For now, let's assume the query can be adapted or variantIds are actually inventoryItemIds if used directly.
-        // OR, more practically, the caller (ReconciliationProcessor) should pass inventoryItem GIDs.
-        // Let's adjust the expectation or make this method more robust.
+        const results: Array<{ variantId: string; locationId: string; quantity: number; }> = [];
+        const client = await this.getGraphQLClient(connection);
 
-        // For simplicity in this fix, assuming variantIds are inventoryItem GIDs or can be directly used if the query is adapted.
-        // A more robust solution might be to fetch variants, then their inventory items if only variant GIDs are provided.
-        // Let's assume `variantIds` are actually `inventoryItemGids` for this specific fix based on the query.
+        // Define types for the GraphQL response and variables
+        type InventoryLevelsResponse = {
+            nodes: Array<{
+                id: string;
+                inventoryItem?: {
+                    inventoryLevels: {
+                        edges: Array<{
+                            node: {
+                                available: number;
+                                location: { id: string };
+                            };
+                        }>;
+                    };
+                };
+            }>;
+        };
+        type QueryVariables = { variantIds: string[] };
 
-        // If variantIds are ProductVariant GIDs, you would typically query for those variants,
-        // get their inventoryItem { id }, and then use those inventoryItem IDs.
-        // For now, this code assumes the provided IDs are what GET_INVENTORY_LEVELS_QUERY needs (InventoryItem GIDs).
-        
-        const inventoryItemGidsToQuery: string[] = [];
-        for (const id of variantIds) {
-            if (id.includes('InventoryItem')) {
-                inventoryItemGidsToQuery.push(id);
-            } else if (id.includes('ProductVariant')) {
-                this.logger.warn(`[getInventoryLevels] Received ProductVariant GID '${id}' but query expects InventoryItem GIDs. This variant will be skipped unless adapted upstream.`);
-            } else {
-                this.logger.warn(`[getInventoryLevels] Received ID '${id}' of unknown type. Assuming it might be an InventoryItem GID for query.`);
-                inventoryItemGidsToQuery.push(id.startsWith('gid://') ? id : `gid://shopify/InventoryItem/${id}`);
-            }
-        }
-        
-        if (inventoryItemGidsToQuery.length === 0) {
-            this.logger.warn('[getInventoryLevels] No valid InventoryItem GIDs to query after filtering. Returning empty array.');
-            return [];
-        }
+        for (const chunk of idChunks) {
+            try {
+                const response = await client.request<InventoryLevelsResponse>(GET_INVENTORY_LEVELS_QUERY, {
+                    variables: { variantIds: chunk }
+                });
 
-        try {
-            const response = await client.request<any>(GET_INVENTORY_LEVELS_QUERY, {
-                variables: {
-                    inventoryItemIds: inventoryItemGidsToQuery
-                }
-            });
-
-            if (response.errors) {
-                this.logger.error(`GraphQL inventory levels fetch errors: ${JSON.stringify(response.errors)}`);
-                throw new InternalServerErrorException(`Failed to fetch inventory levels: ${response.errors[0]?.message}`);
-            }
-
-            const inventoryItemsData = response.data?.inventoryItems?.edges || [];
-            const results: Array<{
-                variantId: string;
-                locationId: string;
-                quantity: number;
-            }> = [];
-
-            for (const itemEdge of inventoryItemsData) {
-                const inventoryItemNode = itemEdge.node;
-                if (!inventoryItemNode || !inventoryItemNode.id) continue;
-
-                const relatedIdentifier = inventoryItemNode.id; 
-
-                const inventoryLevels = inventoryItemNode.inventoryLevels?.edges || [];
-                for (const levelEdge of inventoryLevels) {
-                    const levelNode = levelEdge.node;
-                    if (levelNode && levelNode.location?.isActive) {
-                        const quantity = typeof levelNode.available === 'number' ? levelNode.available : 0;
-                        
-                        results.push({
-                            variantId: relatedIdentifier, 
-                            locationId: levelNode.location.id,
-                            quantity: quantity
-                        });
+                const nodes = response.data?.nodes || [];
+                for (const variantNode of nodes) {
+                    if (variantNode && variantNode.inventoryItem && variantNode.inventoryItem.inventoryLevels) {
+                        for (const levelEdge of variantNode.inventoryItem.inventoryLevels.edges) {
+                            results.push({
+                                variantId: variantNode.id,
+                                locationId: levelEdge.node.location.id,
+                                quantity: levelEdge.node.available,
+                            });
+                        }
                     }
                 }
+            } catch (error) {
+                this.logger.error(`Failed to fetch inventory levels chunk: ${error.message}`, error.stack);
+                // Continue to next chunk
             }
-
-            return results;
-        } catch (error) {
-            this.logger.error(`Error fetching inventory levels: ${error.message}`, error.stack);
-            throw error instanceof HttpException ? error : new InternalServerErrorException('Failed to fetch inventory levels');
         }
+        
+        this.logger.log(`Successfully fetched ${results.length} inventory level records for ${variantIds.length} variants.`);
+        return results;
     }
 
     // +++ Add new method fetchProductsByIds +++

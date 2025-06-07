@@ -140,6 +140,31 @@ export class InitialSyncService {
         }
     }
 
+    async getJobProgress(jobId: string): Promise<{ isActive: boolean, isCompleted: boolean, isFailed: boolean, progress: number, description: string | null }> {
+        const job = await this.queueManagerService.getJobById(jobId);
+        if (!job) {
+            throw new NotFoundException(`Job with ID ${jobId} not found.`);
+        }
+
+        const [isActive, isCompleted, isFailed] = await Promise.all([
+            job.isActive(),
+            job.isCompleted(),
+            job.isFailed(),
+        ]);
+        
+        const description = (job.data?.type === 'initial-scan') ? 'Scanning products from platform...' : 
+                            (job.data?.type === 'initial-sync') ? 'Syncing confirmed mappings...' :
+                            'Processing job...';
+
+        return {
+            isActive,
+            isCompleted,
+            isFailed,
+            progress: job.progress as number,
+            description: description,
+        };
+    }
+
     async queueReconciliationJob(connectionId: string, userId: string, platformType: string): Promise<string> {
         this.logger.log(`Queueing reconciliation job for connection ${connectionId} (User: ${userId}, Platform: ${platformType})`);
         const job = await this.reconciliationQueue.add(
