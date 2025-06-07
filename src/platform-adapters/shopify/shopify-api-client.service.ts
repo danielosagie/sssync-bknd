@@ -473,7 +473,6 @@ const UPDATE_INVENTORY_LEVELS_MUTATION = `
       }
     ) {
       inventoryLevel {
-        available
         location {
           id
           name
@@ -497,7 +496,6 @@ const GET_INVENTORY_LEVELS_QUERY = `
           inventoryLevels(first: 10) { # inventoryLevels on InventoryItem
             edges {
               node { # This is InventoryLevel
-                available # <-- REVERTED TO DIRECT 'available'
                 location {
                   id
                   name
@@ -543,13 +541,12 @@ const GET_PRODUCTS_BY_IDS_QUERY = `
   query GetProductsByIds($ids: [ID!]!) {
     nodes(ids: $ids) {
       ... on Product {
-        # Include all fields from ShopifyProductNode that you need for mapping
         id
         title
         status
         descriptionHtml
         tags
-        media(first: 10) { # Adjust count as needed
+        media(first: 10) {
           edges {
             node {
               id
@@ -561,14 +558,13 @@ const GET_PRODUCTS_BY_IDS_QUERY = `
             }
           }
         }
-        variants(first: 50) { # Adjust count as needed
+        variants(first: 50) {
           pageInfo {
             hasNextPage
             endCursor
           }
           edges {
             node {
-              # Include all fields from ShopifyVariantNode
               id
               sku
               barcode
@@ -588,18 +584,19 @@ const GET_PRODUCTS_BY_IDS_QUERY = `
                 }
                 inventoryLevels(first: 10) {
                   edges {
-                    node { # ShopifyInventoryLevelNode
-                      available # <-- REVERTED TO DIRECT 'available'
-                location {
-                  id
-                  name
-                  isActive
+                    node {
+                      location {
+                        isActive
+                      }
+                      quantities(names: "available") {
+                        quantity
+                        name
+                        id
+                      }
+                    }
+                  }
                 }
               }
-            }
-          }
-        }
-              # selectedOptions and image might need to be fetched differently or mapped from product.media
             }
           }
         }
@@ -609,7 +606,6 @@ const GET_PRODUCTS_BY_IDS_QUERY = `
         variantsCount {
           count
         }
-        # Add other ShopifyProductNode fields here if needed (handle, vendor, productType, options, etc.)
       }
     }
   }

@@ -24,8 +24,9 @@ export class PlatformConnectionsController {
         @Param('id', ParseUUIDPipe) connectionId: string
     ): Promise<void> {
         const userId = req.user.id;
-        this.logger.log(`Request to delete connection ${connectionId} for user ${userId}`);
-        await this.connectionsService.deleteConnection(connectionId, userId);
+        this.logger.log(`Request from user ${userId} to disconnect connection ${connectionId}.`);
+        // This now performs a "soft delete" or disable.
+        return this.connectionsService.disconnectConnection(connectionId, userId);
     }
 
     // TODO: Add endpoints for GET /:id (details?), PATCH /:id (update status/rules?)

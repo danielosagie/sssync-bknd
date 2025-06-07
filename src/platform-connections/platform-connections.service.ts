@@ -43,6 +43,19 @@ export class PlatformConnectionsService {
         return this.supabaseService.getServiceClient(); // Use the service_role client to bypass RLS
     }
 
+    /**
+     * If a connection exists for the user with the same platform-specific unique identifier (e.g., Shopify 'shop'),
+     * it updates the existing connection's credentials, display name, and status.
+     * Otherwise, it creates a new platform connection.
+     * 
+     * @param userId The ID of the user.
+     * @param platformType The type of platform (e.g., 'shopify').
+     * @param displayName The display name of the connection.
+     * @param rawCredentials The raw credentials for the connection.
+     * @param status The status of the connection.
+     * @param platformSpecificData Additional data containing unique identifiers (e.g., { shop: '...' } or { merchantId: '...' }).
+     * @returns The created or updated PlatformConnection object.
+     */
     async createOrUpdateConnection(
         userId: string,
         platformType: string,
@@ -52,126 +65,129 @@ export class PlatformConnectionsService {
         platformSpecificData?: Record<string, any>,
     ): Promise<PlatformConnection> {
         const supabase = this.getSupabaseClient();
-        let encryptedCredentialsResult: any;
-        try {
-            encryptedCredentialsResult = this.encryptionService.encrypt(rawCredentials);
-            if (typeof encryptedCredentialsResult !== 'string') {
-                this.logger.warn(`Encrypt result is not a string. Storing as is. Type: ${typeof encryptedCredentialsResult}`);
-            }
-        } catch (error) {
-             this.logger.error(`Failed to encrypt credentials for ${platformType} user ${userId}: ${error.message}`);
-             throw new InternalServerErrorException('Credential processing failed.');
-        }
+        const encryptedCredentials = this.encryptionService.encrypt(rawCredentials);
 
-        let existingConnection: PlatformConnection | null = null;
-
-        // For Shopify, try to find an existing connection for this specific shop
-        if (platformType.toLowerCase() === 'shopify' && platformSpecificData?.shop) {
-            const { data: shopSpecificConnection, error: findError } = await supabase
-                .from('PlatformConnections')
-                .select('*')
-                .eq('UserId', userId)
-                .eq('PlatformType', platformType)
-                .eq('PlatformSpecificData->>shop', platformSpecificData.shop) // Check specific shop
-                .maybeSingle();
-
-            if (findError) {
-                this.logger.error(`Error finding shop-specific connection for user ${userId}, shop ${platformSpecificData.shop}: ${findError.message}`);
-                // Decide if to throw or log and continue to create (safer to throw if DB error)
-                throw new InternalServerErrorException('Error checking for existing shop connection.');
-            }
-            existingConnection = shopSpecificConnection as PlatformConnection | null;
-        } else if (platformType.toLowerCase() !== 'shopify') {
-            // For other platforms, use the old onConflict behavior implicitly by trying to find one
-            // or implement specific find logic if they also have unique sub-identifiers.
-            // For now, this example focuses on Shopify uniqueness.
-            // A generic upsert with onConflict on UserId, PlatformType might still be used for them
-            // if we decide they can't have multiple instances.
-            // To be safe and explicit, let's try a find for non-Shopify too, assuming one per type for now.
-             const { data: genericConnection, error: findError } = await supabase
-                .from('PlatformConnections')
-                .select('*')
-                .eq('UserId', userId)
-                .eq('PlatformType', platformType)
-                .maybeSingle(); // Assuming only one for non-Shopify types for now
-            if (findError) {
-                this.logger.error(`Error finding generic connection for user ${userId}, platform ${platformType}: ${findError.message}`);
-                throw new InternalServerErrorException('Error checking for existing platform connection.');
-            }
-            existingConnection = genericConnection as PlatformConnection | null;
-        }
-
+        // Try to find an existing connection based on platform-specific unique identifiers
+        const existingConnection = await this.findExistingConnection(userId, platformType, platformSpecificData);
 
         if (existingConnection) {
-            // Update existing connection
-            this.logger.log(`Updating existing connection ${existingConnection.Id} for user ${userId}, platform ${platformType}, shop ${platformSpecificData?.shop || 'N/A'}`);
-            const { data, error } = await supabase
+            this.logger.log(`Found existing connection ${existingConnection.Id} for user ${userId}, platform ${platformType}. Updating...`);
+            // Update the existing connection
+            const { data: updatedData, error: updateError } = await supabase
                 .from('PlatformConnections')
                 .update({
-                    DisplayName: displayName, // Update display name if it changed
-                    Credentials: encryptedCredentialsResult,
-                    Status: status, // Use the provided status for updates (e.g. 'active' after re-auth)
-                    IsEnabled: true, // Typically re-enable on update/re-auth
-                    PlatformSpecificData: { ...existingConnection.PlatformSpecificData, ...platformSpecificData },
-                    LastSyncAttemptAt: new Date().toISOString(), // Good to mark an attempt
+                    DisplayName: displayName,
+                    Credentials: encryptedCredentials,
+                    Status: status, // Update status (e.g., re-activating a disconnected one)
+                    IsEnabled: true, // Always re-enable on update
                     UpdatedAt: new Date().toISOString(),
                 })
                 .eq('Id', existingConnection.Id)
                 .select()
                 .single();
 
-            if (error || !data) {
-                this.logger.error(`Failed to update connection ${existingConnection.Id}: ${error?.message}`, error);
-                throw new InternalServerErrorException(`Could not update ${platformType} platform connection.`);
+            if (updateError) {
+                this.logger.error(`Error updating connection ${existingConnection.Id}: ${updateError.message}`);
+                throw new InternalServerErrorException('Could not update platform connection.');
             }
-            this.logger.log(`Connection ${data.Id} updated successfully.`);
-            return data as PlatformConnection;
+            return this.mapRowToConnection(updatedData) as PlatformConnection;
+
         } else {
-            // Create new connection
-            this.logger.log(`Creating new connection for user ${userId}, platform ${platformType}, shop ${platformSpecificData?.shop || 'N/A'}`);
-            const { data, error } = await supabase
+            this.logger.log(`No existing connection found for user ${userId}, platform ${platformType} with these specific identifiers. Creating new one...`);
+            // Create a new connection
+            const { data: newData, error: createError } = await supabase
                 .from('PlatformConnections')
                 .insert({
                     UserId: userId,
                     PlatformType: platformType,
                     DisplayName: displayName,
-                    Credentials: encryptedCredentialsResult,
-                    Status: 'pending', // Brand new connections start as 'pending'
+                    Credentials: encryptedCredentials,
+                    Status: 'pending', // New connections start as 'pending'
                     IsEnabled: true,
-                    PlatformSpecificData: platformSpecificData ?? {},
-                    CreatedAt: new Date().toISOString(), // Set CreatedAt for new records
-                    UpdatedAt: new Date().toISOString(),
+                    PlatformSpecificData: platformSpecificData || {},
                 })
                 .select()
                 .single();
 
-            if (error || !data) {
-                this.logger.error(`Failed to create new ${platformType} connection for user ${userId}: ${error?.message}`, error);
-                throw new InternalServerErrorException(`Could not create new ${platformType} platform connection.`);
+            if (createError) {
+                this.logger.error(`Error creating new connection for user ${userId}: ${createError.message}`);
+                throw new InternalServerErrorException('Could not create platform connection.');
             }
-            this.logger.log(`New connection ${data.Id} created successfully.`);
-            return data as PlatformConnection;
+            return this.mapRowToConnection(newData) as PlatformConnection;
+        }
+    }
+
+    /**
+     * Finds an existing connection based on a platform-specific unique key.
+     * This method is crucial for preventing duplicate connections for the same store/merchant.
+     * It will only return a connection if it finds a match on the unique key (shop or merchantId).
+     */
+    private async findExistingConnection(
+        userId: string,
+        platformType: string,
+        platformSpecificData?: Record<string, any>
+    ): Promise<PlatformConnection | null> {
+        const uniqueIdKey = this.getUniqueIdKeyForPlatform(platformType);
+        const uniqueIdValue = uniqueIdKey ? platformSpecificData?.[uniqueIdKey] : null;
+
+        // Only proceed if we have a unique identifier to search for.
+        if (!uniqueIdKey || !uniqueIdValue) {
+            this.logger.debug(`No unique identifier provided for platform type '${platformType}'. Cannot find an existing connection.`);
+            return null;
+        }
+
+        const supabase = this.getSupabaseClient();
+        this.logger.debug(`Searching for existing connection for user ${userId}, platform ${platformType}, with ${uniqueIdKey}: ${uniqueIdValue}`);
+        
+        const { data, error } = await supabase
+            .from('PlatformConnections')
+            .select('*')
+            .eq('UserId', userId)
+            .eq('PlatformType', platformType)
+            .eq(`PlatformSpecificData->>${uniqueIdKey}`, uniqueIdValue) // Query the JSONB field
+            .maybeSingle();
+
+        if (error) {
+            this.logger.error(`Error finding existing connection for ${uniqueIdKey} ${uniqueIdValue}: ${error.message}`);
+            return null;
+        }
+
+        return data ? (this.mapRowToConnection(data) as PlatformConnection) : null;
+    }
+
+    /**
+     * Helper to get the JSONB key that uniquely identifies a store/merchant for a given platform.
+     */
+    private getUniqueIdKeyForPlatform(platformType: string): string | null {
+        switch (platformType) {
+            case 'shopify':
+                return 'shop';
+            case 'clover':
+            case 'square':
+                return 'merchantId';
+            default:
+                return null;
         }
     }
 
     async getConnectionById(connectionId: string, userId: string): Promise<PlatformConnection | null> {
-         const supabase = this.getSupabaseClient(); // Get client here
-         const { data, error } = await supabase
-             .from('PlatformConnections')
-             .select('*')
-             .eq('Id', connectionId)
-             .eq('UserId', userId) // Ensure ownership
-             .maybeSingle();
+        const supabase = this.getSupabaseClient();
+        const { data, error } = await supabase
+            .from('PlatformConnections')
+            .select('*')
+            .eq('Id', connectionId)
+            .eq('UserId', userId) // Ensure ownership
+            .maybeSingle();
 
-         if (error) {
-              this.logger.error(`Error fetching connection ${connectionId} for user ${userId}: ${error.message}`);
-              throw new InternalServerErrorException('Failed to retrieve connection.');
-         }
-         return data ? data as PlatformConnection : null;
+        if (error) {
+            this.logger.error(`Error fetching connection ${connectionId} for user ${userId}: ${error.message}`);
+            throw new InternalServerErrorException('Failed to retrieve connection.');
+        }
+        return this.mapRowToConnection(data) as PlatformConnection;
     }
 
     async getConnectionsForUser(userId: string): Promise<PlatformConnection[]> {
-        const supabase = this.getSupabaseClient(); // Get client here
+        const supabase = this.getSupabaseClient();
         // Select only non-sensitive fields for listing
         const { data, error } = await supabase
             .from('PlatformConnections')
@@ -183,7 +199,7 @@ export class PlatformConnectionsService {
             this.logger.error(`Error fetching connections for user ${userId}: ${error.message}`);
             throw new InternalServerErrorException('Failed to retrieve connections.');
         }
-        return (data || []) as PlatformConnection[];
+        return data.map(row => this.mapRowToConnection(row) as PlatformConnection);
     }
 
     async getAllEnabledConnections(): Promise<PlatformConnection[]> {
@@ -200,19 +216,29 @@ export class PlatformConnectionsService {
             // For a cron job, perhaps returning [] and logging is better than stopping the whole job.
             return []; 
         }
-        return (data || []) as PlatformConnection[];
+        return data.map(row => this.mapRowToConnection(row) as PlatformConnection);
     }
 
      async updateConnectionStatus(connectionId: string, userId: string, status: PlatformConnection['Status']): Promise<void> {
-          await this.updateConnectionData(connectionId, userId, { Status: status });
+        await this.updateConnectionData(connectionId, userId, { Status: status });
      }
 
      async saveSyncRules(connectionId: string, userId: string, rules: Record<string, any>): Promise<void> {
-          await this.updateConnectionData(connectionId, userId, { SyncRules: rules });
+        await this.updateConnectionData(connectionId, userId, { SyncRules: rules });
      }
 
+    async disconnectConnection(connectionId: string, userId: string): Promise<void> {
+        this.logger.log(`Disconnecting (disabling) connection ${connectionId} for user ${userId}.`);
+        await this.updateConnectionData(connectionId, userId, { 
+            IsEnabled: false,
+            Status: 'inactive' 
+        });
+        // We are not deleting the record, just marking it as disabled.
+        // This preserves mappings and history, and allows for easy reconnection.
+    }
+
     async deleteConnection(connectionId: string, userId: string): Promise<void> {
-        const supabase = this.getSupabaseClient(); // Get client here
+        const supabase = this.getSupabaseClient();
         this.logger.log(`Deleting connection ${connectionId} for user ${userId}`);
         const { error } = await supabase
             .from('PlatformConnections')
@@ -225,6 +251,7 @@ export class PlatformConnectionsService {
               throw new InternalServerErrorException('Failed to delete connection.');
          }
          // TODO: Optionally revoke token with platform API
+        this.logger.log(`Connection ${connectionId} deleted for user ${userId}.`);
     }
 
     async updateLastSyncSuccess(connectionId: string, userId: string): Promise<void> {
@@ -232,8 +259,8 @@ export class PlatformConnectionsService {
     }
 
     async getDecryptedCredentials(connection: PlatformConnection): Promise<Record<string, any>> {
-         const encryptedData = connection.Credentials; // Get raw stored data
-         if (!encryptedData) {
+        const encryptedData = connection.Credentials; // Get raw stored data
+        if (!encryptedData) {
             this.logger.error(`Credentials for connection ${connection.Id} are missing.`);
             throw new Error(`Credentials not found for connection ${connection.Id}`);
         }
@@ -340,5 +367,24 @@ export class PlatformConnectionsService {
         }
 
         return data as PlatformConnection[];
+    }
+
+    private mapRowToConnection(row: any): PlatformConnection | null {
+        if (!row) return null;
+        return {
+            Id: row.Id,
+            UserId: row.UserId,
+            PlatformType: row.PlatformType,
+            DisplayName: row.DisplayName,
+            Credentials: row.Credentials, // Keep it encrypted here
+            Status: row.Status,
+            IsEnabled: row.IsEnabled,
+            LastSyncAttemptAt: row.LastSyncAttemptAt,
+            LastSyncSuccessAt: row.LastSyncSuccessAt,
+            PlatformSpecificData: row.PlatformSpecificData,
+            SyncRules: row.SyncRules,
+            CreatedAt: row.CreatedAt,
+            UpdatedAt: row.UpdatedAt,
+        };
     }
 } 
