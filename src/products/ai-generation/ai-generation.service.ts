@@ -196,10 +196,10 @@ You have NOT been provided with a specific online match. Your analysis must be b
     promptText += `\n\n---
 
 ### **Variant Logic (CRITICAL - NO DEVIATION)**
-The product-level \`title\` must be the complete, descriptive product name. The variant-level ${matchTitle} should describe the specific variation.
-*   **Single, indivisible items (e.g., a trading card):** Product-level title: "Pokemon Charizard VMAX Holographic Card". Variant-level ${title}: "Single Card".
-*   **Packs/Bundles (e.g., lipsticks):** Product-level title: "Maybelline SuperStay Matte Ink Liquid Lipstick". Variant-level ${title}: "Pack of 3".
-*   **Products with multiple attributes (e.g., equipment):** Product-level title: "Sterling Pro-Series Bowling Ball". Variant-level ${title} must describe the specific variation, e.g., "Cosmic Green - 10lb" or "Ruby Red - 5lb".
+The product-level \`title\` must be the complete, descriptive product name. The variant-level \`title\` should describe the specific variation.
+*   **Single, indivisible items (e.g., a trading card):** Product-level title: "Pokemon Charizard VMAX Holographic Card". Variant-level \`title\`: "Single Card".
+*   **Packs/Bundles (e.g., lipsticks):** Product-level title: "Maybelline SuperStay Matte Ink Liquid Lipstick". Variant-level \`title\`: "Pack of 3".
+*   **Products with multiple attributes (e.g., equipment):** Product-level title: "Sterling Pro-Series Bowling Ball". Variant-level \`title\` must describe the specific variation, e.g., "Cosmic Green - 10lb" or "Ruby Red - 5lb".
 *   **Default Titles:** NEVER use generic variant titles like "Default Title" or "Standard". Find a canonical grouping (weight, size, color, quantity).
 
 ---
