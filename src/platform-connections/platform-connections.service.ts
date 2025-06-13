@@ -18,6 +18,7 @@ export interface PlatformConnection {
     | 'needs_review'
     | 'scanning'
     | 'syncing'
+    | 'reconciling'
     | 'error';
   IsEnabled: boolean;
   LastSyncAttemptAt?: Date | string | null;

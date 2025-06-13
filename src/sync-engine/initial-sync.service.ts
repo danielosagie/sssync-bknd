@@ -140,10 +140,18 @@ export class InitialSyncService {
         }
     }
 
-    async getJobProgress(jobId: string): Promise<{ isActive: boolean, isCompleted: boolean, isFailed: boolean, progress: number, description: string | null }> {
+    async getJobProgress(jobId: string): Promise<{ 
+        isActive: boolean, 
+        isCompleted: boolean, 
+        isFailed: boolean, 
+        progress: number, 
+        description: string | null,
+        total?: number,
+        processed?: number
+    }> {
         const job = await this.queueManagerService.getJobById(jobId);
         if (!job) {
-            throw new NotFoundException(`Job with ID ${jobId} not found.`);
+            throw new NotFoundException(`Job with ID ${jobId} not found in any queue.`);
         }
 
         const [isActive, isCompleted, isFailed] = await Promise.all([
@@ -151,22 +159,35 @@ export class InitialSyncService {
             job.isCompleted(),
             job.isFailed(),
         ]);
-        
-        const description = (job.data?.type === 'initial-scan') ? 'Scanning products from platform...' : 
-                            (job.data?.type === 'initial-sync') ? 'Syncing confirmed mappings...' :
-                            'Processing job...';
 
+        let progressValue = 0;
+        let description = "Processing...";
+        let total: number | undefined = undefined;
+        let processed: number | undefined = undefined;
+
+        if (typeof job.progress === 'object' && job.progress !== null) {
+            const progressData = job.progress as any;
+            progressValue = progressData.progress || 0;
+            description = progressData.description || "Processing...";
+            total = progressData.total;
+            processed = progressData.processed;
+        } else if (typeof job.progress === 'number') {
+            progressValue = job.progress;
+        }
+        
         return {
             isActive,
             isCompleted,
             isFailed,
-            progress: job.progress as number,
-            description: description,
+            progress: progressValue / 100, // Assuming progress is 0-100
+            description,
+            total,
+            processed,
         };
     }
 
     async queueReconciliationJob(connectionId: string, userId: string, platformType: string): Promise<string> {
-        this.logger.log(`Queueing reconciliation job for connection ${connectionId} (User: ${userId}, Platform: ${platformType})`);
+        this.logger.log(`Queueing reconciliation job for connection ${connectionId}`);
         const job = await this.reconciliationQueue.add(
             'reconcile-connection', // Job name
             { connectionId, userId, platformType },

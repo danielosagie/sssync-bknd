@@ -59,6 +59,7 @@ export class InitialScanProcessor extends WorkerHost {
             // Get the API client and fetch data
             const apiClient = adapter.getApiClient({ Id: connectionId, UserId: userId, PlatformType: platformType });
             this.logger.log(`[ACTIVE JOB] Fetching platform data for connection ${connectionId}`);
+            await job.updateProgress({ progress: 10, description: `Fetching products from ${platformType}...` });
             
             const platformData = await apiClient.fetchAllRelevantData({ Id: connectionId, UserId: userId, PlatformType: platformType });
             
@@ -74,7 +75,7 @@ export class InitialScanProcessor extends WorkerHost {
                 canonicalInventoryLevels: mappedInventoryLevels 
             } = mapper.mapShopifyDataToCanonical(platformData, userId, connectionId);
 
-            await job.updateProgress(30);
+            await job.updateProgress({ progress: 30, description: 'Saving product data...' });
             
             // --- New Batch-Optimized Database Save Logic ---
             this.logger.log(`Job ${job.id}: Beginning optimized database save for ${mappedProducts.length} products.`);
@@ -98,7 +99,7 @@ export class InitialScanProcessor extends WorkerHost {
                 }
             });
             this.logger.log(`Job ${job.id}: Saved ${savedProducts.length} products.`);
-            await job.updateProgress(50);
+            await job.updateProgress({ progress: 50, description: 'Saving product variants...' });
 
 
             // 4. Prepare Canonical Variants with correct ProductIds
@@ -122,7 +123,7 @@ export class InitialScanProcessor extends WorkerHost {
                     tempVariantIdToImagesMap.set(tempVariantId, parentProduct.ImageUrls);
                 }
             }
-            await job.updateProgress(60);
+            await job.updateProgress({ progress: 60, description: 'Preparing variants for database...' });
 
             // 5. Batch-save Canonical Variants
             this.logger.log(`Job ${job.id}: Batch saving ${variantsToSave.length} canonical variants...`);
@@ -130,7 +131,7 @@ export class InitialScanProcessor extends WorkerHost {
                 variantsToSave as Array<Omit<ProductVariant, 'Id' | 'CreatedAt' | 'UpdatedAt'>>
             );
             this.logger.log(`Job ${job.id}: Saved ${savedVariants.length} variants.`);
-            await job.updateProgress(75);
+            await job.updateProgress({ progress: 75, description: 'Saving variant details...' });
 
             // Create a map from the temporary variant ID to the final saved variant ID
             const tempIdToSavedVariantIdMap = new Map<string, string>();
@@ -158,7 +159,7 @@ export class InitialScanProcessor extends WorkerHost {
                 await this.productsService.saveBulkVariantImages(imagesToSave);
                 this.logger.log(`Job ${job.id}: Saved product images.`);
             }
-            await job.updateProgress(85);
+            await job.updateProgress({ progress: 85, description: 'Saving inventory levels...' });
 
             // 7. Prepare and Batch-save Inventory Levels
             this.logger.log(`Job ${job.id}: Updating ProductVariantIds and preparing ${mappedInventoryLevels.length} inventory levels...`);
@@ -177,7 +178,7 @@ export class InitialScanProcessor extends WorkerHost {
                 this.logger.log(`Job ${job.id}: Saved ${inventoryLevelsToSave.length} inventory levels.`);
             }
             await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'SCAN_DATABASE_SAVE_FINISH', 'Info', `Database save complete. Saved ${savedProducts.length} products and ${savedVariants.length} variants.`);
-            await job.updateProgress(90);
+            await job.updateProgress({ progress: 90, description: 'Generating suggestions...' });
 
 
             // --- Generate and Store Suggestions ---
@@ -221,6 +222,7 @@ export class InitialScanProcessor extends WorkerHost {
             // Update Connection Status
             await this.connectionService.updateConnectionStatus(connectionId, userId, 'needs_review');
             this.logger.log(`Job ${job.id}: Scan complete. Connection ${connectionId} status updated to 'needs_review'.`);
+            await job.updateProgress({ progress: 100, description: 'Scan complete!' });
 
              this.logger.log(`[ACTIVE JOB] Job ${job.id} completed successfully for connection ${connectionId}`);
             return analysis;

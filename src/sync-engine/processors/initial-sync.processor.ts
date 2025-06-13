@@ -129,7 +129,7 @@ export class InitialSyncProcessor extends WorkerHost {
             // await supabaseClient.rpc('commit_transaction'); // Conceptual commit
             
             this.logger.log(`Initial sync for connection ${connectionId} completed. Total: ${totalItemsProcessed}, Success: ${itemsSuccessfullySynced}, Failed: ${itemsFailedToSync}.`);
-            await this.connectionService.updateConnectionStatus(connectionId, userId, itemsFailedToSync > 0 ? 'error' : 'syncing');
+            await this.connectionService.updateConnectionStatus(connectionId, userId, itemsFailedToSync > 0 ? 'error' : 'active');
             await this.connectionService.updateLastSyncSuccess(connectionId, new Date().toISOString());
 
             await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'INITIAL_SYNC_COMPLETED', itemsFailedToSync > 0 ? 'Warning' : 'Success',

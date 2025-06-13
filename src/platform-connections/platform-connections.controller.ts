@@ -1,6 +1,7 @@
-import { Controller, Get, Delete, Param, UseGuards, Request, Logger, ParseUUIDPipe, HttpCode, HttpStatus } from '@nestjs/common';
+import { Controller, Get, Delete, Param, UseGuards, Request, Logger, ParseUUIDPipe, HttpCode, HttpStatus, Patch, Body, ValidationPipe, ForbiddenException } from '@nestjs/common';
 import { PlatformConnectionsService, PlatformConnection } from './platform-connections.service';
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard'; // Adjust path
+import { UpdateConnectionStatusDto } from './dto/update-connection-status.dto';
 
 @UseGuards(SupabaseAuthGuard) // Protect all endpoints in this controller
 @Controller('platform-connections')
@@ -15,6 +16,22 @@ export class PlatformConnectionsController {
         this.logger.log(`Listing connections for user ${userId}`);
         // Service should return only non-sensitive fields
         return this.connectionsService.getConnectionsForUser(userId);
+    }
+
+    @Patch(':id/status')
+    @UseGuards(SupabaseAuthGuard)
+    async updateConnectionStatus(
+        @Request() req,
+        @Param('id', ParseUUIDPipe) connectionId: string,
+        @Body(ValidationPipe) body: UpdateConnectionStatusDto
+    ): Promise<void> {
+        const userId = req.user.id;
+        // Verify user owns this connection before updating
+        const connection = await this.connectionsService.getConnectionById(connectionId, userId);
+        if (!connection) {
+            throw new ForbiddenException('You do not have access to this connection.');
+        }
+        await this.connectionsService.updateConnectionStatus(connectionId, userId, body.status);
     }
 
     @Delete(':id')
