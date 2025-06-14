@@ -90,10 +90,19 @@ export class QueueManagerService {
     }
   }
 
-  async enqueueJob(jobData: JobData): Promise<void> {
+  async enqueueJob(jobData: JobData): Promise<string> {
     this.recordRequest(); // Record every enqueue attempt for rate checking
     this.logger.debug(`Enqueueing job with type ${jobData.type} via ${this.currentQueue.constructor.name}`);
-    return this.currentQueue.enqueueJob(jobData);
+    
+    // Generate a unique job ID
+    const jobId = `${jobData.type}-${jobData.connectionId}-${Date.now()}`;
+    
+    // Add the job ID to the job data
+    const jobDataWithId = { ...jobData, jobId };
+    
+    await this.currentQueue.enqueueJob(jobDataWithId);
+    
+    return jobId;
   }
 
   async processNextJob(): Promise<any> {

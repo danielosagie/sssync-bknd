@@ -46,6 +46,7 @@ export class InitialSyncService {
 
     async queueInitialScanJob(connectionId: string, userId: string): Promise<string> {
         const connection = await this.getConnectionAndVerify(connectionId, userId);
+        
         const jobData: JobData = { type: 'initial-scan', connectionId, userId, platformType: connection.PlatformType };
 
         await this.activityLogService.logActivity(
@@ -60,8 +61,20 @@ export class InitialSyncService {
         );
 
         try {
-            await this.queueManagerService.enqueueJob(jobData);
-            const message = `Initial scan job for connection ${connectionId} successfully handed to QueueManager.`;
+            // Enqueue the job and get the actual job ID from the queue manager
+            const jobId = await this.queueManagerService.enqueueJob(jobData);
+            
+            // Store the job ID in the connection's PlatformSpecificData for tracking
+            await this.connectionService.updateConnectionData(connectionId, userId, {
+                PlatformSpecificData: {
+                    ...connection.PlatformSpecificData,
+                    currentJobId: jobId,
+                    jobStartedAt: new Date().toISOString(),
+                    jobType: 'initial-scan'
+                }
+            });
+            
+            const message = `Initial scan job ${jobId} for connection ${connectionId} successfully handed to QueueManager.`;
             this.logger.log(message);
             
             await this.activityLogService.logActivity(
@@ -70,11 +83,11 @@ export class InitialSyncService {
                 connectionId,
                 'QUEUE_INITIAL_SCAN_JOB_SUCCESS',
                 'Success',
-                `Successfully queued initial scan job (via QueueManager) for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
+                `Successfully queued initial scan job ${jobId} (via QueueManager) for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
                 connectionId,
                 connection.PlatformType,
             );
-            return "queued_via_manager";
+            return jobId;
         } catch (error) {
             this.logger.error(`Failed to queue initial scan job for connection ${connectionId} via QueueManager: ${error.message}`, error.stack);
             throw error;
@@ -130,10 +143,11 @@ export class InitialSyncService {
         const jobData: JobData = { type: 'initial-sync', connectionId, userId, platformType: connection.PlatformType! };
 
         try {
-            await this.queueManagerService.enqueueJob(jobData);
-            const message = `Initial sync job for connection ${connectionId} successfully handed to QueueManager.`;
+            // Enqueue the job and get the actual job ID from the queue manager
+            const jobId = await this.queueManagerService.enqueueJob(jobData);
+            const message = `Initial sync job ${jobId} for connection ${connectionId} successfully handed to QueueManager.`;
             this.logger.log(message);
-            return "queued_via_manager_for_sync";
+            return jobId;
         } catch (error) {
             this.logger.error(`Failed to queue initial sync job for connection ${connectionId} via QueueManager: ${error.message}`, error.stack);
             throw new InternalServerErrorException(`Failed to queue initial sync job for ${connectionId}`);
@@ -149,41 +163,125 @@ export class InitialSyncService {
         total?: number,
         processed?: number
     }> {
+        this.logger.debug(`Getting progress for job ID: ${jobId}`);
+        
+        // First try to find the job in the queue system
         const job = await this.queueManagerService.getJobById(jobId);
-        if (!job) {
-            throw new NotFoundException(`Job with ID ${jobId} not found in any queue.`);
-        }
+        
+        if (job) {
+            // Job found in queue system - return its actual progress
+            const [isActive, isCompleted, isFailed] = await Promise.all([
+                job.isActive(),
+                job.isCompleted(),
+                job.isFailed(),
+            ]);
 
-        const [isActive, isCompleted, isFailed] = await Promise.all([
-            job.isActive(),
-            job.isCompleted(),
-            job.isFailed(),
-        ]);
+            let progressValue = 0;
+            let description = "Processing...";
+            let total: number | undefined = undefined;
+            let processed: number | undefined = undefined;
 
-        let progressValue = 0;
-        let description = "Processing...";
-        let total: number | undefined = undefined;
-        let processed: number | undefined = undefined;
-
-        if (typeof job.progress === 'object' && job.progress !== null) {
-            const progressData = job.progress as any;
-            progressValue = progressData.progress || 0;
-            description = progressData.description || "Processing...";
-            total = progressData.total;
-            processed = progressData.processed;
-        } else if (typeof job.progress === 'number') {
-            progressValue = job.progress;
+            if (typeof job.progress === 'object' && job.progress !== null) {
+                const progressData = job.progress as any;
+                progressValue = progressData.progress || 0;
+                description = progressData.description || "Processing...";
+                total = progressData.total;
+                processed = progressData.processed;
+            } else if (typeof job.progress === 'number') {
+                progressValue = job.progress;
+            }
+            
+            return {
+                isActive,
+                isCompleted,
+                isFailed,
+                progress: progressValue / 100, // Assuming progress is 0-100
+                description,
+                total,
+                processed,
+            };
         }
         
-        return {
-            isActive,
-            isCompleted,
-            isFailed,
-            progress: progressValue / 100, // Assuming progress is 0-100
-            description,
-            total,
-            processed,
-        };
+        // Job not found in queue system - check if it's tracked in connection data
+        // Extract connection ID from job ID (format: {type}-{connectionId}-{timestamp})
+        const jobIdParts = jobId.split('-');
+        if (jobIdParts.length >= 3) {
+            const jobType = jobIdParts[0];
+            const connectionId = jobIdParts.slice(1, -1).join('-'); // Everything except the timestamp
+            
+            this.logger.debug(`Extracted connectionId: ${connectionId} from jobId: ${jobId}`);
+            
+            try {
+                // Get connection data to check job status
+                const { data: connections, error } = await this.connectionService.supabase
+                    .from('PlatformConnections')
+                    .select('*')
+                    .eq('Id', connectionId)
+                    .single();
+                
+                if (error) {
+                    this.logger.warn(`Error fetching connection ${connectionId}: ${error.message}`);
+                    throw new NotFoundException(`Job with ID ${jobId} not found and connection lookup failed.`);
+                }
+                
+                if (connections && connections.PlatformSpecificData?.currentJobId === jobId) {
+                    const jobData = connections.PlatformSpecificData;
+                    const jobStartedAt = new Date(jobData.jobStartedAt || Date.now());
+                    const now = new Date();
+                    const elapsedMinutes = (now.getTime() - jobStartedAt.getTime()) / (1000 * 60);
+                    
+                    // Check connection status to determine job state
+                    const status = connections.Status;
+                    
+                    if (status === 'needs_review') {
+                        // Job completed successfully
+                        return {
+                            isActive: false,
+                            isCompleted: true,
+                            isFailed: false,
+                            progress: 1.0,
+                            description: `${connections.PlatformType} scan completed successfully`,
+                            total: undefined,
+                            processed: undefined,
+                        };
+                    } else if (status === 'error') {
+                        // Job failed
+                        return {
+                            isActive: false,
+                            isCompleted: false,
+                            isFailed: true,
+                            progress: 0,
+                            description: `${connections.PlatformType} scan failed`,
+                            total: undefined,
+                            processed: undefined,
+                        };
+                    } else if (status === 'scanning' || status === 'syncing') {
+                        // Job is still active - simulate progress based on elapsed time
+                        const estimatedDurationMinutes = jobType === 'initial-scan' ? 3 : 5;
+                        const simulatedProgress = Math.min(0.95, elapsedMinutes / estimatedDurationMinutes);
+                        
+                        return {
+                            isActive: true,
+                            isCompleted: false,
+                            isFailed: false,
+                            progress: simulatedProgress,
+                            description: `${jobType === 'initial-scan' ? 'Scanning' : 'Syncing'} ${connections.PlatformType} products...`,
+                            total: undefined,
+                            processed: undefined,
+                        };
+                    }
+                }
+                
+                // If we reach here, the job might be completed but not tracked properly
+                this.logger.warn(`Job ${jobId} found in connection ${connectionId} but status is unclear. Status: ${connections?.Status}`);
+                
+            } catch (error) {
+                this.logger.warn(`Could not find connection data for job ${jobId}: ${error.message}`);
+            }
+        }
+        
+        // Job not found anywhere
+        throw new NotFoundException(`Job with ID ${jobId} not found in any queue or connection data.`);
     }
 
     async queueReconciliationJob(connectionId: string, userId: string, platformType: string): Promise<string> {
