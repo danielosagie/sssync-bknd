@@ -17,6 +17,9 @@ import { ProductsModule } from '../products/products.module';
 import { PlatformProductMappingsModule } from '../platform-product-mappings/platform-product-mappings.module';
 import { QueueModule } from '../queue.module';
 import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.module';
+import { UltraLowQueueService } from '../ultra-low-queue.service';
+import { BullMQQueueService } from '../bullmq-queue.service';
+import { QueueManagerService } from '../queue-manager.service';
 import { 
     RECONCILIATION_QUEUE,
     PUSH_OPERATIONS_QUEUE,
@@ -32,7 +35,7 @@ import {
     CanonicalDataModule,
     PlatformProductMappingsModule,
     QueueModule,
-    forwardRef(() => ProductsModule),
+    ProductsModule,
     PlatformAdaptersModule,
     BullModule.forRootAsync({
       imports: [ConfigModule],
@@ -78,6 +81,9 @@ import {
     PushOperationsProcessor,
     InitialScanProcessor,
     InitialSyncProcessor,
+    UltraLowQueueService,
+    BullMQQueueService,
+    QueueManagerService,
   ],
   exports: [
     InitialSyncService,
@@ -86,6 +92,9 @@ import {
     SyncCoordinatorService,
     InitialScanProcessor,
     InitialSyncProcessor,
+    UltraLowQueueService,
+    BullMQQueueService,
+    QueueManagerService,
   ],
 })
 export class SyncEngineModule {} 

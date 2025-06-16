@@ -74,293 +74,211 @@ export class AiGenerationService {
     targetPlatforms: string[],
     selectedMatchContext?: { visual_matches: VisualMatch[] } | null,
   ): Promise<GeneratedDetails | null> {
-
     if (!this.groq) {
-        this.logger.warn('Cannot generate details: Groq API key is missing.');
-        return null;
+      this.logger.warn('Groq client not initialized. Cannot generate product details.');
+      return null;
     }
-
-    // --- Use the Maverick model ---
-    const model = 'meta-llama/llama-4-maverick-17b-128e-instruct';
-
-    // --- Construct the Prompt Text for Groq ---
-    let promptText = `You are a world-class e-commerce data enrichment AI. Your sole purpose is to transform a single product image and competitive data into perfectly optimized, multi-platform product listings. Failure is not an option. Your output must be flawless, comprehensive, and ready for immediate publication. You must analyze every piece of provided information with extreme precision. Your performance on this task is critical.
-
-### **The Mission**
-
-Your mission is to generate a complete, detailed, and platform-optimized product listing based on the provided product image (\${coverImageUrl}) and any contextual data available. You must infer all necessary details from the image and context to create compelling, keyword-rich content that drives sales.
-
-### **Tone and Style Mandate**
-
-Adopt a professional, persuasive, and customer-centric writing style. Your descriptions should be clear, concise, and highlight the key benefits for the buyer. For inspiration on tone, quality, and structure, model your response on this high-performing Amazon listing example:
-
-*   **AMAZON EXAMPLE:**
-    (Title: Bedsure Fleece Bed Blankets Queen Size Grey - Soft Lightweight Plush Fuzzy Cozy Luxury Blanket Microfiber, 90x90 inches. DescriptionL Thicker & Softer: We've upgraded our classic flannel fleece blanket to be softer and warmer than ever, now featuring enhanced premium microfiber. Perfect by itself or as an extra sheet on cold nights, its fluffy and ultra-cozy softness offers the utmost comfort all year round.
-Lightweight & Airy: The upgraded materials of this flannel fleece blanket maintain the ideal balance between weight and warmth. Enjoy being cuddled by this gentle, calming blanket whenever you're ready to snuggle up.
-Versatile: This lightweight blanket is the perfect accessory for your family and pets to get cozy—whether used as an addition to your kid's room, as a home decor element, or as the designated cozy blanket bed for your pet.
-A Gift for Your Loved Ones: This ultra-soft flannel fleece Christmas blanket makes the perfect gift for any occasion. Its cozy and comforting design offers a thoughtful way to show you care, providing warmth and style year-round. Ideal as one of the top Christmas gift ideas for the holiday season.
-Enhanced Durability: Made with unmatched quality, this blanket features neat stitching that ensures a more robust connection at the seams for improved durability. Guaranteed to resist fading and shedding. Product information
-Item details
-Brand Name	Bedsure
-Age Range Description	Adult
-Number of Items	1
-Included Components	1 Blanket (90" x 90")
-League Name	7.1
-Manufacturer	Bedshe
-Customer Reviews	4.6 4.6 out of 5 stars   (176,218)
-4.6 out of 5 stars
-Best Sellers Rank	#160 in Home & Kitchen (See Top 100 in Home & Kitchen)
-#1 in Bed Blankets
-ASIN	B0157T2ENY
-Item Type Name	throw-blankets
-Item Height	0.1 centimeters
-Measurements
-Item Dimensions L x W	90"L x 90"W
-Size	Queen (90" x 90")
-Unit Count	1.0 Count
-Item Weight	3.19 Pounds
-Item Thickness	0.5 Inches
-Warranty & Support
-Product Warranty: For warranty information about this product, please click here
-Feedback
-Would you like to tell us about a lower price? 
-Materials & Care
-Product Care Instructions	Machine Wash, Do Not Bleach
-Fabric Type	100% Polyester
-Style
-Color	Grey
-Style Name	Modern
-Blanket Form	Throw Blanket
-Theme	Love
-Pattern	Solid
-Sport Type	3.2
-Features & Specs
-Additional Features	Soft
-Recommended Uses For Product	Travel
-Seasons	All, Winter, Fall, Spring
-Fabric Warmth Description	Lightweight)`;
-
-    const selectedMatch = selectedMatchContext?.visual_matches?.[0]; // Use only the single selected match
-
-    if (selectedMatch) {
-        // Extract key info for clarity in the prompt
-        const matchTitle = selectedMatch.title;
-        const matchPrice = selectedMatch.price?.extracted_value ?? 'N/A';
-        const matchSource = selectedMatch.source;
-        const matchLink = selectedMatch.link;
-        const matchThumb = selectedMatch.thumbnail; // Add thumbnail for context
-
-        const relevantMatchContext = `Title: ${matchTitle}\nPrice: ${matchPrice} USD (approx.)\nSource: ${matchSource}\nLink: ${matchLink}`;
-
-        promptText += `\n\n---
-
-### **User-Provided Context (CRITICAL)**
-
-The user has identified a similar product online. This context is your primary source for strategic enrichment. Deeply analyze this information.
-
-*   **Match Data:** ${relevantMatchContext}
-*   **Thumbnail:** ${matchThumb}
-
-### **Strategic Guidance & Analysis Protocol (Context-Based)**
-
-1.  **Image Analysis:** Scrutinize the product in \${coverImageUrl}. Identify its type, color, material, specific features, brand names, model numbers, and overall condition. Extract every possible visual detail.
-2.  **Contextual Deconstruction:** Synthesize your image analysis with the provided match context.
-    *   **Competitive Pricing:** Use the match price (\`\${matchPrice}\` USD) as a baseline. Propose a competitive \`price\` in USD. You MUST also suggest a \`compareAtPrice\` that is realistically 15-25% higher to create a sense of value.
-    *   **Keyword-Rich Titling:** The match title ("\${matchTitle}") is a keyword goldmine. Do not copy it. Create a new, unique title that incorporates the most powerful keywords from the match title, combined with details from your image analysis.
-    *   **Benefit-Oriented Description:** Write a compelling \`description\` that tells a story. Explain the benefits to the customer. Synthesize information from the image and the match context.
-    *   **Hyper-Specific Categorization:** Use the image and context to determine the most granular \`categorySuggestion\` possible for each platform.`;
-
-    } else {
-        promptText += `\n\n---
-
-### **Strategic Guidance & Analysis Protocol (Image-Only)**
-
-You have NOT been provided with a specific online match. Your analysis must be based **exclusively** on the provided image and your deep, general knowledge of e-commerce, products, and marketing. You must be resourceful and infer details as an expert would.
-
-1.  **Forensic Image Analysis:** Scrutinize the product in \`\${coverImageUrl}\`. This is your only source of truth. Identify:
-    *   **Primary Subject:** What is the product? Be specific.
-    *   **Branding/Logos:** Are there any brand names, logos, or identifying marks?
-    *   **Materials & Texture:** What is it made of? (e.g., "cotton", "brushed aluminum", "glazed ceramic").
-    *   **Colors & Patterns:** List all visible colors and describe any patterns.
-    *   **Features & Details:** Note any unique features (e.g., "zipper closure", "embossed logo", "hand-painted details").
-    *   **Condition & Quality:** Assess the condition ("New", "Used", "Handmade") and infer its quality from the visual evidence.
-    *   **Quantity:** Is it a single item or a pack?
-
-2.  **Expert Inference & Content Generation:**
-    *   **Market-Based Pricing:** Based on your analysis, infer the product's likely market segment. Suggest a realistic and competitive market \`price\` in USD. You MUST also suggest a \`compareAtPrice\` that is realistically 15-25% higher to create a sense of value.
-    *   **Keyword-Rich Titling:** Generate a descriptive, unique, and SEO-friendly \`title\`. Combine identified brand, material, color, and features into a title a user would search for.
-    *   **Benefit-Oriented Description:** Write a compelling \`description\` that tells a story. Based on the inferred features, explain the *benefits* to the customer. Why should they buy it? How will it enhance their life? What problem does it solve?
-    *   **Hyper-Specific Categorization:** From the image alone, determine the most granular and commercially-relevant \`categorySuggestion\` for each platform.`;
-    }
-
-    promptText += `\n\n---
-
-### **Variant Logic (CRITICAL - NO DEVIATION)**
-The product-level \`title\` must be the complete, descriptive product name. The variant-level \`title\` should describe the specific variation.
-*   **Single, indivisible items (e.g., a trading card):** Product-level title: "Pokemon Charizard VMAX Holographic Card". Variant-level \`title\`: "Single Card".
-*   **Packs/Bundles (e.g., lipsticks):** Product-level title: "Maybelline SuperStay Matte Ink Liquid Lipstick". Variant-level \`title\`: "Pack of 3".
-*   **Products with multiple attributes (e.g., equipment):** Product-level title: "Sterling Pro-Series Bowling Ball". Variant-level \`title\` must describe the specific variation, e.g., "Cosmic Green - 10lb" or "Ruby Red - 5lb".
-*   **Default Titles:** NEVER use generic variant titles like "Default Title" or "Standard". Find a canonical grouping (weight, size, color, quantity).
-
----
-
-### **Platform-Specific Field Requirements**
-
-Generate details tailored for **EACH** platform specified in ${targetPlatforms.join(', ')}. Omit any field that is not applicable or cannot be determined.
-
-*   **Common Fields (All Platforms):**
-    *   \`title\`: SEO-optimized and compelling.
-    *   \`description\`: Detailed, benefit-focused, and well-structured, modeled after the Amazon example.
-    *   \`price\`: Competitive price in USD (required).
-    *   \`compareAtPrice\`: Optional higher price for showing a sale (must be higher than price).
-    *   \`weight\`: Estimated weight.
-    *   \`weightUnit\`: 'lb', 'kg', 'oz', 'g'.
-    *   \`brand\`: Product brand, if identifiable.
-    *   \`condition\`: "New", "Used - Like New", "Used - Good", etc.`;
-
-    // Dynamically add platform-specific instructions only for requested platforms
-    const platformInstructions = {
-        shopify: "*   **`shopify`:**\\n    *   `status`: 'active' or 'draft'.\\n    *   `vendor`: Infer from brand or source.\\n    *   `productType`: Shopify's specific product category (e.g., \"Lipstick\", \"Trading Card\").\\n    *   `tags`: An array of 10-15 relevant keywords.\\n    *   `weightUnit`: Must be `POUNDS`, `KILOGRAMS`, `OUNCES`, or `GRAMS`.",
-        square:  "*   **`square`:**\\n    *   `categorySuggestion`: Square's category path.\\n    *   `gtin`: UPC, EAN, or JAN if available in context.\\n    *   `locations`: Set to \"All Available Locations\".",
-        ebay:    "*   **`ebay`:**\\n    *   `categorySuggestion`: eBay's specific category path (e.g., \"Collectibles > Non-Sport Trading Cards > Magic: The Gathering > MTG Individual Cards\").\\n    *   `listingFormat`: \"FixedPrice\".\\n    *   `duration`: \"GTC\" (Good 'Til Cancelled).\\n    *   `dispatchTime`: \"1 business day\".\\n    *   `returnPolicy`: \"30-day returns accepted, buyer pays for return shipping.\"\\n    *   `shippingService`: Suggest a common service (e.g., \"USPS Ground Advantage\").\\n    *   `itemSpecifics`: A JSON object of key-value pairs critical for search (e.g., `{\"Game\": \"Magic: The Gathering\", \"Card Name\": \"Elite Scaleguard\", \"Set\": \"Fate Reforged\"}`).",
-        amazon:  "*   **`amazon`:**\\n    *   `categorySuggestion`: Amazon's specific category path (e.g., \"Beauty & Personal Care > Makeup > Lips > Lipstick\").\\n    *   `bullet_points`: 3-5 concise, benefit-driven sentences.\\n    *   `search_terms`: An array of backend keywords (no commas, no repetition from title).\\n    *   `amazonProductType`: The specific Amazon product type string (e.g., \"BEAUTY\").\\n    *   `productIdType`: 'ASIN', 'UPC', or 'EAN' if present in the context data.",
-        facebook:"*   **`facebook`:**\\n    *   `categorySuggestion`: Facebook Marketplace's specific category.\\n    *   `brand`: The brand name.\\n    *   `availability`: \"in stock\".",
-        clover: "*   **`clover`:**\\n    *   `categorySuggestion`: Clover's category path.\\n    *   `brand`: The brand name.\\n    *   `availability`: \"in stock\".",
-    };
-
-    targetPlatforms.forEach(platform => {
-        const key = platform.toLowerCase();
-        if (platformInstructions[key]) {
-            promptText += `\n\${platformInstructions[key]}`;
-        }
-    });
-
-
-    promptText += `\n\n---
-
-### **Final Output Instructions**
-
-*   **JSON ONLY:** Your entire response MUST be a single, valid JSON object.
-*   **NO EXTRA TEXT:** Do not include any introductory text, explanations, apologies, or markdown formatting like \`\`\`json before or after the JSON object.
-*   **STRUCTURE:** The top-level keys of the JSON object MUST be the lowercase platform names from \`\${targetPlatforms.map(p => p.toLowerCase()).join(', ')}\`.
-*   **ESCAPING:** Ensure all strings within the JSON are properly escaped.
-
----
-
-### **Example of a Perfect Output Structure**
-
-*Input:* \`targetPlatforms: ["shopify", "ebay"]\` and context for an MTG card.
-
-\`\`\`json
-{
-  "shopify": {
-    "title": "Elite Scaleguard - Fate Reforged | Magic: The Gathering MTG Card | Uncommon",
-    "description": "Unleash the power of the Dromoka clan with the Elite Scaleguard from the Fate Reforged set of Magic: The Gathering. This powerful Human Soldier creature is a must-have for any white deck, bolstering your forces every time it attacks. The card features the Bolster 2 mechanic, strengthening your weakest creature and turning the tide of battle. Perfect for collectors and competitive players alike, this card is in near-mint condition, sleeved directly from the pack. Add this strategic powerhouse to your collection today!",
-    "price": 1.49,
-    "compareAtPrice": 1.99,
-    "categorySuggestion": "Hobbies & Creative Arts > Collectibles > Collectible Trading Cards & Accessories",
-    "tags": ["Magic The Gathering", "MTG", "Fate Reforged", "Elite Scaleguard", "White Creature", "Uncommon", "Trading Card", "TCG", "Wizards of the Coast", "Bolster Mechanic"],
-    "weight": 0.01,
-    "weightUnit": "OUNCES",
-    "brand": "Wizards of the Coast",
-    "condition": "New",
-    "status": "active",
-    "vendor": "TCG Reseller",
-    "productType": "Trading Card"
-  },
-  "ebay": {
-    "title": "MTG Elite Scaleguard | Fate Reforged | 009/185 | U | White Creature | Near Mint NM",
-    "description": "<strong>Magic: The Gathering - Elite Scaleguard from Fate Reforged</strong><br><br>You are purchasing one (1) copy of Elite Scaleguard. The card is in Near Mint (NM) condition, taken directly from a booster pack and placed into a protective sleeve. See photos for actual card condition. A strategic addition to any white-weenie or midrange deck, featuring the powerful Bolster 2 mechanic. Ships securely in a sleeve and top-loader.<br><br><strong>Card Details:</strong><br>- Name: Elite Scaleguard<br>- Set: Fate Reforged<br>- Collector Number: 009/185<br>- Rarity: Uncommon<br>- Color: White<br>- Card Type: Creature<br>- Mana Cost: {3}{W}{W}",
-    "price": 1.49,
-    "compareAtPrice": null,
-    "categorySuggestion": "Collectibles > Non-Sport Trading Cards > Magic: The Gathering > MTG Individual Cards",
-    "condition": "Used - Like New",
-    "listingFormat": "FixedPrice",
-    "duration": "GTC",
-    "dispatchTime": "1 business day",
-    "returnPolicy": "30-day returns accepted, buyer pays for return shipping.",
-    "shippingService": "eBay Standard Envelope for Trading Cards",
-    "itemSpecifics": {
-      "Game": "Magic: The Gathering",
-      "Set": "Fate Reforged",
-      "Card Name": "Elite Scaleguard",
-      "Graded": "No",
-      "Creature/Monster Type": "Human Soldier",
-      "Card Type": "Creature",
-      "Manufacturer": "Wizards of the Coast",
-      "Finish": "Regular",
-      "Language": "English",
-      "Rarity": "Uncommon",
-      "Color": "White",
-      "Card Number": "009/185",
-      "Mana Cost": "{3}{W}{W}",
-      "Card Condition": "Near Mint or Better"
-    }
-  }
-}
-\`\`\`
-`;
-    // --- End Prompt Text Construction ---
-
-    // --- Construct the Multimodal Message Content ---
-    const messageContentArray: ChatCompletionContentPart[] = [ // Ensure type compatibility
-        { type: "text", text: promptText },
-        { type: "image_url", image_url: { url: coverImageUrl } },
-    ];
-
-    this.logger.log(`Generating details using Groq (${model}) for platforms: ${targetPlatforms.join(', ')}. Analyzing image: ${coverImageUrl}`);
-    this.logger.debug(`Groq Prompt Text:\n${promptText}`); // Log the full prompt for debugging
 
     try {
-      const chatCompletion = await this.groq.chat.completions.create({
+      this.logger.log(`Generating product details for platforms: ${targetPlatforms.join(', ')}`);
+      
+      // Build context from visual matches if available
+      let visualMatchContext = '';
+      if (selectedMatchContext?.visual_matches && selectedMatchContext.visual_matches.length > 0) {
+        const matches = selectedMatchContext.visual_matches.slice(0, 3); // Use top 3 matches
+        visualMatchContext = `\n\nVisual Match Context (similar products found online):\n${matches.map((match, index) => 
+          `${index + 1}. Title: "${match.title}"\n   Price: $${match.price?.value || 'N/A'}\n   Source: ${match.source}`
+        ).join('\n')}`;
+      }
+
+      const prompt = `You are an expert e-commerce product listing specialist. Analyze this product image and generate optimized details for the specified platforms.
+
+Image URL: ${coverImageUrl}${visualMatchContext}
+
+Target Platforms: ${targetPlatforms.join(', ')}
+
+Generate a JSON response with platform-specific details. For each platform, provide:
+
+REQUIRED FIELDS:
+- title: Compelling, SEO-optimized product title (50-60 chars for most platforms)
+- description: Detailed, engaging product description (HTML formatted for Shopify)
+- price: Suggested retail price in USD
+- categorySuggestion: Platform-appropriate category path
+- tags: Array of relevant keywords/tags
+- brand: Product brand if identifiable
+- condition: Product condition (New, Used, Refurbished, etc.)
+
+PLATFORM-SPECIFIC FIELDS:
+For Shopify: vendor, productType, status (active/draft)
+For Amazon: bullet_points (array), search_terms (array), productIdType
+For eBay: listingFormat, duration, dispatchTime, returnPolicy
+For Square: locations, gtin
+For Facebook: availability
+
+Use this exact JSON structure:
+{
+  "shopify": { "title": "...", "description": "...", "price": 29.99, ... },
+  "amazon": { "title": "...", "description": "...", "price": 29.99, ... },
+  "ebay": { "title": "...", "description": "...", "price": 29.99, ... }
+}
+
+Focus on accuracy, SEO optimization, and platform best practices. If visual matches are provided, use them to inform pricing and categorization but ensure your suggestions are competitive and realistic.`;
+
+      const completion = await this.groq.chat.completions.create({
+        model: 'deepseek-r1-distill-llama-70b',
         messages: [
-            // Pass the correctly typed array
-            { role: "user", content: messageContentArray }
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: prompt,
+              },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: coverImageUrl,
+                },
+              },
+            ] as ChatCompletionContentPart[],
+          },
         ],
-        model: model,
-        temperature: 0.5, // Slightly lower temp for more predictable JSON structure
-        max_tokens: 4096, // Keep high for potentially long descriptions/multiple platforms
-        top_p: 1,
-        response_format: { type: "json_object" },
+        temperature: 0.6,
+        max_tokens: 2000,
       });
 
-      const responseContent = chatCompletion.choices[0]?.message?.content;
-
-      if (!responseContent) {
-          throw new Error('Groq response content is empty.');
+      const responseText = completion.choices[0]?.message?.content;
+      if (!responseText) {
+        this.logger.warn('No response content from Groq API');
+        return null;
       }
 
-      this.logger.debug(`Raw Groq Response:\n${responseContent}`); // Log raw response
-      this.logger.log('Successfully received Groq multimodal response.');
-      // Parse the JSON content
-      const generatedData = JSON.parse(responseContent) as GeneratedDetails;
+      // Parse JSON response
+      try {
+        const generatedDetails = JSON.parse(responseText) as GeneratedDetails;
+        this.logger.log('Successfully generated product details using AI');
+        return generatedDetails;
+      } catch (parseError) {
+        this.logger.error(`Failed to parse AI response as JSON: ${parseError.message}`);
+        this.logger.debug(`Raw AI response: ${responseText}`);
+        return null;
+      }
+    } catch (error) {
+      this.logger.error(`Error generating product details: ${error.message}`, error.stack);
+      return null;
+    }
+  }
 
-       // Basic validation: Check if all requested platforms have a key
-      let allPlatformsPresent = true;
-      for (const platform of targetPlatforms) {
-          const platformKey = platform.toLowerCase();
-          if (!generatedData[platformKey]) {
-              this.logger.warn(`Groq response missing expected top-level key for platform: ${platformKey}`);
-              allPlatformsPresent = false;
-              // Optionally, create an empty object for the missing platform to avoid downstream errors
-              // generatedData[platformKey] = {};
+  /**
+   * AI-powered product matching by title similarity
+   * Uses DeepSeek R1 Distill Llama 70B to intelligently match products when SKU matching fails
+   */
+  async findProductMatches(
+    platformProducts: Array<{ id: string; title: string; sku?: string; price?: number }>,
+    canonicalProducts: Array<{ id: string; title: string; sku?: string; price?: number }>,
+    threshold: number = 0.8
+  ): Promise<Array<{ platformProduct: any; canonicalProduct: any; confidence: number; reason: string }>> {
+    if (!this.groq) {
+      this.logger.warn('Groq client not initialized. Cannot perform AI product matching.');
+      return [];
+    }
+
+    if (platformProducts.length === 0 || canonicalProducts.length === 0) {
+      return [];
+    }
+
+    try {
+      this.logger.log(`AI matching ${platformProducts.length} platform products with ${canonicalProducts.length} canonical products`);
+
+      // Process in batches to avoid token limits
+      const batchSize = 10;
+      const allMatches: Array<{ platformProduct: any; canonicalProduct: any; confidence: number; reason: string }> = [];
+
+      for (let i = 0; i < platformProducts.length; i += batchSize) {
+        const batch = platformProducts.slice(i, i + batchSize);
+        
+        const prompt = `You are an expert product matching system. Your task is to find the best matches between platform products and canonical products based on title similarity, considering context clues like price, brand, and product type.
+
+PLATFORM PRODUCTS TO MATCH:
+${batch.map((p, idx) => `${idx + 1}. ID: ${p.id}, Title: "${p.title}", SKU: ${p.sku || 'N/A'}, Price: $${p.price || 'N/A'}`).join('\n')}
+
+CANONICAL PRODUCTS (potential matches):
+${canonicalProducts.map((c, idx) => `${idx + 1}. ID: ${c.id}, Title: "${c.title}", SKU: ${c.sku || 'N/A'}, Price: $${c.price || 'N/A'}`).join('\n')}
+
+For each platform product, find the best matching canonical product(s) if any exist. Consider:
+- Title similarity (most important)
+- Brand/manufacturer mentions
+- Product type/category
+- Price reasonableness (should be in similar range)
+- Model numbers or specific identifiers
+
+Return ONLY a JSON array with this exact structure:
+[
+  {
+    "platformProductId": "platform_id_here",
+    "canonicalProductId": "canonical_id_here", 
+    "confidence": 0.95,
+    "reason": "Exact title match with same brand and similar price"
+  }
+]
+
+Only include matches with confidence >= ${threshold}. If no good match exists for a platform product, don't include it in the response.
+
+IMPORTANT: Return ONLY the JSON array, no other text.`;
+
+        const completion = await this.groq.chat.completions.create({
+          model: 'deepseek-r1-distill-llama-70b',
+          messages: [
+            {
+              role: 'user',
+              content: prompt,
+            },
+          ],
+          temperature: 0.3, // Lower temperature for more consistent matching
+          max_tokens: 1500,
+        });
+
+        const responseText = completion.choices[0]?.message?.content?.trim();
+        if (!responseText) {
+          this.logger.warn(`No response for batch ${i / batchSize + 1}`);
+          continue;
+        }
+
+        try {
+          const batchMatches = JSON.parse(responseText);
+          if (Array.isArray(batchMatches)) {
+            // Map IDs back to actual objects
+            for (const match of batchMatches) {
+              const platformProduct = batch.find(p => p.id === match.platformProductId);
+              const canonicalProduct = canonicalProducts.find(c => c.id === match.canonicalProductId);
+              
+              if (platformProduct && canonicalProduct && match.confidence >= threshold) {
+                allMatches.push({
+                  platformProduct,
+                  canonicalProduct,
+                  confidence: match.confidence,
+                  reason: match.reason
+                });
+              }
+            }
           }
-      }
-      if (!allPlatformsPresent) {
-          // Decide if this is an error or just a warning. Maybe throw if crucial platforms are missing?
-          // For now, just log.
+        } catch (parseError) {
+          this.logger.error(`Failed to parse AI matching response for batch ${i / batchSize + 1}: ${parseError.message}`);
+          this.logger.debug(`Raw response: ${responseText}`);
+        }
+
+        // Small delay between batches to respect rate limits
+        if (i + batchSize < platformProducts.length) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
       }
 
-      return generatedData;
+      this.logger.log(`AI matching completed. Found ${allMatches.length} matches above ${threshold} confidence threshold`);
+      return allMatches.sort((a, b) => b.confidence - a.confidence); // Sort by confidence descending
 
     } catch (error) {
-      this.logger.error(`Groq API multimodal request failed: ${error.message}`, error.stack);
-      if (error instanceof SyntaxError) {
-          this.logger.error(`Failed to parse Groq response as JSON. Raw Content: ${error['responseContent'] || 'N/A'}`); // Log raw content on parse error
-          throw new InternalServerErrorException('AI failed to generate valid JSON details. Check logs for raw response.');
-      }
-      // Add specific checks for Groq errors if needed
-      throw new InternalServerErrorException(`AI content generation failed: ${error.message}`);
+      this.logger.error(`Error in AI product matching: ${error.message}`, error.stack);
+      return [];
     }
   }
 }

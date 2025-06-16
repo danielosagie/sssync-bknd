@@ -141,5 +141,25 @@ export class InventoryService {
         return data as InventoryLevel;
     }
 
+    async getInventoryLevelsByProductId(productId: string): Promise<InventoryLevel[]> {
+        const supabase = this.getSupabaseClient();
+        this.logger.debug(`Fetching inventory levels for product ${productId}`);
+
+        const { data, error } = await supabase
+            .from('InventoryLevels')
+            .select(`
+                *,
+                ProductVariants!inner(ProductId)
+            `)
+            .eq('ProductVariants.ProductId', productId);
+
+        if (error) {
+            this.logger.error(`Error fetching inventory levels for product ${productId}: ${error.message}`);
+            throw new InternalServerErrorException(`Could not fetch inventory levels: ${error.message}`);
+        }
+
+        return (data || []) as InventoryLevel[];
+    }
+
     // Add other methods as needed (getLevel, getLevelsForVariant, etc.)
 } 

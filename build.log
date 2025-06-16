@@ -1,0 +1,19 @@
+
+> sssync-bknd@0.0.1 build
+> nest build
+
+[96msrc/platform-adapters/shopify/shopify.adapter.ts[0m:[93m77[0m:[93m74[0m - [91merror[0m[90m TS2339: [0mProperty 'getProductsWithVariantsByUserId' does not exist on type 'ProductsService'.
+
+[7m77[0m             const existingCanonicalProducts = await this.productsService.getProductsWithVariantsByUserId(userId);
+[7m  [0m [91m                                                                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+[96msrc/platform-adapters/shopify/shopify.adapter.ts[0m:[93m96[0m:[93m25[0m - [91merror[0m[90m TS2345: [0mArgument of type '{ id: string; title: string; sku: string | null | undefined; price: number | undefined; }[]' is not assignable to parameter of type '{ id: string; title: string; sku?: string | undefined; price?: number | undefined; }[]'.
+  Type '{ id: string; title: string; sku: string | null | undefined; price: number | undefined; }' is not assignable to type '{ id: string; title: string; sku?: string | undefined; price?: number | undefined; }'.
+    Types of property 'sku' are incompatible.
+      Type 'string | null | undefined' is not assignable to type 'string | undefined'.
+        Type 'null' is not assignable to type 'string | undefined'.
+
+[7m96[0m                         platformProductsForMatching,
+[7m  [0m [91m                        ~~~~~~~~~~~~~~~~~~~~~~~~~~~[0m
+
+Found 2 error(s).
+

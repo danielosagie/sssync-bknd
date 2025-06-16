@@ -1,12 +1,13 @@
 import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { ShopifyApiClient, ShopifyLocationNode } from './shopify-api-client.service';
 import { ShopifyMapper, CanonicalProduct, CanonicalProductVariant } from './shopify.mapper';
-import { PlatformConnection } from '../../platform-connections/platform-connections.service';
+import { PlatformConnection, PlatformConnectionsService } from '../../platform-connections/platform-connections.service';
 import { BaseAdapter, BaseSyncLogic } from '../base-adapter.interface';
 import { ProductsService } from '../../canonical-data/products.service';
 import { InventoryService, CanonicalInventoryLevel } from '../../canonical-data/inventory.service';
 import { PlatformProductMappingsService, PlatformProductMapping } from '../../platform-product-mappings/platform-product-mappings.service';
 import { Product, ProductVariant as SupabaseProductVariant } from '../../common/types/supabase.types';
+import { AiGenerationService } from '../../products/ai-generation/ai-generation.service';
 
 // Facade for Shopify interactions
 @Injectable()
@@ -19,6 +20,8 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
         private readonly productsService: ProductsService,
         private readonly inventoryService: InventoryService,
         private readonly mappingsService: PlatformProductMappingsService,
+        private readonly connectionsService: PlatformConnectionsService,
+        private readonly aiGenerationService: AiGenerationService,
     ) {}
 
     // Return the configured client instance
@@ -48,10 +51,16 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
         this.logger.log(`Starting Shopify sync for connection ${connection.Id}, user ${userId}`);
         const apiClient = this.getApiClient(connection);
 
+        // Update connection status to syncing
+        await this.connectionsService.updateConnectionStatus(connection.Id, userId, 'syncing');
+
         try {
             const shopifyData = await apiClient.fetchAllRelevantData(connection);
             if (!shopifyData || shopifyData.products.length === 0) {
                 this.logger.log('No products fetched from Shopify.');
+                // Update to active even if no products found (successful sync)
+                await this.connectionsService.updateConnectionStatus(connection.Id, userId, 'active');
+                await this.connectionsService.updateLastSyncSuccess(connection.Id, userId);
                 return;
             }
 
@@ -60,6 +69,44 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
                 canonicalVariants, 
                 canonicalInventoryLevels 
             } = this.shopifyMapper.mapShopifyDataToCanonical(shopifyData, userId, connection.Id);
+
+            // 4. AI-powered product matching for products without SKU matches
+            this.logger.log('Starting AI-powered product matching for unmatched products...');
+            
+            // Get existing canonical products for this user to match against
+            const existingCanonicalProducts = await this.productsService.getProductsWithVariantsByUserId(userId);
+            const existingProductsForMatching = existingCanonicalProducts.map(p => ({
+                id: p.Id,
+                title: p.variants?.[0]?.Title || 'Untitled Product',
+                sku: p.variants?.[0]?.Sku || undefined,
+                price: p.variants?.[0]?.Price
+            }));
+
+            const platformProductsForMatching = canonicalProducts.map(cp => ({
+                id: cp.Id!, // Shopify Product GID
+                title: cp.Title || 'Untitled',
+                sku: canonicalVariants.find(cv => cv.ProductId === cp.Id)?.Sku || undefined,
+                price: canonicalVariants.find(cv => cv.ProductId === cp.Id)?.Price
+            }));
+
+            let aiMatches: Array<{ platformProduct: any; canonicalProduct: any; confidence: number; reason: string }> = [];
+            if (existingProductsForMatching.length > 0 && platformProductsForMatching.length > 0) {
+                try {
+                    aiMatches = await this.aiGenerationService.findProductMatches(
+                        platformProductsForMatching,
+                        existingProductsForMatching,
+                        0.8 // 80% confidence threshold
+                    );
+                    this.logger.log(`AI matching found ${aiMatches.length} potential matches`);
+                    
+                    // Log the matches for debugging
+                    for (const match of aiMatches) {
+                        this.logger.log(`AI Match: "${match.platformProduct.title}" -> "${match.canonicalProduct.title}" (${Math.round(match.confidence * 100)}% confidence: ${match.reason})`);
+                    }
+                } catch (error) {
+                    this.logger.warn(`AI matching failed: ${error.message}`);
+                }
+            }
 
             const allInventoryToSave: CanonicalInventoryLevel[] = [];
 
@@ -182,8 +229,16 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
             }
 
             this.logger.log(`Shopify sync completed for connection ${connection.Id}`);
+            
+            // Update connection status to active on successful completion
+            await this.connectionsService.updateConnectionStatus(connection.Id, userId, 'active');
+            await this.connectionsService.updateLastSyncSuccess(connection.Id, userId);
         } catch (error) {
             this.logger.error(`Error during Shopify sync for connection ${connection.Id}: ${error.message}`, error.stack);
+            
+            // Update connection status to error on failure
+            await this.connectionsService.updateConnectionStatus(connection.Id, userId, 'error');
+            
             throw new InternalServerErrorException(`Shopify sync failed: ${error.message}`);
         }
     }
@@ -258,16 +313,16 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
                 if (originalCanonicalVariant && originalCanonicalVariant.Id) {
                     platformVariantIds[originalCanonicalVariant.Id] = shopifyVariantNode.id; // Map canonical ID to Shopify GID
                 } else {
-                    this.logger.warn(`Could not map created Shopify variant (SKU: ${shopifyVariantNode.sku}, GID: ${shopifyVariantNode.id}) back to a canonical variant by SKU.`);
-                }
-            }
-            
-            if (Object.keys(platformVariantIds).length !== canonicalVariants.length) {
-                 this.logger.warn(`Mismatch in number of canonical variants provided and Shopify variants mapped. Expected ${canonicalVariants.length}, Got ${Object.keys(platformVariantIds).length}. Some variants might not have been created or mapped correctly.`);
-            }
+                     this.logger.warn(`Could not map created Shopify variant (SKU: ${shopifyVariantNode.sku}, GID: ${shopifyVariantNode.id}) back to a canonical variant by SKU.`);
+                 }
+             }
+             
+             if (Object.keys(platformVariantIds).length !== canonicalVariants.length) {
+                  this.logger.warn(`Mismatch in number of canonical variants provided and Shopify variants mapped. Expected ${canonicalVariants.length}, Got ${Object.keys(platformVariantIds).length}. Some variants might not have been created or mapped correctly.`);
+             }
 
-            this.logger.log(`Successfully created product ${platformProductId} on Shopify for connection ${connection.Id}. Mapped variants: ${JSON.stringify(platformVariantIds)}`);
-            return { platformProductId, platformVariantIds };
+             this.logger.log(`Successfully created product ${platformProductId} on Shopify for connection ${connection.Id}. Mapped variants: ${JSON.stringify(platformVariantIds)}`);
+             return { platformProductId, platformVariantIds };
 
         } catch (error) {
             this.logger.error(`Error creating product on Shopify for connection ${connection.Id}: ${error.message}`, error.stack);
@@ -547,4 +602,4 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
             throw new InternalServerErrorException(`Shopify single product sync failed for ${platformProductGid}: ${error.message}`);
         }
     }
-} 
+}

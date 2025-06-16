@@ -6,6 +6,7 @@ import { ConfigModule } from '@nestjs/config'; // Needed by API client
 import { PlatformConnectionsModule } from '../../platform-connections/platform-connections.module';
 import { CanonicalDataModule } from '../../canonical-data/canonical-data.module';
 import { PlatformProductMappingsModule } from '../../platform-product-mappings/platform-product-mappings.module';
+import { AiGenerationService } from '../../products/ai-generation/ai-generation.service';
 
 @Module({
   imports: [
@@ -14,7 +15,7 @@ import { PlatformProductMappingsModule } from '../../platform-product-mappings/p
     CanonicalDataModule,
     PlatformProductMappingsModule,
   ],
-  providers: [ShopifyApiClient, ShopifyMapper, ShopifyAdapter],
+  providers: [ShopifyApiClient, ShopifyMapper, ShopifyAdapter, AiGenerationService],
   exports: [ShopifyAdapter, ShopifyApiClient], // Export the main adapter facade AND ShopifyApiClient
 })
 export class ShopifyAdapterModule {} 

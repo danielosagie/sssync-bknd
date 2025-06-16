@@ -1,6 +1,7 @@
 // src/products/products.controller.ts
 import { Controller, Post, Body, Query, UsePipes, ValidationPipe, Logger, BadRequestException, HttpCode, HttpStatus, UseGuards, Request, Get, Param, NotFoundException, InternalServerErrorException, HttpException, Req } from '@nestjs/common';
 import { ProductsService, SimpleProduct, SimpleProductVariant, SimpleAiGeneratedContent, GeneratedDetails } from './products.service';
+import { CrossAccountSyncService } from './cross-account-sync.service';
 import { AnalyzeImagesDto } from './dto/analyze-images.dto';
 import { GenerateDetailsDto } from './dto/generate-details.dto';
 import { SerpApiLensResponse } from './image-recognition/image-recognition.service';
@@ -70,7 +71,8 @@ export class ProductsController {
         private readonly platformConnectionsService: PlatformConnectionsService,
         private readonly shopifyApiClient: ShopifyApiClient,
         private readonly platformProductMappingsService: PlatformProductMappingsService,
-        private readonly supabaseService: SupabaseService
+        private readonly supabaseService: SupabaseService,
+        private readonly crossAccountSyncService: CrossAccountSyncService
     ) {}
 
     // Helper method for retry logic
@@ -304,7 +306,12 @@ export class ProductsController {
             };
         },
         @Req() req: AuthenticatedRequest
-    ) {
+    ): Promise<{ 
+        message: string; 
+        shopifyProductId?: string;
+        operationId?: string;
+        status?: string;
+    }> {
         this.logger.log(`[publishToShopify] Entered method for productId: ${productId}, user: ${req.user.id}`);
         this.logger.debug(`[publishToShopify] Received publishData: ${JSON.stringify(publishData)}`);
 
@@ -494,9 +501,22 @@ export class ProductsController {
             }
 
             if (!shopifyProductIdForMedia) {
-                const errorMessage = `Failed to obtain Shopify Product ID for product ${productId}. Status: ${shopifyResponse.status}`;
-                this.logger.error(`[publishToShopify] ${errorMessage}`);
-                throw new InternalServerErrorException(errorMessage);
+                // Check if this is an async operation that was successfully queued
+                if (shopifyResponse.status === 'CREATED' || shopifyResponse.status === 'RUNNING') {
+                    this.logger.log(`[publishToShopify] Product creation queued successfully on Shopify. Operation ID: ${shopifyResponse.operationId}, Status: ${shopifyResponse.status}`);
+                    
+                    // For async operations, we don't have the product ID immediately
+                    // Return success without trying to create mappings
+                    return { 
+                        message: `Product ${productId} successfully queued for creation on Shopify. Operation ID: ${shopifyResponse.operationId}`,
+                        operationId: shopifyResponse.operationId,
+                        status: shopifyResponse.status
+                    };
+                } else {
+                    const errorMessage = `Failed to obtain Shopify Product ID for product ${productId}. Status: ${shopifyResponse.status}`;
+                    this.logger.error(`[publishToShopify] ${errorMessage}`);
+                    throw new InternalServerErrorException(errorMessage);
+                }
             }
 
             this.logger.log(`[publishToShopify] Successfully created/updated product on Shopify with files. Shopify Product ID: ${shopifyProductIdForMedia}`);
@@ -961,5 +981,123 @@ export class ProductsController {
         return result;
     }
 
-    // ... (TODO endpoints) ...
+    /**
+     * Cross-account product synchronization endpoint
+     * Syncs products, inventory, and pricing across all enabled platform connections for the user
+     */
+    @Post('cross-account/sync')
+    @UseGuards(SupabaseAuthGuard)
+    @HttpCode(HttpStatus.ACCEPTED)
+    async syncProductsAcrossAccounts(
+        @Body() syncData: {
+            sourceConnectionId: string;
+            targetConnectionIds: string[];
+            syncInventory?: boolean;
+            syncPricing?: boolean;
+            syncStatus?: boolean;
+            autoSync?: boolean;
+        },
+        @Req() req: AuthenticatedRequest
+    ): Promise<{
+        message: string;
+        success: boolean;
+        syncedProducts: number;
+        failedProducts: number;
+        errors: string[];
+    }> {
+        const userId = req.user.id;
+        this.logger.log(`[POST /cross-account/sync] User: ${userId} - Starting cross-account sync`);
+
+        try {
+            const options = {
+                sourceConnectionId: syncData.sourceConnectionId,
+                targetConnectionIds: syncData.targetConnectionIds,
+                syncInventory: syncData.syncInventory ?? true,
+                syncPricing: syncData.syncPricing ?? true,
+                syncStatus: syncData.syncStatus ?? true,
+                autoSync: syncData.autoSync ?? false
+            };
+
+            const result = await this.crossAccountSyncService.syncProductsAcrossAccounts(userId, options);
+
+            this.logger.log(`[POST /cross-account/sync] User: ${userId} - Sync completed. Success: ${result.success}, Synced: ${result.syncedProducts}`);
+            
+            return {
+                message: result.success ? 'Cross-account synchronization completed successfully' : 'Cross-account synchronization completed with errors',
+                success: result.success,
+                syncedProducts: result.syncedProducts,
+                failedProducts: result.failedProducts,
+                errors: result.errors
+            };
+        } catch (error) {
+            this.logger.error(`[POST /cross-account/sync] User: ${userId} - Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Cross-account sync failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Cross-account product search endpoint
+     * Searches for products across all user's platform connections
+     */
+    @Get('cross-account/search')
+    @UseGuards(SupabaseAuthGuard)
+    @HttpCode(HttpStatus.OK)
+    async searchProductsAcrossConnections(
+        @Req() req: AuthenticatedRequest,
+        @Query('query') searchQuery: string,
+        @Query('connectionIds') connectionIds?: string // Comma-separated connection IDs to search
+    ): Promise<{
+        results: Array<{
+            productId: string;
+            variantId: string;
+            sku: string;
+            title: string;
+            price: number;
+            platformType: string;
+            connectionId: string;
+            connectionName: string;
+            lastSynced?: string;
+        }>;
+        totalResults: number;
+    }> {
+        const userId = req.user.id;
+        this.logger.log(`[GET /cross-account/search] User: ${userId} - Searching: "${searchQuery}"`);
+
+        if (!searchQuery || searchQuery.trim().length === 0) {
+            throw new BadRequestException('Search query is required and cannot be empty');
+        }
+
+        try {
+            const connectionFilter = connectionIds?.split(',').map(id => id.trim()).filter(Boolean);
+
+            const searchResults = await this.crossAccountSyncService.searchProductsAcrossConnections(
+                userId,
+                searchQuery,
+                connectionFilter
+            );
+
+            // Transform the results to match the expected format
+            const formattedResults = searchResults.map(item => ({
+                productId: item.product?.Id || '',
+                variantId: item.variant?.Id || '',
+                sku: item.variant?.Sku || '',
+                title: item.variant?.Title || '',
+                price: item.variant?.Price || 0,
+                platformType: item.connection?.PlatformType || '',
+                connectionId: item.connection?.Id || '',
+                connectionName: item.connection?.DisplayName || '',
+                lastSynced: item.mapping?.LastSyncedAt || undefined
+            }));
+
+            this.logger.log(`[GET /cross-account/search] User: ${userId} - Found ${formattedResults.length} results`);
+            
+            return {
+                results: formattedResults,
+                totalResults: formattedResults.length
+            };
+        } catch (error) {
+            this.logger.error(`[GET /cross-account/search] User: ${userId} - Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Cross-account search failed: ${error.message}`);
+        }
+    }
 }

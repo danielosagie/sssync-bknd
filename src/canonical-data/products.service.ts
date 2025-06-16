@@ -301,6 +301,54 @@ export class ProductsService {
         this.logger.log(`Successfully deleted product ${productId}.`);
     }
 
+    async getProductsWithVariantsByUserId(userId: string): Promise<Array<{ Id: string; variants: ProductVariant[] }>> {
+        const supabase = this.getSupabaseClient();
+        this.logger.debug(`Fetching products with variants for user ${userId}`);
+
+        const { data, error } = await supabase
+            .from('Products')
+            .select(`
+                Id,
+                UserId,
+                IsArchived,
+                ProductVariants (
+                    Id,
+                    ProductId,
+                    UserId,
+                    Sku,
+                    Title,
+                    Price,
+                    Barcode,
+                    Description,
+                    CompareAtPrice,
+                    Cost,
+                    Weight,
+                    WeightUnit,
+                    Options,
+                    RequiresShipping,
+                    IsTaxable,
+                    TaxCode,
+                    ImageId,
+                    PlatformSpecificData,
+                    IsArchived,
+                    CreatedAt,
+                    UpdatedAt
+                )
+            `)
+            .eq('UserId', userId)
+            .eq('IsArchived', false);
+
+        if (error) {
+            this.logger.error(`Error fetching products with variants for user ${userId}: ${error.message}`);
+            throw new InternalServerErrorException(`Could not fetch products with variants: ${error.message}`);
+        }
+
+        return (data || []).map(product => ({
+            Id: product.Id,
+            variants: (product.ProductVariants || []) as ProductVariant[]
+        }));
+    }
+
     // Add other methods as needed (getProductById, updateVariant, etc.)
 
 } 
