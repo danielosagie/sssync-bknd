@@ -93,16 +93,16 @@ export class InitialSyncService {
       platformType: connection.PlatformType,
     };
 
-    await this.activityLogService.logActivity(
-      userId,
-      'PlatformConnection',
-      connectionId,
-      'QUEUE_INITIAL_SCAN_JOB',
-      'Info',
-      `Attempting to queue initial scan job for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
-      connectionId,
-      connection.PlatformType,
-    );
+    await this.activityLogService.logActivity({
+      UserId: userId,
+      EntityType: 'PlatformConnection',
+      EntityId: connectionId,
+      EventType: 'INITIAL_SCAN_JOB_QUEUED',
+      Status: 'Info',
+      Message: `Attempting to queue initial scan job for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
+      PlatformConnectionId: connectionId,
+      Details: { platform: connection.PlatformType }
+    });
 
     try {
       // Enqueue the job and get the actual job ID from the queue manager
@@ -121,16 +121,16 @@ export class InitialSyncService {
       const message = `Initial scan job ${jobId} for connection ${connectionId} successfully handed to QueueManager.`;
       this.logger.log(message);
 
-      await this.activityLogService.logActivity(
-        userId,
-        'PlatformConnection',
-        connectionId,
-        'QUEUE_INITIAL_SCAN_JOB_SUCCESS',
-        'Success',
-        `Successfully queued initial scan job ${jobId} (via QueueManager) for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
-        connectionId,
-        connection.PlatformType,
-      );
+      await this.activityLogService.logActivity({
+        UserId: userId,
+        EntityType: 'PlatformConnection',
+        EntityId: connectionId,
+        EventType: 'INITIAL_SCAN_JOB_SUCCESS',
+        Status: 'Success',
+        Message: `Successfully queued initial scan job ${jobId} (via QueueManager) for ${connection.PlatformType} connection: ${connection.DisplayName}.`,
+        PlatformConnectionId: connectionId,
+        Details: { platform: connection.PlatformType }
+      });
       return jobId;
     } catch (error) {
       this.logger.error(
@@ -231,17 +231,48 @@ export class InitialSyncService {
       platformType: connection.PlatformType,
     };
 
+    await this.activityLogService.logActivity({
+      UserId: userId,
+      EntityType: 'PlatformConnection',
+      EntityId: connectionId,
+      EventType: 'INITIAL_SYNC_STARTED',
+      Status: 'Info',
+      Message: `Starting initial sync for ${connection.PlatformType} connection: ${connection.DisplayName}`,
+      PlatformConnectionId: connectionId,
+      Details: { platform: connection.PlatformType }
+    });
+
     try {
       // Enqueue the job and get the actual job ID from the queue manager
       const jobId = await this.queueManagerService.enqueueJob(jobData);
       const message = `Initial sync job ${jobId} for connection ${connectionId} successfully handed to QueueManager.`;
       this.logger.log(message);
+
+      await this.activityLogService.logActivity({
+        UserId: userId,
+        EntityType: 'PlatformConnection',
+        EntityId: connectionId,
+        EventType: 'INITIAL_SYNC_COMPLETED',
+        Status: 'Success',
+        Message: `Initial sync completed successfully for ${connection.PlatformType} connection: ${connection.DisplayName}`,
+        PlatformConnectionId: connectionId,
+        Details: { platform: connection.PlatformType }
+      });
       return jobId;
     } catch (error) {
       this.logger.error(
         `Failed to queue initial sync job for connection ${connectionId} via QueueManager: ${error.message}`,
         error.stack,
       );
+      await this.activityLogService.logActivity({
+        UserId: userId,
+        EntityType: 'Connection',
+        EntityId: connectionId,
+        EventType: 'INITIAL_SYNC_JOB_FAILED',
+        Status: 'Error',
+        Message: `Failed to queue initial sync job for ${connectionId}: ${error.message}`,
+        Details: { error: error.message }
+      });
       throw new InternalServerErrorException(
         `Failed to queue initial sync job for ${connectionId}`,
       );
@@ -431,16 +462,16 @@ export class InitialSyncService {
     this.logger.log(
       `Reconciliation job ${job.id} queued for connection ${connectionId}.`,
     );
-    await this.activityLogService.logActivity(
-      userId,
-      'Connection',
-      connectionId,
-      'RECONCILIATION_QUEUED',
-      'Info',
-      `Periodic reconciliation job queued for ${platformType} connection.`,
-      connectionId,
-      platformType,
-    );
+    await this.activityLogService.logActivity({
+      UserId: userId,
+      EntityType: 'Connection',
+      EntityId: connectionId,
+      EventType: 'RECONCILIATION_QUEUED',
+      Status: 'Info',
+      Message: `Periodic reconciliation job queued for ${platformType} connection.`,
+      PlatformConnectionId: connectionId,
+      Details: { platform: platformType }
+    });
     return job.id as string;
   }
 }

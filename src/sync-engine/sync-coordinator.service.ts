@@ -27,19 +27,18 @@ export class SyncCoordinatorService {
     ) {}
 
     // Method called by WebhookController or a dedicated WebhookProcessor job
-    async handleWebhook(platformType: string, payload: any, headers: Record<string, string>): Promise<void> {
-        this.logger.log(`Received webhook for platform: ${platformType} via SyncCoordinator.`);
+    async handleWebhook(platformType: string, payload: any, headers: Record<string, string>, webhookId?: string): Promise<void> {
+        const logPrefix = webhookId ? `[${webhookId}]` : '';
+        this.logger.log(`${logPrefix} Processing webhook for platform: ${platformType}`);
+        
         // Additional log for payload structure inspection
         if (payload) {
-            this.logger.debug(`Webhook payload keys: ${Object.keys(payload).join(', ')}`);
-        }
-        if (headers) {
-            this.logger.debug(`Webhook headers: ${JSON.stringify(headers)}`);
+            this.logger.debug(`${logPrefix} Webhook payload keys: ${Object.keys(payload).join(', ')}`);
         }
 
         const adapter = this.adapterRegistry.getAdapter(platformType);
         if (!adapter) {
-            this.logger.error(`No adapter found for platform type: ${platformType}. Cannot process webhook.`);
+            this.logger.error(`${logPrefix} No adapter found for platform type: ${platformType}. Cannot process webhook.`);
             return;
         }
 
@@ -99,23 +98,54 @@ export class SyncCoordinatorService {
         // Add more platform identification logic here
 
         if (!connection) {
-            this.logger.error(`Could not identify a platform connection for webhook from ${platformType}. Headers: ${JSON.stringify(headers)}, Payload sample: ${JSON.stringify(payload).substring(0, 200)}`);
+            this.logger.error(`${logPrefix} Could not identify a platform connection for webhook from ${platformType}. Headers: ${JSON.stringify(headers)}, Payload sample: ${JSON.stringify(payload).substring(0, 200)}`);
             return;
         }
 
         if (!connection.IsEnabled) {
-            this.logger.log(`Connection ${connection.Id} for ${platformType} (User: ${connection.UserId}) is disabled. Skipping webhook processing.`);
+            this.logger.log(`${logPrefix} Connection ${connection.Id} for ${platformType} (User: ${connection.UserId}) is disabled. Skipping webhook processing.`);
             return;
         }
 
         try {
-            this.logger.log(`Processing webhook for ${platformType}, connection ID ${connection.Id}, User ID ${connection.UserId}`);
-            await adapter.processWebhook(connection, payload, headers); // Pass connection, payload, and headers
-            // Optionally update LastSyncSuccessAt for the connection if the webhook implies a successful data interaction
-            // await this.connectionService.updateLastSyncSuccess(connection.Id, connection.UserId);
+            this.logger.log(`${logPrefix} Processing webhook for ${platformType}, connection ID ${connection.Id}, User ID ${connection.UserId}`);
+            await adapter.processWebhook(connection, payload, headers, webhookId); // Pass connection, payload, headers, and webhookId
+            
+            // Update last sync success for webhook processing
+            await this.connectionService.updateLastSyncSuccess(connection.Id, connection.UserId);
+            
+            // Log successful webhook processing
+            await this.activityLogService.logActivity({
+                UserId: connection.UserId,
+                EntityType: 'Webhook',
+                EntityId: webhookId || `webhook-${Date.now()}`,
+                EventType: 'WEBHOOK_SYNC_SUCCESS',
+                Status: 'Success',
+                Message: `Webhook successfully processed for ${platformType}`,
+                Details: { 
+                    platform: platformType, 
+                    connectionId: connection.Id,
+                    webhookId 
+                }
+            });
         } catch (error) {
-            this.logger.error(`Error processing webhook payload for ${platformType} via adapter (Connection: ${connection.Id}): ${error.message}`, error.stack);
-            // Store error on connection? Send notification?
+            this.logger.error(`${logPrefix} Error processing webhook payload for ${platformType} via adapter (Connection: ${connection.Id}): ${error.message}`, error.stack);
+            
+            // Log webhook processing error with user context
+            await this.activityLogService.logActivity({
+                UserId: connection.UserId,
+                EntityType: 'Webhook',
+                EntityId: webhookId || `webhook-error-${Date.now()}`,
+                EventType: 'WEBHOOK_SYNC_ERROR',
+                Status: 'Error',
+                Message: `Webhook processing failed for ${platformType}: ${error.message}`,
+                Details: { 
+                    platform: platformType, 
+                    connectionId: connection.Id, 
+                    error: error.message,
+                    webhookId 
+                }
+            });
         }
     }
 
@@ -164,40 +194,40 @@ export class SyncCoordinatorService {
         const product: Product | null = await this.productsService.getProductById(productId);
         if (!product) {
             this.logger.error(`Product not found for ProductID: ${productId}. Cannot push creation.`);
-            await this.activityLogService.logActivity(
-                userId,
-                'Product',
-                productId,
-                'PUSH_PRODUCT_CREATED_ERROR',
-                'Error',
-                `Product not found (ID: ${productId}) during push execution.`,
-            );
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Product',
+                EntityId: productId,
+                EventType: 'PUSH_PRODUCT_CREATED_ERROR',
+                Status: 'Error',
+                Message: `Product not found (ID: ${productId}) during push execution.`
+            });
             return;
         }
         if (product.UserId !== userId) {
             this.logger.error(`Product ${productId} does not belong to user ${userId}. Aborting creation push.`);
-             await this.activityLogService.logActivity(
-                userId,
-                'Product',
-                productId,
-                'PUSH_PRODUCT_CREATED_AUTH_ERROR',
-                'Error',
-                `User mismatch for Product ID: ${productId}. Expected ${product.UserId}.`,
-            );
+             await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Product',
+                EntityId: productId,
+                EventType: 'PUSH_PRODUCT_CREATED_AUTH_ERROR',
+                Status: 'Error',
+                Message: `User mismatch for Product ID: ${productId}. Expected ${product.UserId}.`
+            });
             return;
         }
 
         const supabaseVariants: SupabaseProductVariant[] = await this.productsService.getVariantsByProductId(productId, userId);
         if (supabaseVariants.length === 0) {
             this.logger.warn(`No variants found for ProductID: ${productId}. Cannot push creation as most platforms require variants.`);
-             await this.activityLogService.logActivity(
-                userId,
-                'Product',
-                productId,
-                'PUSH_PRODUCT_CREATED_NO_VARIANTS',
-                'Warning',
-                `No variants for Product ID: ${productId}. Push aborted.`,
-            );
+             await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Product',
+                EntityId: productId,
+                EventType: 'PUSH_PRODUCT_CREATED_NO_VARIANTS',
+                Status: 'Warning',
+                Message: `No variants for Product ID: ${productId}. Push aborted.`
+            });
             return;
         }
 
@@ -261,17 +291,20 @@ export class SyncCoordinatorService {
                     );
 
                     this.logger.log(`Product created on ${connection.PlatformType} (Connection: ${connection.Id}). Platform Product ID: ${platformProductId}`);
-                    await this.activityLogService.logActivity(
-                        userId,
-                        'Product',
-                        productId,
-                        'PRODUCT_PUSH_CREATED_SUCCESS',
-                        'Success',
-                        `Product ${productId} (Platform: ${platformProductId}) pushed to ${connection.PlatformType}.`,
-                        connection.Id,
-                        connection.PlatformType,
-                        { platformProductId, platformVariantIds }
-                    );
+                    await this.activityLogService.logActivity({
+                        UserId: userId,
+                        EntityType: 'Product',
+                        EntityId: productId,
+                        EventType: 'PRODUCT_PUSH_CREATED_SUCCESS',
+                        Status: 'Success',
+                        Message: `Product ${productId} (Platform: ${platformProductId}) pushed to ${connection.PlatformType}.`,
+                        Details: {
+                            platform: connection.PlatformType,
+                            connectionId: connection.Id,
+                            platformProductId,
+                            platformVariantIds
+                        }
+                    });
 
                     for (const canonicalVariant of canonicalVariantsForAdapter) {
                         const platformVariantId = platformVariantIds[canonicalVariant.Id!];
@@ -294,34 +327,39 @@ export class SyncCoordinatorService {
                             }
                         } else {
                             this.logger.warn(`No platform variant ID returned for canonical variant ${canonicalVariant.Id} (SKU: ${canonicalVariant.Sku}) from ${connection.PlatformType} adapter for product ${platformProductId}.`);
-                             await this.activityLogService.logActivity(
-                                userId,
-                                'ProductVariant',
-                                canonicalVariant.Id || null,
-                                'PRODUCT_PUSH_CREATED_VARIANT_MAPPING_MISSING',
-                                'Warning',
-                                `No platform variant ID for variant ${canonicalVariant.Id} (SKU: ${canonicalVariant.Sku}) on ${connection.PlatformType} for product ${platformProductId}`,
-                                connection.Id,
-                                connection.PlatformType ? connection.PlatformType : null,
-                                { platformProductId }
-                            );
+                             await this.activityLogService.logActivity({
+                                UserId: userId,
+                                EntityType: 'ProductVariant',
+                                EntityId: canonicalVariant.Id || null,
+                                EventType: 'PRODUCT_PUSH_CREATED_VARIANT_MAPPING_MISSING',
+                                Status: 'Warning',
+                                Message: `No platform variant ID for variant ${canonicalVariant.Id} (SKU: ${canonicalVariant.Sku}) on ${connection.PlatformType} for product ${platformProductId}`,
+                                Details: {
+                                    platform: connection.PlatformType,
+                                    connectionId: connection.Id,
+                                    platformProductId
+                                }
+                            });
                         }
                     }
                     await this.connectionService.updateConnectionData(connection.Id, userId, { LastSyncSuccessAt: new Date().toISOString(), Status: connection.Status });
                 } catch (error) {
                     this.logger.error(`Failed to push product creation to ${connection.PlatformType} for connection ${connection.Id}: ${error.message}`, error.stack);
                     await this.connectionService.updateConnectionData(connection.Id, userId, { Status: 'error', LastSyncAttemptAt: new Date().toISOString() });
-                    await this.activityLogService.logActivity(
-                        userId,
-                        'Product',
-                        productId,
-                        'PRODUCT_PUSH_CREATED_FAILED',
-                        'Error',
-                        `Failed to push product ${productId} to ${connection.PlatformType}: ${error.message}`,
-                        connection.Id,
-                        connection.PlatformType,
-                        { error: error.message, stack: error.stack?.substring(0, 500) } // Truncate stack
-                    );
+                    await this.activityLogService.logActivity({
+                        UserId: userId,
+                        EntityType: 'Product',
+                        EntityId: productId,
+                        EventType: 'PRODUCT_PUSH_CREATED_FAILED',
+                        Status: 'Error',
+                        Message: `Failed to push product ${productId} to ${connection.PlatformType}: ${error.message}`,
+                        Details: {
+                            platform: connection.PlatformType,
+                            connectionId: connection.Id,
+                            error: error.message,
+                            stack: error.stack?.substring(0, 500)
+                        }
+                    });
                 }
             }
         }
@@ -331,27 +369,27 @@ export class SyncCoordinatorService {
         this.logger.log(`Executing push for canonical product update: ProductID ${productId}, UserID ${userId}`);
         const product: Product | null = await this.productsService.getProductById(productId);
         if (!product) {
-            this.logger.error(`Product not found for ProductID: ${productId}. Cannot push update.`);
-            await this.activityLogService.logActivity(
-                userId,
-                'Product',
-                productId,
-                'PUSH_PRODUCT_UPDATED_ERROR',
-                'Error',
-                `Product not found (ID: ${productId}) during push execution.`
-            );
+            this.logger.error(`Product not found for ProductID: ${productId}. Cannot execute update push.`);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Product',
+                EntityId: productId,
+                EventType: 'PRODUCT_UPDATE_PUSH_PRODUCT_NOT_FOUND',
+                Status: 'Error',
+                Message: `Product not found (ID: ${productId}) during push execution.`
+            });
             return;
         }
         if (product.UserId !== userId) {
-             this.logger.error(`Product ${productId} does not belong to user ${userId}. Aborting update push.`);
-             await this.activityLogService.logActivity(
-                userId,
-                'Product',
-                productId,
-                'PUSH_PRODUCT_UPDATED_AUTH_ERROR',
-                'Error',
-                `User mismatch for Product ID: ${productId}. Expected ${product.UserId}.`
-            );
+            this.logger.error(`Product ${productId} does not belong to user ${userId}. Aborting update push.`);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Product',
+                EntityId: productId,
+                EventType: 'PRODUCT_UPDATE_PUSH_AUTH_ERROR',
+                Status: 'Error',
+                Message: `User mismatch for Product ID: ${productId}. Expected ${product.UserId}.`
+            });
             return;
         }
 
@@ -379,16 +417,18 @@ export class SyncCoordinatorService {
                 
                 if (!existingMapping && supabaseVariants.length > 0) {
                     this.logger.warn(`No existing mapping for product ${productId} (via first variant) on ${connection.PlatformType} (conn ${connection.Id}). Consider creating.`);
-                    await this.activityLogService.logActivity(
-                        userId,
-                        'Product',
-                        productId,
-                        'PRODUCT_PUSH_UPDATED_NO_MAPPING',
-                        'Warning',
-                        `No mapping for product ${productId} on ${connection.PlatformType}. Update skipped, create might be needed.`,
-                        connection.Id,
-                        (connection.PlatformType as string) ? connection.PlatformType : null
-                    );
+                    await this.activityLogService.logActivity({
+                        UserId: userId,
+                        EntityType: 'Product',
+                        EntityId: productId,
+                        EventType: 'PRODUCT_PUSH_UPDATED_NO_MAPPING',
+                        Status: 'Warning',
+                        Message: `No mapping for product ${productId} on ${connection.PlatformType}. Update skipped, create might be needed.`,
+                        Details: {
+                            platform: connection.PlatformType,
+                            connectionId: connection.Id
+                        }
+                    });
                     continue; 
                 } else if (!existingMapping) {
                     this.logger.log(`Product ${productId} has no variants or no mapping on ${connection.PlatformType} (conn ${connection.Id}). Skipping update.`);
@@ -442,16 +482,19 @@ export class SyncCoordinatorService {
                         SyncStatus: 'Success',
                         SyncErrorMessage: null,
                     });
-                    await this.activityLogService.logActivity(
-                        userId,
-                        'Product',
-                        productId,
-                        'PRODUCT_PUSH_UPDATED_SUCCESS',
-                        'Success',
-                        `Product ${productId} updated on ${connection.PlatformType} (Mapping: ${existingMapping.Id}).`,
-                        connection.Id,
-                        connection.PlatformType
-                    );
+                    await this.activityLogService.logActivity({
+                        UserId: userId,
+                        EntityType: 'Product',
+                        EntityId: productId,
+                        EventType: 'PRODUCT_PUSH_UPDATED_SUCCESS',
+                        Status: 'Success',
+                        Message: `Product ${productId} updated on ${connection.PlatformType} (Mapping: ${existingMapping.Id}).`,
+                        Details: {
+                            platform: connection.PlatformType,
+                            connectionId: connection.Id,
+                            mappingId: existingMapping.Id
+                        }
+                    });
                      await this.connectionService.updateConnectionData(connection.Id, userId, { LastSyncSuccessAt: new Date().toISOString(), Status: connection.Status });
                 } catch (error) {
                     this.logger.error(`Failed to push product update to ${connection.PlatformType} for mapping ${existingMapping.Id}: ${error.message}`, error.stack);
@@ -460,17 +503,21 @@ export class SyncCoordinatorService {
                         SyncStatus: 'Error',
                         SyncErrorMessage: error.message,
                     }).catch(e => this.logger.error(`Failed to update mapping status on error: ${e.message}`));
-                    await this.activityLogService.logActivity(
-                        userId,
-                        'Product',
-                        productId,
-                        'PRODUCT_PUSH_UPDATED_FAILED',
-                        'Error',
-                        `Failed to update product ${productId} on ${connection.PlatformType}: ${error.message}`,
-                        connection.Id,
-                        connection.PlatformType,
-                        { mappingId: existingMapping.Id, error: error.message, stack: error.stack?.substring(0,500) }
-                    );
+                    await this.activityLogService.logActivity({
+                        UserId: userId,
+                        EntityType: 'Product',
+                        EntityId: productId,
+                        EventType: 'PRODUCT_PUSH_UPDATED_FAILED',
+                        Status: 'Error',
+                        Message: `Failed to update product ${productId} on ${connection.PlatformType}: ${error.message}`,
+                        Details: {
+                            platform: connection.PlatformType,
+                            connectionId: connection.Id,
+                            mappingId: existingMapping.Id,
+                            error: error.message,
+                            stack: error.stack?.substring(0,500)
+                        }
+                    });
                      await this.connectionService.updateConnectionData(connection.Id, userId, { Status: 'error', LastSyncAttemptAt: new Date().toISOString() });
                 }
             }
@@ -480,16 +527,28 @@ export class SyncCoordinatorService {
     public async _executeProductDeletionPush(productId: string, userId: string): Promise<void> {
         this.logger.log(`Executing push for canonical product deletion: ProductID ${productId}, UserID ${userId}`);
         const product = await this.productsService.getProductById(productId); 
-        if (product && product.UserId !== userId) {
-            this.logger.error(`User ${userId} does not own product ${productId}. Cannot process deletion for other platforms.`);
-            await this.activityLogService.logActivity(
-                userId,
-                'Product',
-                productId,
-                'PUSH_PRODUCT_DELETED_AUTH_ERROR',
-                'Error',
-                `User mismatch for Product ID: ${productId} during deletion. Expected ${product.UserId}.`
-            );
+        if (!product) {
+            this.logger.error(`Product not found for ProductID: ${productId}. Cannot execute deletion push (likely already deleted locally).`);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Product',
+                EntityId: productId,
+                EventType: 'PRODUCT_DELETE_PUSH_PRODUCT_NOT_FOUND',
+                Status: 'Error',
+                Message: `Product not found (ID: ${productId}) during push execution.`
+            });
+            return;
+        }
+        if (product.UserId !== userId) {
+            this.logger.error(`Product ${productId} does not belong to user ${userId}. Aborting deletion push.`);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Product',
+                EntityId: productId,
+                EventType: 'PRODUCT_DELETE_PUSH_AUTH_ERROR',
+                Status: 'Error',
+                Message: `User mismatch for Product ID: ${productId} during deletion. Expected ${product.UserId}.`
+            });
             return;
         }
 
@@ -508,31 +567,38 @@ export class SyncCoordinatorService {
                         await adapter.deleteProduct(connection, mapping);
                         this.logger.log(`Product deletion pushed to ${connection.PlatformType} for mapping ${mapping.Id}`);
                         await this.mappingsService.deleteMapping(mapping.Id);
-                         await this.activityLogService.logActivity(
-                            userId,
-                            'Product',
-                            productId, // or mapping.ProductVariantId if more specific
-                            'PRODUCT_PUSH_DELETED_SUCCESS',
-                            'Success',
-                            `Product associated with mapping ${mapping.Id} (Canonical: ${productId}) deleted from ${connection.PlatformType}.`,
-                            connection.Id,
-                            connection.PlatformType,
-                            { mappingId: mapping.Id, platformProductId: mapping.PlatformProductId }
-                        );
+                         await this.activityLogService.logActivity({
+                            UserId: userId,
+                            EntityType: 'Product',
+                            EntityId: productId,
+                            EventType: 'PRODUCT_PUSH_DELETED_SUCCESS',
+                            Status: 'Success',
+                            Message: `Product associated with mapping ${mapping.Id} (Canonical: ${productId}) deleted from ${connection.PlatformType}.`,
+                            Details: {
+                                platform: connection.PlatformType,
+                                connectionId: connection.Id,
+                                mappingId: mapping.Id,
+                                platformProductId: mapping.PlatformProductId
+                            }
+                        });
                          await this.connectionService.updateConnectionData(connection.Id, userId, { LastSyncSuccessAt: new Date().toISOString(), Status: connection.Status });
                     } catch (error) {
                         this.logger.error(`Failed to push product deletion to ${connection.PlatformType} for mapping ${mapping.Id}: ${error.message}`, error.stack);
-                        await this.activityLogService.logActivity(
-                            userId,
-                            'Product',
-                            productId,
-                            'PRODUCT_PUSH_DELETED_FAILED',
-                            'Error',
-                            `Failed to delete product (mapping ${mapping.Id}) from ${connection.PlatformType}: ${error.message}`,
-                            connection.Id,
-                            connection.PlatformType,
-                            { mappingId: mapping.Id, error: error.message, stack: error.stack?.substring(0,500) }
-                        );
+                        await this.activityLogService.logActivity({
+                            UserId: userId,
+                            EntityType: 'Product',
+                            EntityId: productId,
+                            EventType: 'PRODUCT_PUSH_DELETED_FAILED',
+                            Status: 'Error',
+                            Message: `Failed to delete product (mapping ${mapping.Id}) from ${connection.PlatformType}: ${error.message}`,
+                            Details: {
+                                platform: connection.PlatformType,
+                                connectionId: connection.Id,
+                                mappingId: mapping.Id,
+                                error: error.message,
+                                stack: error.stack?.substring(0,500)
+                            }
+                        });
                         // Decide if we should update connection status to error here, or if one mapping failure is isolated.
                         // For now, let one failure not mark the whole connection as error, but it did attempt.
                         await this.connectionService.updateConnectionData(connection.Id, userId, { LastSyncAttemptAt: new Date().toISOString(), Status: connection.Status });
@@ -548,26 +614,26 @@ export class SyncCoordinatorService {
 
         if (!variant) {
             this.logger.error(`Variant not found for VariantID: ${variantId}. Cannot push inventory update.`);
-             await this.activityLogService.logActivity(
-                userId,
-                'ProductVariant',
-                variantId,
-                'PUSH_INVENTORY_UPDATED_ERROR',
-                'Error',
-                `Variant not found (ID: ${variantId}) during inventory push.`
-            );
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'ProductVariant',
+                EntityId: variantId,
+                EventType: 'INVENTORY_UPDATE_PUSH_VARIANT_NOT_FOUND',
+                Status: 'Error',
+                Message: `Variant not found (ID: ${variantId}) during inventory push.`
+            });
             return;
         }
         if (variant.UserId !== userId) {
             this.logger.error(`Variant ${variantId} does not belong to user ${userId}. Aborting inventory update push.`);
-            await this.activityLogService.logActivity(
-                userId,
-                'ProductVariant',
-                variantId,
-                'PUSH_INVENTORY_UPDATED_AUTH_ERROR',
-                'Error',
-                `User mismatch for Variant ID: ${variantId}. Expected ${variant.UserId}.`
-            );
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'ProductVariant',
+                EntityId: variantId,
+                EventType: 'INVENTORY_UPDATE_PUSH_AUTH_ERROR',
+                Status: 'Error',
+                Message: `User mismatch for Variant ID: ${variantId}. Expected ${variant.UserId}.`
+            });
             return;
         }
 
@@ -609,17 +675,20 @@ export class SyncCoordinatorService {
                                 SyncStatus: 'Success',
                                 SyncErrorMessage: null,
                             });
-                            await this.activityLogService.logActivity(
-                                userId,
-                                'ProductVariant',
-                                variantId,
-                                'INVENTORY_PUSH_UPDATED_SUCCESS',
-                                'Success',
-                                `Inventory for variant ${variantId} (Mapping: ${mapping.Id}) updated on ${connection.PlatformType}.`,
-                                connection.Id,
-                                connection.PlatformType,
-                                { mappingId: mapping.Id, levelsPushed: inventoryUpdatesForAdapter.length }
-                            );
+                            await this.activityLogService.logActivity({
+                                UserId: userId,
+                                EntityType: 'ProductVariant',
+                                EntityId: variantId,
+                                EventType: 'INVENTORY_PUSH_UPDATED_SUCCESS',
+                                Status: 'Success',
+                                Message: `Inventory for variant ${variantId} (Mapping: ${mapping.Id}) updated on ${connection.PlatformType}.`,
+                                Details: {
+                                    platform: connection.PlatformType,
+                                    connectionId: connection.Id,
+                                    mappingId: mapping.Id,
+                                    levelsPushed: inventoryUpdatesForAdapter.length
+                                }
+                            });
                             await this.connectionService.updateConnectionData(connection.Id, userId, { LastSyncSuccessAt: new Date().toISOString(), Status: connection.Status });
                         } else {
                             this.logger.log(`No specific inventory levels for variant ${variantId} on connection ${connection.Id} to push. Mapping ${mapping.Id} exists.`);
@@ -631,31 +700,37 @@ export class SyncCoordinatorService {
                             SyncStatus: 'Error',
                             SyncErrorMessage: error.message,
                         }).catch(e => this.logger.error(`Failed to update mapping status on error: ${e.message}`));
-                         await this.activityLogService.logActivity(
-                            userId,
-                            'ProductVariant',
-                            variantId,
-                            'INVENTORY_PUSH_UPDATED_FAILED',
-                            'Error',
-                            `Failed to update inventory for variant ${variantId} (Mapping: ${mapping.Id}) on ${connection.PlatformType}: ${error.message}`,
-                            connection.Id,
-                            connection.PlatformType,
-                            { mappingId: mapping.Id, error: error.message, stack: error.stack?.substring(0,500) }
-                        );
+                         await this.activityLogService.logActivity({
+                            UserId: userId,
+                            EntityType: 'ProductVariant',
+                            EntityId: variantId,
+                            EventType: 'INVENTORY_PUSH_UPDATED_FAILED',
+                            Status: 'Error',
+                            Message: `Failed to update inventory for variant ${variantId} (Mapping: ${mapping.Id}) on ${connection.PlatformType}: ${error.message}`,
+                            Details: {
+                                platform: connection.PlatformType,
+                                connectionId: connection.Id,
+                                mappingId: mapping.Id,
+                                error: error.message,
+                                stack: error.stack?.substring(0,500)
+                            }
+                        });
                         await this.connectionService.updateConnectionData(connection.Id, userId, { Status: 'error', LastSyncAttemptAt: new Date().toISOString() });
                     }
                 } else {
                     this.logger.warn(`No mapping or PlatformVariantId for variant ${variantId} on ${connection.PlatformType} (conn ${connection.Id}). Cannot push inventory update.`);
-                    await this.activityLogService.logActivity(
-                        userId,
-                        'ProductVariant',
-                        variantId,
-                        'INVENTORY_PUSH_UPDATED_NO_MAPPING',
-                        'Warning',
-                        `No mapping/platform ID for variant ${variantId} on ${connection.PlatformType}. Inventory update skipped.`,
-                        connection.Id,
-                        (connection.PlatformType as string) ? connection.PlatformType : null
-                    );
+                    await this.activityLogService.logActivity({
+                        UserId: userId,
+                        EntityType: 'ProductVariant',
+                        EntityId: variantId,
+                        EventType: 'INVENTORY_PUSH_UPDATED_NO_MAPPING',
+                        Status: 'Warning',
+                        Message: `No mapping/platform ID for variant ${variantId} on ${connection.PlatformType}. Inventory update skipped.`,
+                        Details: {
+                            platform: connection.PlatformType,
+                            connectionId: connection.Id
+                        }
+                    });
                 }
             }
         }

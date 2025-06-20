@@ -83,12 +83,14 @@ export interface BaseAdapter {
      * @param connection The platform connection associated with this webhook.
      * @param payload The parsed webhook payload.
      * @param headers The headers from the incoming webhook request (for context or further verification).
+     * @param webhookId Optional webhook ID for tracking and logging.
      * @returns A promise that resolves when processing is complete.
      */
     processWebhook(
         connection: any, // PlatformConnection
         payload: any,
-        headers: Record<string, string> // Added headers
+        headers: Record<string, string>, // Added headers
+        webhookId?: string // Added optional webhookId parameter
     ): Promise<void>;
 
     /**

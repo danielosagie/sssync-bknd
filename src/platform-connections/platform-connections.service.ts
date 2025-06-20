@@ -171,14 +171,18 @@ export class PlatformConnectionsService {
         }
     }
 
-    async getConnectionById(connectionId: string, userId: string): Promise<PlatformConnection | null> {
+    async getConnectionById(connectionId: string, userId?: string): Promise<PlatformConnection | null> {
         const supabase = this.getSupabaseClient();
-         const { data, error } = await supabase
-             .from('PlatformConnections')
-             .select('*')
-             .eq('Id', connectionId)
-             .eq('UserId', userId) // Ensure ownership
-             .maybeSingle();
+        let query = supabase
+            .from('PlatformConnections')
+            .select('*')
+            .eq('Id', connectionId);
+            
+        if (userId) {
+            query = query.eq('UserId', userId);
+        }
+        
+        const { data, error } = await query.maybeSingle();
 
          if (error) {
               this.logger.error(`Error fetching connection ${connectionId} for user ${userId}: ${error.message}`);
@@ -225,7 +229,22 @@ export class PlatformConnectionsService {
      }
 
      async saveSyncRules(connectionId: string, userId: string, rules: Record<string, any>): Promise<void> {
-          await this.updateConnectionData(connectionId, userId, { SyncRules: rules });
+        await this.updateConnectionSyncRules(connectionId, rules);
+     }
+
+          async updateConnectionSyncRules(connectionId: string, rules: Record<string, any>): Promise<void> {
+        const supabase = this.getSupabaseClient();
+        const { error } = await supabase
+            .from('PlatformConnections')
+            .update({ SyncRules: rules })
+            .eq('Id', connectionId);
+
+        if (error) {
+            this.logger.error(`Failed to update sync rules for connection ${connectionId}: ${error.message}`, error);
+            throw new Error(`Failed to update sync rules: ${error.message}`);
+        }
+
+        this.logger.log(`Updated sync rules for connection ${connectionId}`);
      }
 
     async disconnectConnection(connectionId: string, userId: string): Promise<void> {

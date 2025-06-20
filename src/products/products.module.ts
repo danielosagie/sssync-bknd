@@ -10,6 +10,7 @@ import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.m
 import { ImageRecognitionService } from './image-recognition/image-recognition.service';
 import { AiGenerationService } from './ai-generation/ai-generation.service';
 import { CrossAccountSyncService } from './cross-account-sync.service';
+import { ActivityLogService } from '../common/activity-log.service';
 
 @Module({
   imports: [
@@ -21,7 +22,7 @@ import { CrossAccountSyncService } from './cross-account-sync.service';
     forwardRef(() => PlatformAdaptersModule),
   ],
   controllers: [ProductsController],
-  providers: [ProductsService, ImageRecognitionService, AiGenerationService, CrossAccountSyncService],
-  exports: [ProductsService, ImageRecognitionService, AiGenerationService, CrossAccountSyncService],
+  providers: [ProductsService, ImageRecognitionService, AiGenerationService, CrossAccountSyncService, ActivityLogService],
+  exports: [ProductsService, ImageRecognitionService, AiGenerationService, CrossAccountSyncService, ActivityLogService],
 })
 export class ProductsModule {}

@@ -629,14 +629,14 @@ export class ProductsService {
             this.logger.warn(`No media.imageUris found in DTO or processedImageUrisForDb is empty for variant ${variantId}, skipping image update.`);
         }
 
-        await this.activityLogService.logActivity(
-           userId,
-           'ProductVariant', // EntityType
-           variantId, // EntityId
-           'UPDATE_CANONICAL_DRAFT', // EventType
-           'Success', // Status
-           `Saved draft updates for variant ${variantId}.` // Message
-        );
+        await this.activityLogService.logActivity({
+           UserId: userId,
+           EntityType: 'ProductVariant',
+           EntityId: variantId,
+           EventType: 'UPDATE_CANONICAL_DRAFT',
+           Status: 'Success',
+           Message: `Saved draft updates for variant ${variantId}.`
+        });
 
     } catch (error) {
         this.logger.error(`Error during update of canonical data for variant ${variantId}: ${error.message}`, error.stack);

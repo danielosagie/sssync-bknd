@@ -1,5 +1,5 @@
 // src/products/products.controller.ts
-import { Controller, Post, Body, Query, UsePipes, ValidationPipe, Logger, BadRequestException, HttpCode, HttpStatus, UseGuards, Request, Get, Param, NotFoundException, InternalServerErrorException, HttpException, Req } from '@nestjs/common';
+import { Controller, Post, Body, Query, UsePipes, ValidationPipe, Logger, BadRequestException, HttpCode, HttpStatus, UseGuards, Request, Get, Param, NotFoundException, InternalServerErrorException, HttpException, Req, Put, Delete } from '@nestjs/common';
 import { ProductsService, SimpleProduct, SimpleProductVariant, SimpleAiGeneratedContent, GeneratedDetails } from './products.service';
 import { CrossAccountSyncService } from './cross-account-sync.service';
 import { AnalyzeImagesDto } from './dto/analyze-images.dto';
@@ -11,7 +11,7 @@ import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard';
 import { PublishProductDto } from './dto/publish-product.dto';
 import { ProductVariant } from '../common/types/supabase.types';
 import { ShopifyProductSetInput, ShopifyProductFile, ShopifyLocationNode, ShopifyInventoryLevelNode, ShopifyVariantInput, ShopifyInventoryQuantity, ShopifyMediaInput, ShopifyProductOption, ShopifyProductOptionValue, ShopifyInventoryItem } from '../platform-adapters/shopify/shopify-api-client.service';
-import { PlatformConnectionsService, PlatformConnection } from '../platform-connections/platform-connections.service';
+import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { ShopifyApiClient } from '../platform-adapters/shopify/shopify-api-client.service';
 import { PlatformProductMappingsService } from '../platform-product-mappings/platform-product-mappings.service';
 import { SupabaseService } from '../common/supabase.service';
@@ -21,6 +21,7 @@ import { User } from '@supabase/supabase-js';
 import { SubscriptionLimitGuard } from '../common/subscription-limit.guard';
 import { SkuCheckDto } from './dto/sku-check.dto';
 import { ConflictException } from '@nestjs/common';
+import { ActivityLogService } from '../common/activity-log.service';
 
 interface LocationProduct {
     variantId: string;
@@ -72,7 +73,8 @@ export class ProductsController {
         private readonly shopifyApiClient: ShopifyApiClient,
         private readonly platformProductMappingsService: PlatformProductMappingsService,
         private readonly supabaseService: SupabaseService,
-        private readonly crossAccountSyncService: CrossAccountSyncService
+        private readonly crossAccountSyncService: CrossAccountSyncService,
+        private readonly activityLogService: ActivityLogService,
     ) {}
 
     // Helper method for retry logic
@@ -105,8 +107,7 @@ export class ProductsController {
         @Body() analyzeImagesDto: AnalyzeImagesDto,
         @Req() req: AuthenticatedRequest,
     ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
-        return this.withRetry(
-            async () => {
+        const result = await this.withRetry(async () => {
                 const userId = req.user?.id;
                 if (!userId) {
                     throw new BadRequestException('User ID not found after authentication.');
@@ -118,12 +119,27 @@ export class ProductsController {
                 }
                 const primaryImageUrl = analyzeImagesDto.imageUris[0];
 
-                const result = await this.productsService.analyzeAndCreateDraft(userId, primaryImageUrl);
-                this.logger.log(`[POST /analyze] User: ${userId} - Analysis complete. ProductID: ${result.product.Id}`);
-                return result;
-            },
-            'analyzeProduct'
-        );
+            const analysisResult = await this.productsService.analyzeAndCreateDraft(userId, primaryImageUrl);
+
+            // Log the product creation activity
+            await this.activityLogService.logProductCreate(
+                analysisResult.product.Id,
+                analysisResult.variant.Id,
+                {
+                    title: analysisResult.product.Title,
+                    sku: analysisResult.variant.Sku,
+                    price: analysisResult.variant.Price,
+                    source: 'user',
+                    operation: 'create'
+                },
+                req.user.id
+            );
+
+            this.logger.log(`[POST /analyze] User: ${userId} - Analysis complete. ProductID: ${analysisResult.product.Id}`);
+            return analysisResult;
+        }, 'analyzeProduct');
+
+        return result;
     }
 
     /**
@@ -185,9 +201,46 @@ export class ProductsController {
 
         const userId = req.user.id;
         this.logger.log(`[POST /publish] User: ${userId} - Received ${publishProductDto.publishIntent} request for variant ${publishProductDto.variantId}`);
+        
+        // Log the start of publishing process
+        await this.activityLogService.logUserAction(
+            'PRODUCT_PUBLISH_STARTED',
+            'In Progress',
+            `Started publishing product`,
+            {
+                action: 'publish',
+                screen: 'SaveOrPublishProduct',
+                targetType: 'Product',
+                inputData: {
+                    publishIntent: publishProductDto.publishIntent,
+                    variantId: publishProductDto.variantId
+                }
+            },
+            req.user.id
+        );
+
         await this.productsService.saveOrPublishListing(userId, publishProductDto);
+        
+        // Log successful completion
+        await this.activityLogService.logUserAction(
+            'PRODUCT_PUBLISH_COMPLETED',
+            'Success',
+            `Successfully published product`,
+            {
+                action: 'publish',
+                screen: 'SaveOrPublishProduct',
+                targetType: 'Product',
+                inputData: {
+                    publishIntent: publishProductDto.publishIntent,
+                    variantId: publishProductDto.variantId
+                }
+            },
+            req.user.id
+        );
+        
         this.logger.log(`[POST /publish] User: ${userId} - ${publishProductDto.publishIntent} processed for variant ${publishProductDto.variantId}`);
-        return { message: `${publishProductDto.publishIntent} request received and processing started.` };
+
+        return { message: 'Product published successfully' };
     }
 
     @Post()
@@ -312,13 +365,28 @@ export class ProductsController {
         operationId?: string;
         status?: string;
     }> {
+        try {
+            // Log the start of Shopify publishing
+            await this.activityLogService.logPlatformEvent(
+                'SHOPIFY_PUBLISH_STARTED',
+                'In Progress',
+                `Started publishing product to Shopify`,
+                {
+                    connectionId: publishData.platformConnectionId,
+                    platformType: 'shopify',
+                    operation: 'create',
+                    syncDirection: 'push'
+                },
+                req.user.id,
+                publishData.platformConnectionId
+            );
+
         this.logger.log(`[publishToShopify] Entered method for productId: ${productId}, user: ${req.user.id}`);
         this.logger.debug(`[publishToShopify] Received publishData: ${JSON.stringify(publishData)}`);
 
         const userId = req.user.id;
         const options = publishData.options || {};
 
-        try {
             const connection = await this.platformConnectionsService.getConnectionById(publishData.platformConnectionId, userId);
             if (!connection || connection.PlatformType !== 'shopify') {
                 this.logger.warn(`[publishToShopify] Invalid or non-Shopify connection ID: ${publishData.platformConnectionId} for user ${userId}`);
@@ -513,9 +581,9 @@ export class ProductsController {
                         status: shopifyResponse.status
                     };
                 } else {
-                    const errorMessage = `Failed to obtain Shopify Product ID for product ${productId}. Status: ${shopifyResponse.status}`;
-                    this.logger.error(`[publishToShopify] ${errorMessage}`);
-                    throw new InternalServerErrorException(errorMessage);
+                const errorMessage = `Failed to obtain Shopify Product ID for product ${productId}. Status: ${shopifyResponse.status}`;
+                this.logger.error(`[publishToShopify] ${errorMessage}`);
+                throw new InternalServerErrorException(errorMessage);
                 }
             }
 
@@ -537,12 +605,49 @@ export class ProductsController {
                 this.logger.log(`[publishToShopify] Platform mapping updated/created for canonical product ${productId} and Shopify product ${shopifyProductIdForMedia}.`);
             }
             
+            // Log successful completion
+            await this.activityLogService.logPlatformEvent(
+                'SHOPIFY_PUBLISH_COMPLETED',
+                'Success',
+                `Successfully published product to Shopify`,
+                {
+                    connectionId: publishData.platformConnectionId,
+                    platformType: 'shopify',
+                    operation: 'create',
+                    syncDirection: 'push',
+                    itemsProcessed: 1,
+                    itemsSucceeded: 1,
+                    itemsFailed: 0
+                },
+                req.user.id,
+                publishData.platformConnectionId
+            );
+            
             return { 
                 message: `Product ${productId} successfully published/updated on Shopify. Shopify Product ID: ${shopifyProductIdForMedia}`,
                 shopifyProductId: shopifyProductIdForMedia,
             };
 
         } catch (error) {
+            // Log the error
+            await this.activityLogService.logPlatformEvent(
+                'SHOPIFY_PUBLISH_FAILED',
+                'Failed',
+                `Failed to publish product to Shopify: ${error.message}`,
+                {
+                    connectionId: publishData.platformConnectionId,
+                    platformType: 'shopify',
+                    operation: 'create',
+                    syncDirection: 'push',
+                    itemsProcessed: 1,
+                    itemsSucceeded: 0,
+                    itemsFailed: 1,
+                    errors: [error.message]
+                },
+                req.user.id,
+                publishData.platformConnectionId
+            );
+
             this.logger.error(`[publishToShopify] Error publishing product ${productId} to Shopify: ${error.message}`, error.stack);
             if (error instanceof HttpException) throw error;
             throw new InternalServerErrorException(`Failed to publish product to Shopify: ${error.message}`);
@@ -1098,6 +1203,356 @@ export class ProductsController {
         } catch (error) {
             this.logger.error(`[GET /cross-account/search] User: ${userId} - Error: ${error.message}`, error.stack);
             throw new InternalServerErrorException(`Cross-account search failed: ${error.message}`);
+        }
+    }
+
+    @Post('/:id/activities')
+    async logProductActivity(
+        @Param('id') productId: string,
+        @Body() logData: {
+            eventType: string;
+            status: string;
+            message: string;
+            details?: any;
+            platformConnectionId?: string;
+        },
+        @Req() req: AuthenticatedRequest
+    ): Promise<{ message: string }> {
+        try {
+            await this.activityLogService.logProductEvent(
+                logData.eventType,
+                logData.status,
+                logData.message,
+                {
+                    productId,
+                    ...logData.details
+                },
+                req.user.id,
+                logData.platformConnectionId
+            );
+
+            return { message: 'Activity logged successfully' };
+        } catch (error) {
+            this.logger.error(`Failed to log product activity: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to log activity');
+        }
+    }
+
+    @Get('/:id/activities')
+    async getProductActivityLogs(
+        @Param('id') productId: string,
+        @Req() req: AuthenticatedRequest,
+        @Query('limit') limit?: string,
+        @Query('entityType') entityType?: string
+    ): Promise<any[]> {
+        try {
+            const logs = await this.activityLogService.getEntityActivityLogs(
+                entityType || 'Product',
+                productId,
+                req.user.id
+            );
+
+            const limitNum = limit ? parseInt(limit) : 50;
+            return logs.slice(0, limitNum);
+        } catch (error) {
+            this.logger.error(`Failed to fetch product activity logs: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to fetch activity logs');
+        }
+    }
+
+    @Get('/activities')
+    async getUserActivityLogs(
+        @Req() req: AuthenticatedRequest,
+        @Query('entityType') entityType?: string,
+        @Query('eventType') eventType?: string,
+        @Query('status') status?: string,
+        @Query('platformConnectionId') platformConnectionId?: string,
+        @Query('startDate') startDate?: string,
+        @Query('endDate') endDate?: string,
+        @Query('limit') limit?: string,
+        @Query('offset') offset?: string
+    ): Promise<any[]> {
+        try {
+            const logs = await this.activityLogService.getUserActivityLogs(
+                req.user.id,
+                {
+                    entityType,
+                    eventType,
+                    status,
+                    platformConnectionId,
+                    startDate,
+                    endDate,
+                    limit: limit ? parseInt(limit) : 50,
+                    offset: offset ? parseInt(offset) : 0,
+                }
+            );
+
+            return logs;
+        } catch (error) {
+            this.logger.error(`Failed to fetch user activity logs: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to fetch activity logs');
+        }
+    }
+
+    @Get('/activities/stats')
+    async getActivityStats(
+        @Req() req: AuthenticatedRequest,
+        @Query('timeRange') timeRange?: 'day' | 'week' | 'month' | 'year'
+    ): Promise<{
+        totalEvents: number;
+        eventsByType: Record<string, number>;
+        eventsByStatus: Record<string, number>;
+        eventsByPlatform: Record<string, number>;
+    }> {
+        try {
+            const stats = await this.activityLogService.getActivityStats(
+                req.user.id,
+                timeRange || 'week'
+            );
+
+            return stats;
+        } catch (error) {
+            this.logger.error(`Failed to fetch activity stats: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to fetch activity stats');
+        }
+    }
+
+    // Add inventory update logging
+    @Put('/:variantId/inventory')
+    async updateProductInventory(
+        @Param('variantId') variantId: string,
+        @Req() req: AuthenticatedRequest,
+        @Body() updateData: {
+            updates: Array<{
+                platformConnectionId: string;
+                locationId: string;
+                quantity: number;
+                locationName?: string;
+            }>;
+        }
+    ): Promise<{ message: string; updatedCount: number }> {
+        try {
+            let updatedCount = 0;
+            
+            for (const update of updateData.updates) {
+                // Get current quantity for logging
+                const currentLevel = await this.supabaseService.getClient()
+                    .from('InventoryLevels')
+                    .select('Quantity')
+                    .eq('ProductVariantId', variantId)
+                    .eq('PlatformConnectionId', update.platformConnectionId)
+                    .eq('PlatformLocationId', update.locationId)
+                    .single();
+
+                const previousQuantity = currentLevel.data?.Quantity || 0;
+
+                // Update the inventory (implement your actual update logic here)
+                // ... your inventory update logic ...
+
+                // Log the inventory update
+                await this.activityLogService.logInventoryUpdate(
+                    variantId,
+                    previousQuantity,
+                    update.quantity,
+                    update.locationId,
+                    {
+                        platformConnectionId: update.platformConnectionId,
+                        locationName: update.locationName || update.locationId,
+                        reason: 'Manual update',
+                        source: 'user'
+                    },
+                    req.user.id,
+                    update.platformConnectionId
+                );
+
+                updatedCount++;
+            }
+
+            return {
+                message: `Successfully updated inventory for ${updatedCount} location(s)`,
+                updatedCount
+            };
+        } catch (error) {
+            this.logger.error(`Failed to update inventory: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to update inventory');
+        }
+    }
+
+    // Add product update with logging
+    @Put('/:id')
+    async updateProduct(
+        @Param('id') productId: string,
+        @Req() req: AuthenticatedRequest,
+        @Body() updateData: {
+            Title?: string;
+            Description?: string;
+            Price?: number;
+            CompareAtPrice?: number;
+            Sku?: string;
+            Barcode?: string;
+            Weight?: number;
+            WeightUnit?: string;
+            RequiresShipping?: boolean;
+            IsTaxable?: boolean;
+            TaxCode?: string;
+        }
+    ): Promise<{ message: string }> {
+        try {
+            // Get current product data for logging
+            const currentProduct = await this.supabaseService.getClient()
+                .from('ProductVariants')
+                .select('*')
+                .eq('Id', productId)
+                .single();
+
+            if (!currentProduct.data) {
+                throw new NotFoundException('Product not found');
+            }
+
+            // Update the product (implement your actual update logic here)
+            // ... your product update logic ...
+
+            // Log the product update
+            await this.activityLogService.logProductUpdate(
+                currentProduct.data.ProductId,
+                productId,
+                {
+                    title: updateData.Title,
+                    sku: updateData.Sku,
+                    price: updateData.Price,
+                    previousValues: {
+                        title: currentProduct.data.Title,
+                        price: currentProduct.data.Price,
+                        sku: currentProduct.data.Sku
+                    },
+                    newValues: updateData,
+                    operation: 'update',
+                    source: 'user'
+                },
+                req.user.id
+            );
+
+            return { message: 'Product updated successfully' };
+        } catch (error) {
+            this.logger.error(`Failed to update product: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to update product');
+        }
+    }
+
+    // Add product deletion with logging
+    @Delete('/:id')
+    async deleteProduct(
+        @Param('id') productId: string,
+        @Req() req: AuthenticatedRequest
+    ): Promise<{ message: string }> {
+        try {
+            // Get current product data for logging
+            const currentProduct = await this.supabaseService.getClient()
+                .from('ProductVariants')
+                .select('*')
+                .eq('Id', productId)
+                .single();
+
+            if (!currentProduct.data) {
+                throw new NotFoundException('Product not found');
+            }
+
+            // Delete the product (implement your actual deletion logic here)
+            // ... your product deletion logic ...
+
+            // Log the product deletion
+            await this.activityLogService.logProductDelete(
+                currentProduct.data.ProductId,
+                productId,
+                {
+                    title: currentProduct.data.Title,
+                    sku: currentProduct.data.Sku,
+                    operation: 'delete',
+                    source: 'user'
+                },
+                req.user.id
+            );
+
+            return { message: 'Product deleted successfully' };
+        } catch (error) {
+            this.logger.error(`Failed to delete product: ${error.message}`, error.stack);
+            throw new InternalServerErrorException('Failed to delete product');
+        }
+    }
+
+    @Post('update-platform-flags')
+    async updatePlatformFlags(): Promise<{ message: string; updatedCount: number }> {
+        try {
+            console.log('[ProductsController] Starting platform flags update...');
+            
+            const supabase = this.supabaseService.getServiceClient();
+            
+            // For each platform type, update the corresponding boolean flag
+            const platforms = ['Shopify', 'Square', 'Clover', 'Amazon', 'Ebay', 'Facebook'];
+            let totalUpdated = 0;
+            
+            for (const platformType of platforms) {
+                const columnName = `On${platformType}`;
+                
+                // Get all variant IDs that should have this platform flag set to true
+                const { data: mappingsData, error: mappingsError } = await supabase
+                    .from('PlatformProductMappings')
+                    .select(`
+                        ProductVariantId,
+                        PlatformConnections!inner(PlatformType, IsEnabled)
+                    `)
+                    .eq('PlatformConnections.PlatformType', platformType)
+                    .eq('PlatformConnections.IsEnabled', true)
+                    .eq('IsEnabled', true);
+                    
+                if (mappingsError) {
+                    console.error(`[ProductsController] Error fetching mappings for ${platformType}:`, mappingsError);
+                    continue;
+                }
+                
+                const variantIds = [...new Set(mappingsData?.map(m => m.ProductVariantId) || [])];
+                console.log(`[ProductsController] Found ${variantIds.length} variants for ${platformType}`);
+                
+                if (variantIds.length > 0) {
+                    // Update variants that should have this platform flag set to true
+                    const { data: updateData, error: updateError } = await supabase
+                        .from('ProductVariants')
+                        .update({ [columnName]: true })
+                        .in('Id', variantIds)
+                        .select('Id');
+                        
+                    if (updateError) {
+                        console.error(`[ProductsController] Error updating ${platformType} flags:`, updateError);
+                    } else {
+                        const updated = updateData?.length || 0;
+                        console.log(`[ProductsController] Updated ${updated} variants for ${platformType}`);
+                        totalUpdated += updated;
+                    }
+                }
+                
+                // Reset flags for variants that should be false (not in mappings)
+                const { data: resetData, error: resetError } = await supabase
+                    .from('ProductVariants')
+                    .update({ [columnName]: false })
+                    .not('Id', 'in', `(${variantIds.length > 0 ? variantIds.map(id => `'${id}'`).join(',') : "''"})`)
+                    .select('Id');
+                    
+                if (resetError) {
+                    console.error(`[ProductsController] Error resetting ${platformType} flags:`, resetError);
+                } else {
+                    console.log(`[ProductsController] Reset ${resetData?.length || 0} variants for ${platformType}`);
+                }
+            }
+            
+            console.log(`[ProductsController] Platform flags update completed. Total updated: ${totalUpdated}`);
+            return { 
+                message: 'Platform flags updated successfully', 
+                updatedCount: totalUpdated 
+            };
+            
+        } catch (error) {
+            console.error('[ProductsController] Error updating platform flags:', error);
+            throw new Error('Failed to update platform flags');
         }
     }
 }

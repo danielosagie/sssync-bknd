@@ -76,7 +76,7 @@ export class AiGenerationService {
   ): Promise<GeneratedDetails | null> {
     if (!this.groq) {
       this.logger.warn('Groq client not initialized. Cannot generate product details.');
-      return null;
+        return null;
     }
 
     try {
@@ -228,7 +228,7 @@ IMPORTANT: Return ONLY the JSON array, no other text.`;
 
         const completion = await this.groq.chat.completions.create({
           model: 'deepseek-r1-distill-llama-70b',
-          messages: [
+        messages: [
             {
               role: 'user',
               content: prompt,

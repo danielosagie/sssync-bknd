@@ -601,7 +601,8 @@ export class SquareAdapter implements BaseAdapter {
     async processWebhook(
         connection: PlatformConnection,
         payload: any,
-        headers: Record<string, string>
+        headers: Record<string, string>,
+        webhookId?: string // Added optional webhookId parameter
     ): Promise<void> {
         const merchantId = connection.PlatformSpecificData?.merchantId;
         this.logger.log(`SquareAdapter: Processing webhook for merchant '${merchantId}' on connection ${connection.Id}`);

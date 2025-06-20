@@ -11,150 +11,307 @@ import {
   Logger,
   BadRequestException,
   UnauthorizedException,
-  RawBodyRequest, // Import RawBodyRequest
+  RawBodyRequest,
+  InternalServerErrorException,
 } from '@nestjs/common';
-import { Response, Request } from 'express'; // Keep Express types
+import { Response, Request } from 'express';
 import { SyncCoordinatorService } from './sync-coordinator.service';
 import { ConfigService } from '@nestjs/config';
+import { ActivityLogService } from '../common/activity-log.service';
 import * as crypto from 'crypto';
 
 @Controller('webhook')
 export class WebhookController {
-    private readonly logger = new Logger(WebhookController.name);
+  private readonly logger = new Logger(WebhookController.name);
 
   constructor(
     private syncCoordinator: SyncCoordinatorService,
     private configService: ConfigService,
+    private activityLogService: ActivityLogService,
   ) {}
 
   @Post(':platform')
-  @HttpCode(HttpStatus.OK) // Respond with 200 OK quickly for webhooks
-    async handlePlatformWebhook(
-        @Param('platform') platform: string,
-        @Headers() headers: Record<string, string>,
-    @Req() req: RawBodyRequest<Request>, // Use RawBodyRequest
-    @Res() res: Response, // Inject Response to send custom response
+  @HttpCode(HttpStatus.OK)
+  async handlePlatformWebhook(
+    @Param('platform') platform: string,
+    @Headers() headers: Record<string, string>,
+    @Req() req: RawBodyRequest<Request>,
+    @Res() res: Response,
   ): Promise<void> {
-    this.logger.log(`Received webhook for platform: ${platform} with headers: ${JSON.stringify(headers)}`);
+    const startTime = Date.now();
+    const webhookId = `wh_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    this.logger.log(`[${webhookId}] Received webhook for platform: ${platform}`);
+    this.logger.debug(`[${webhookId}] Headers: ${JSON.stringify(this.sanitizeHeaders(headers))}`);
 
-    const rawBody = req.rawBody; // Access the raw body
-        if (!rawBody) {
-      this.logger.warn('Webhook received without a raw body. Ensure body-parser is configured correctly for raw bodies on this route.');
-      // Send response before throwing to avoid hanging
-      res.status(HttpStatus.BAD_REQUEST).send('Request body is missing or not in raw format.');
-      throw new BadRequestException('Request body is missing or not in raw format.');
+    const rawBody = req.rawBody;
+    if (!rawBody) {
+      const errorMsg = 'Request body is missing or not in raw format';
+      this.logger.warn(`[${webhookId}] ${errorMsg}`);
+      res.status(HttpStatus.BAD_REQUEST).json({
+        error: 'Bad Request',
+        message: errorMsg,
+        webhookId,
+      });
+      return;
     }
 
     let validatedPayload: any;
     const platformLower = platform.toLowerCase();
+    let shopIdentifier: string | null = null;
 
     try {
+      // Platform-specific validation and parsing
       switch (platformLower) {
         case 'shopify':
-          const shopifyHmac = headers['x-shopify-hmac-sha256'];
-          const shopifyShopDomain = headers['x-shopify-shop-domain'];
-          const shopifyTopic = headers['x-shopify-topic'];
-          this.logger.log(`Shopify Webhook: Topic: ${shopifyTopic}, Shop: ${shopifyShopDomain}`);
-          
-          if (!shopifyHmac) {
-            throw new UnauthorizedException('Shopify HMAC signature missing.');
-          }
-          if (!this.verifyShopifyWebhook(rawBody, shopifyHmac)) {
-            throw new UnauthorizedException('Invalid Shopify HMAC signature.');
-          }
-          this.logger.log('Shopify HMAC signature verified successfully.');
-          validatedPayload = JSON.parse(rawBody.toString('utf8'));
+          const result = await this.validateShopifyWebhook(rawBody, headers, webhookId);
+          validatedPayload = result.payload;
+          shopIdentifier = result.shopIdentifier;
           break;
 
         case 'clover':
-          // TODO: Implement Clover webhook verification if applicable (e.g., specific headers, IP allowlisting, or signed messages if supported)
-          this.logger.log('Processing Clover webhook (verification pending).');
-          validatedPayload = JSON.parse(rawBody.toString('utf8'));
+          const cloverResult = await this.validateCloverWebhook(rawBody, headers, webhookId);
+          validatedPayload = cloverResult.payload;
+          shopIdentifier = cloverResult.merchantIdentifier;
           break;
 
         case 'square':
-          const squareSignature = headers['x-square-signature'];
-          // TODO: Implement Square webhook signature verification
-          // You'll need the webhook signing secret from Square and the full URL of your webhook endpoint.
-          // const webhookUrl = this.configService.get('APP_URL') + req.originalUrl;
-          // if (!this.verifySquareWebhook(rawBody, squareSignature, webhookUrl)) {
-          //   throw new UnauthorizedException('Invalid Square signature.');
-          // }
-          this.logger.log('Processing Square webhook (verification pending).');
-          validatedPayload = JSON.parse(rawBody.toString('utf8'));
+          const squareResult = await this.validateSquareWebhook(rawBody, headers, webhookId);
+          validatedPayload = squareResult.payload;
+          shopIdentifier = squareResult.merchantIdentifier;
           break;
 
         default:
-          this.logger.warn(`Received webhook for unsupported platform: ${platform}`);
-          res.status(HttpStatus.BAD_REQUEST).send(`Platform ${platform} not supported`);
-          throw new BadRequestException(`Platform ${platform} not supported`);
+          this.logger.warn(`[${webhookId}] Unsupported platform: ${platform}`);
+          res.status(HttpStatus.BAD_REQUEST).json({
+            error: 'Bad Request',
+            message: `Platform ${platform} not supported`,
+            webhookId,
+          });
+          return;
       }
 
-      // If validation passed, send OK response immediately before processing
-      res.status(HttpStatus.OK).send('Webhook received successfully.');
+      // Send immediate 200 OK response
+      res.status(HttpStatus.OK).json({
+        received: true,
+        webhookId,
+        platform: platformLower,
+        timestamp: new Date().toISOString(),
+      });
 
-      // Asynchronously process the webhook to avoid holding up the response to the platform
-      this.syncCoordinator.handleWebhook(platformLower, validatedPayload, headers) // Pass headers for context
+      // Log webhook receipt for audit
+      await this.activityLogService.logActivity({
+        UserId: 'system', // Will be updated when we identify the user
+        EntityType: 'Webhook',
+        EntityId: webhookId,
+        EventType: 'WEBHOOK_RECEIVED',
+        Status: 'Info',
+        Message: `Webhook received from ${platformLower}${shopIdentifier ? ` (${shopIdentifier})` : ''}`,
+        Details: {
+          platform: platformLower,
+          shopIdentifier,
+          processingTime: Date.now() - startTime,
+          payloadSize: rawBody.length,
+        }
+      });
+
+      // Process webhook asynchronously
+      this.processWebhookAsync(platformLower, validatedPayload, headers, webhookId, shopIdentifier)
         .then(() => {
-          this.logger.log(`Webhook processing initiated for ${platformLower}.`);
+          this.logger.log(`[${webhookId}] Webhook processing completed successfully`);
         })
         .catch(err => {
-          this.logger.error(`Error initiating webhook processing for ${platformLower}: ${err.message}`, err.stack);
-          // This error occurs after we've already sent 200 OK. Log it for monitoring.
+          this.logger.error(`[${webhookId}] Webhook processing failed: ${err.message}`, err.stack);
         });
 
     } catch (error) {
-      this.logger.error(`Webhook validation or initial processing error for ${platform}: ${error.message}`, error.stack);
+      this.logger.error(`[${webhookId}] Webhook validation error: ${error.message}`, error.stack);
+      
       if (!res.headersSent) {
         if (error instanceof UnauthorizedException) {
-            res.status(HttpStatus.UNAUTHORIZED).send(error.message);
+          res.status(HttpStatus.UNAUTHORIZED).json({
+            error: 'Unauthorized',
+            message: error.message,
+            webhookId,
+          });
         } else if (error instanceof BadRequestException) {
-            res.status(HttpStatus.BAD_REQUEST).send(error.message);
+          res.status(HttpStatus.BAD_REQUEST).json({
+            error: 'Bad Request',
+            message: error.message,
+            webhookId,
+          });
         } else {
-            res.status(HttpStatus.INTERNAL_SERVER_ERROR).send('Error processing webhook.');
+          res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+            error: 'Internal Server Error',
+            message: 'Error processing webhook',
+            webhookId,
+          });
         }
       }
-      // Do not re-throw if response already sent, but ensure error is logged.
-      // If response not sent, re-throwing is fine if NestJS handles it gracefully.
-      if (!res.headersSent) throw error; 
     }
   }
 
-     private verifyShopifyWebhook(rawBody: Buffer, hmacHeader?: string): boolean {
-    if (!hmacHeader) return false;
-
-    const shopifySecret = this.configService.get<string>('SHOPIFY_API_SECRET');
-    if (!shopifySecret) {
-      this.logger.error('SHOPIFY_API_SECRET is not configured. Cannot verify Shopify webhook.');
-      return false; // Cannot verify without the secret
-             }
-
-            const calculatedHmac = crypto
-      .createHmac('sha256', shopifySecret)
-                .update(rawBody)
-                .digest('base64');
-    
-    this.logger.debug(`[Shopify Webhook Verify] Received HMAC: ${hmacHeader}, Calculated HMAC: ${calculatedHmac}`);
-
-    // Use timingSafeEqual for security
+  private async processWebhookAsync(
+    platform: string,
+    payload: any,
+    headers: Record<string, string>,
+    webhookId: string,
+    shopIdentifier: string | null,
+  ): Promise<void> {
     try {
-            return crypto.timingSafeEqual(Buffer.from(calculatedHmac), Buffer.from(hmacHeader));
-    } catch (e) {
-        this.logger.error(`Error during timingSafeEqual for Shopify HMAC: ${e.message}`);
-            return false;
-        }
+      await this.syncCoordinator.handleWebhook(platform, payload, headers, webhookId);
+      
+      // Log successful processing
+      await this.activityLogService.logActivity({
+        UserId: 'system',
+        EntityType: 'Webhook',
+        EntityId: webhookId,
+        EventType: 'WEBHOOK_PROCESSED',
+        Status: 'Success',
+        Message: `Webhook ${webhookId} processed successfully`,
+        Details: { platform, shopIdentifier }
+      });
+    } catch (error) {
+      this.logger.error(`[${webhookId}] Error in async webhook processing: ${error.message}`, error.stack);
+      
+      // Log processing failure
+      await this.activityLogService.logActivity({
+        UserId: 'system',
+        EntityType: 'Webhook',
+        EntityId: webhookId,
+        EventType: 'WEBHOOK_PROCESSING_FAILED',
+        Status: 'Error',
+        Message: `Webhook processing failed: ${error.message}`,
+        Details: { platform, shopIdentifier, error: error.message }
+      });
+    }
+  }
+
+  private async validateShopifyWebhook(
+    rawBody: Buffer,
+    headers: Record<string, string>,
+    webhookId: string,
+  ): Promise<{ payload: any; shopIdentifier: string }> {
+    const shopifyHmac = headers['x-shopify-hmac-sha256'];
+    const shopifyShopDomain = headers['x-shopify-shop-domain'];
+    const shopifyTopic = headers['x-shopify-topic'];
+
+    if (!shopifyHmac) {
+      throw new UnauthorizedException('Shopify HMAC signature missing');
     }
 
-  // private verifySquareWebhook(rawBody: Buffer, signature: string, webhookUrl: string): boolean {
-  //   const secret = this.configService.get<string>('SQUARE_WEBHOOK_SIGNATURE_KEY');
-  //   if (!secret) {
-  //     this.logger.error('SQUARE_WEBHOOK_SIGNATURE_KEY is not configured.');
-  //     return false;
-  //   }
-  //   const hmac = crypto.createHmac('sha256', secret);
-  //   hmac.update(webhookUrl + rawBody.toString('utf8')); // Use utf8 string of rawBody for Square
-  //   const hash = hmac.digest('base64');
-  //   this.logger.debug(`[Square Webhook Verify] Received Sig: ${signature}, Calculated Sig: ${hash}, Webhook URL: ${webhookUrl}`);
-  //   return hash === signature;
-  // }
+    if (!shopifyShopDomain) {
+      throw new BadRequestException('Shopify shop domain missing');
+    }
+
+    if (!this.verifyShopifyWebhook(rawBody, shopifyHmac)) {
+      this.logger.error(`[${webhookId}] Shopify HMAC verification failed for shop: ${shopifyShopDomain}`);
+      throw new UnauthorizedException('Invalid Shopify HMAC signature');
+    }
+
+    this.logger.log(`[${webhookId}] Shopify webhook verified - Topic: ${shopifyTopic}, Shop: ${shopifyShopDomain}`);
+
+    return {
+      payload: JSON.parse(rawBody.toString('utf8')),
+      shopIdentifier: shopifyShopDomain,
+    };
+  }
+
+  private async validateCloverWebhook(
+    rawBody: Buffer,
+    headers: Record<string, string>,
+    webhookId: string,
+  ): Promise<{ payload: any; merchantIdentifier: string | null }> {
+    // Clover webhook validation
+    const cloverMerchantId = headers['x-clover-merchant-id'] || headers['merchant-id'];
+    
+    try {
+      const payload = JSON.parse(rawBody.toString('utf8'));
+      const merchantId = cloverMerchantId || payload.merchant_id || payload.merchantId;
+      
+      this.logger.log(`[${webhookId}] Clover webhook validated for merchant: ${merchantId}`);
+      
+      return {
+        payload,
+        merchantIdentifier: merchantId,
+      };
+    } catch (error) {
+      throw new BadRequestException('Invalid Clover webhook payload');
+    }
+  }
+
+  private async validateSquareWebhook(
+    rawBody: Buffer,
+    headers: Record<string, string>,
+    webhookId: string,
+  ): Promise<{ payload: any; merchantIdentifier: string | null }> {
+    const squareSignature = headers['x-square-signature'];
+    const squareHmacSha256 = headers['x-square-hmacsha256-signature'];
+    
+    // Use HMAC SHA256 signature if available (newer Square webhooks)
+    if (squareHmacSha256) {
+      const webhookSignatureKey = this.configService.get<string>('SQUARE_WEBHOOK_SIGNATURE_KEY');
+      if (webhookSignatureKey && !this.verifySquareWebhookHmac(rawBody, squareHmacSha256, webhookSignatureKey)) {
+        throw new UnauthorizedException('Invalid Square HMAC signature');
+      }
+    }
+
+    try {
+      const payload = JSON.parse(rawBody.toString('utf8'));
+      const merchantId = payload.merchant_id || payload.event?.merchant_id || headers['x-square-merchant-id'];
+      
+      this.logger.log(`[${webhookId}] Square webhook validated for merchant: ${merchantId}`);
+      
+      return {
+        payload,
+        merchantIdentifier: merchantId,
+      };
+    } catch (error) {
+      throw new BadRequestException('Invalid Square webhook payload');
+    }
+  }
+
+  private verifyShopifyWebhook(rawBody: Buffer, hmacHeader: string): boolean {
+    const shopifySecret = this.configService.get<string>('SHOPIFY_API_SECRET');
+    if (!shopifySecret) {
+      this.logger.error('SHOPIFY_API_SECRET not configured - cannot verify webhook');
+      return false;
+    }
+
+    const calculatedHmac = crypto
+      .createHmac('sha256', shopifySecret)
+      .update(rawBody)
+      .digest('base64');
+
+    try {
+      return crypto.timingSafeEqual(Buffer.from(calculatedHmac), Buffer.from(hmacHeader));
+    } catch (error) {
+      this.logger.error(`HMAC verification error: ${error.message}`);
+      return false;
+    }
+  }
+
+  private verifySquareWebhookHmac(rawBody: Buffer, signature: string, signingKey: string): boolean {
+    const expectedSignature = crypto
+      .createHmac('sha256', signingKey)
+      .update(rawBody)
+      .digest('base64');
+
+    try {
+      return crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(signature));
+    } catch (error) {
+      this.logger.error(`Square HMAC verification error: ${error.message}`);
+      return false;
+    }
+  }
+
+  private sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
+    const sanitized = { ...headers };
+    // Remove sensitive headers from logs
+    delete sanitized['authorization'];
+    delete sanitized['x-shopify-hmac-sha256'];
+    delete sanitized['x-square-signature'];
+    delete sanitized['x-square-hmacsha256-signature'];
+    return sanitized;
+  }
 }

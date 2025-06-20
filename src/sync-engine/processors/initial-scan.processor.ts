@@ -79,7 +79,14 @@ export class InitialScanProcessor extends WorkerHost {
             
             // --- New Batch-Optimized Database Save Logic ---
             this.logger.log(`Job ${job.id}: Beginning optimized database save for ${mappedProducts.length} products.`);
-            await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'SCAN_DATABASE_SAVE_START', 'Info', `Starting database save for ${mappedProducts.length} products.`);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Connection',
+                EntityId: connectionId,
+                EventType: 'SCAN_DATABASE_SAVE_START',
+                Status: 'Info',
+                Message: `Starting database save for ${mappedProducts.length} products.`
+            });
 
             // 3. Batch-save Canonical Products
             this.logger.log(`Job ${job.id}: Batch saving ${mappedProducts.length} canonical products...`);
@@ -177,7 +184,14 @@ export class InitialScanProcessor extends WorkerHost {
                 await this.inventoryService.saveBulkInventoryLevels(inventoryLevelsToSave);
                 this.logger.log(`Job ${job.id}: Saved ${inventoryLevelsToSave.length} inventory levels.`);
             }
-            await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'SCAN_DATABASE_SAVE_FINISH', 'Info', `Database save complete. Saved ${savedProducts.length} products and ${savedVariants.length} variants.`);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Connection',
+                EntityId: connectionId,
+                EventType: 'SCAN_DATABASE_SAVE_FINISH',
+                Status: 'Info',
+                Message: `Database save complete. Saved ${savedProducts.length} products and ${savedVariants.length} variants.`
+            });
             await job.updateProgress({ progress: 90, description: 'Generating suggestions...' });
 
 

@@ -458,7 +458,8 @@ export class CloverAdapter implements BaseAdapter {
     async processWebhook(
         connection: PlatformConnection,
         payload: any,
-        headers: Record<string, string> // Added headers argument
+        headers: Record<string, string>, // Added headers argument
+        webhookId?: string // Added optional webhookId parameter
     ): Promise<void> {
         const merchantId = connection.PlatformSpecificData?.merchantId;
         this.logger.log(`CloverAdapter: Processing webhook for merchant '${merchantId}' on connection ${connection.Id}`);

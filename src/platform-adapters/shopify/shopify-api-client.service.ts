@@ -1640,5 +1640,784 @@ export class ShopifyApiClient {
         }
     }
 
+    /**
+     * General method to make GraphQL requests (used by webhook registration service)
+     */
+    async request<T = any>(query: string, variables?: any): Promise<T> {
+        // Get a connection (we'll need to pass it in or store it)
+        // For now, we'll throw an error to indicate this needs a connection context
+        throw new Error('request method requires connection context - use requestWithConnection instead');
+    }
+
+    /**
+     * General method to make GraphQL requests with connection context
+     */
+    async requestWithConnection<T = any>(connection: PlatformConnection, query: string, variables?: any): Promise<T> {
+        const client = await this.getGraphQLClient(connection);
+        const response = await client.request(query, { variables });
+        
+        if (response.errors) {
+            throw new Error(`GraphQL request failed: ${JSON.stringify(response.errors)}`);
+        }
+        
+        return response.data;
+    }
+
+    /**
+     * Read/Query Operations
+     */
+
+    /**
+     * Get a single product by ID with full details
+     */
+    async getProductById(connection: PlatformConnection, productId: string): Promise<any> {
+        const query = `
+            query getProduct($id: ID!) {
+                product(id: $id) {
+                    id
+                    title
+                    handle
+                    status
+                    vendor
+                    productType
+                    createdAt
+                    updatedAt
+                    publishedAt
+                    descriptionHtml
+                    tags
+                    variants(first: 100) {
+                        edges {
+                            node {
+                                id
+                                title
+                                price
+                                compareAtPrice
+                                sku
+                                barcode
+                                inventoryQuantity
+                                inventoryItem {
+                                    id
+                                    tracked
+                                }
+                                position
+                                availableForSale
+                            }
+                        }
+                    }
+                    media(first: 20) {
+                        edges {
+                            node {
+                                id
+                                mediaContentType
+                                ... on MediaImage {
+                                    image {
+                                        url
+                                        altText
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, query, { id: productId });
+        return response.product;
+    }
+
+    /**
+     * Get products with advanced filtering
+     */
+    async getProductsWithFilters(
+        connection: PlatformConnection,
+        filters: {
+            first?: number;
+            after?: string;
+            query?: string;
+            status?: 'active' | 'archived' | 'draft';
+            vendor?: string;
+            productType?: string;
+        }
+    ): Promise<{ products: any[]; pageInfo: any }> {
+        let queryString = '';
+        const conditions: string[] = [];
+
+        if (filters.status) {
+            conditions.push(`status:${filters.status}`);
+        }
+        if (filters.vendor) {
+            conditions.push(`vendor:'${filters.vendor}'`);
+        }
+        if (filters.productType) {
+            conditions.push(`product_type:'${filters.productType}'`);
+        }
+        if (filters.query) {
+            conditions.push(filters.query);
+        }
+
+        if (conditions.length > 0) {
+            queryString = conditions.join(' AND ');
+        }
+
+        const query = `
+            query getProducts($first: Int, $after: String, $query: String) {
+                products(first: $first, after: $after, query: $query) {
+                    edges {
+                        node {
+                            id
+                            title
+                            handle
+                            status
+                            vendor
+                            productType
+                            createdAt
+                            updatedAt
+                            publishedAt
+                            descriptionHtml
+                            tags
+                            variants(first: 10) {
+                                edges {
+                                    node {
+                                        id
+                                        title
+                                        price
+                                        compareAtPrice
+                                        sku
+                                        barcode
+                                        inventoryQuantity
+                                        inventoryItem {
+                                            id
+                                        }
+                                        position
+                                        availableForSale
+                                    }
+                                }
+                            }
+                            media(first: 5) {
+                                edges {
+                                    node {
+                                        id
+                                        mediaContentType
+                                        ... on MediaImage {
+                                            image {
+                                                url
+                                                altText
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    pageInfo {
+                        hasNextPage
+                        endCursor
+                    }
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, query, {
+            first: filters.first || 50,
+            after: filters.after,
+            query: queryString || null,
+        });
+
+        return {
+            products: response.products.edges.map((edge: any) => edge.node),
+            pageInfo: response.products.pageInfo,
+        };
+    }
+
+    /**
+     * Get all locations for the shop
+     */
+    async getLocationsDetailed(connection: PlatformConnection, includeInactive = false): Promise<any[]> {
+        const query = `
+            query getLocations($first: Int, $includeInactive: Boolean) {
+                locations(first: $first, includeInactive: $includeInactive) {
+                    edges {
+                        node {
+                            id
+                            name
+                            address {
+                                address1
+                                address2
+                                city
+                                province
+                                country
+                                zip
+                                formatted
+                            }
+                            isActive
+                            fulfillsOnlineOrders
+                        }
+                    }
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, query, {
+            first: 250,
+            includeInactive,
+        });
+
+        return response.locations.edges.map((edge: any) => edge.node);
+    }
+
+    /**
+     * Get inventory levels for specific inventory items
+     */
+    async getInventoryLevelsForItems(
+        connection: PlatformConnection,
+        inventoryItemIds: string[]
+    ): Promise<any[]> {
+        const query = `
+            query getInventoryItems($ids: [ID!]!) {
+                nodes(ids: $ids) {
+                    ... on InventoryItem {
+                        id
+                        sku
+                        tracked
+                        inventoryLevels(first: 50) {
+                            edges {
+                                node {
+                                    id
+                                    available
+                                    location {
+                                        id
+                                        name
+                                        isActive
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, query, {
+            ids: inventoryItemIds,
+        });
+
+        return response.nodes || [];
+    }
+
+    /**
+     * Update Operations
+     */
+
+    /**
+     * Update product basic details
+     */
+    async updateProductDetails(
+        connection: PlatformConnection,
+        productId: string,
+        updates: {
+            title?: string;
+            handle?: string;
+            descriptionHtml?: string;
+            vendor?: string;
+            productType?: string;
+            tags?: string[];
+            status?: 'ACTIVE' | 'ARCHIVED' | 'DRAFT';
+        }
+    ): Promise<{ product: any; userErrors: any[] }> {
+        const mutation = `
+            mutation productUpdate($id: ID!, $input: ProductInput!) {
+                productUpdate(id: $id, input: $input) {
+                    product {
+                        id
+                        title
+                        handle
+                        status
+                        vendor
+                        productType
+                        descriptionHtml
+                        tags
+                        updatedAt
+                    }
+                    userErrors {
+                        field
+                        message
+                        code
+                    }
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, mutation, {
+            id: productId,
+            input: updates,
+        });
+
+        return response.productUpdate;
+    }
+
+    /**
+     * Archive a product (soft delete)
+     */
+    async archiveProduct(connection: PlatformConnection, productId: string): Promise<{ product: any; userErrors: any[] }> {
+        return this.updateProductDetails(connection, productId, { status: 'ARCHIVED' });
+    }
+
+    /**
+     * Unarchive a product (restore from archived)
+     */
+    async unarchiveProduct(connection: PlatformConnection, productId: string): Promise<{ product: any; userErrors: any[] }> {
+        return this.updateProductDetails(connection, productId, { status: 'ACTIVE' });
+    }
+
+    /**
+     * Delete Operations
+     */
+
+    /**
+     * Permanently delete a product
+     */
+    async deleteProductPermanently(
+        connection: PlatformConnection,
+        productId: string
+    ): Promise<{ deletedProductId: string | null; userErrors: any[] }> {
+        const mutation = `
+            mutation productDelete($input: ProductDeleteInput!) {
+                productDelete(input: $input) {
+                    deletedProductId
+                    userErrors {
+                        field
+                        message
+                        code
+                    }
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, mutation, {
+            input: { id: productId },
+        });
+
+        return response.productDelete;
+    }
+
+    /**
+     * Inventory Management Operations
+     */
+
+    /**
+     * Set absolute inventory quantities at specific locations
+     */
+    async setInventoryQuantities(
+        connection: PlatformConnection,
+        updates: Array<{
+            inventoryItemId: string;
+            locationId: string;
+            quantity: number;
+        }>,
+        reason = 'correction',
+        referenceDocumentUri?: string
+    ): Promise<{ inventoryAdjustmentGroup: any; userErrors: any[] }> {
+        const mutation = `
+            mutation inventorySetQuantities($input: InventorySetQuantitiesInput!) {
+                inventorySetQuantities(input: $input) {
+                    inventoryAdjustmentGroup {
+                        id
+                        createdAt
+                        reason
+                        referenceDocumentUri
+                        changes {
+                            name
+                            delta
+                            quantityAfterChange
+                            item {
+                                id
+                            }
+                            location {
+                                id
+                                name
+                            }
+                        }
+                    }
+                    userErrors {
+                        field
+                        message
+                        code
+                    }
+                }
+            }
+        `;
+
+        const input = {
+            reason,
+            referenceDocumentUri,
+            quantities: updates.map(update => ({
+                quantity: update.quantity,
+                inventoryItemId: update.inventoryItemId,
+                locationId: update.locationId,
+                name: 'available',
+            })),
+        };
+
+        const response = await this.requestWithConnection(connection, mutation, { input });
+        return response.inventorySetQuantities;
+    }
+
+    /**
+     * Adjust inventory quantities by delta amounts
+     */
+    async adjustInventoryQuantities(
+        connection: PlatformConnection,
+        adjustments: Array<{
+            inventoryItemId: string;
+            locationId: string;
+            delta: number;
+        }>,
+        reason = 'correction',
+        referenceDocumentUri?: string
+    ): Promise<{ inventoryAdjustmentGroup: any; userErrors: any[] }> {
+        const mutation = `
+            mutation inventoryAdjustQuantities($input: InventoryAdjustQuantitiesInput!) {
+                inventoryAdjustQuantities(input: $input) {
+                    inventoryAdjustmentGroup {
+                        id
+                        createdAt
+                        reason
+                        referenceDocumentUri
+                        changes {
+                            name
+                            delta
+                            quantityAfterChange
+                            item {
+                                id
+                            }
+                            location {
+                                id
+                                name
+                            }
+                        }
+                    }
+                    userErrors {
+                        field
+                        message
+                        code
+                    }
+                }
+            }
+        `;
+
+        const input = {
+            reason,
+            referenceDocumentUri,
+            changes: adjustments.map(adjustment => ({
+                delta: adjustment.delta,
+                inventoryItemId: adjustment.inventoryItemId,
+                locationId: adjustment.locationId,
+                name: 'available',
+            })),
+        };
+
+        const response = await this.requestWithConnection(connection, mutation, { input });
+        return response.inventoryAdjustQuantities;
+    }
+
+    /**
+     * Activate inventory tracking at a location
+     */
+    async activateInventoryAtLocation(
+        connection: PlatformConnection,
+        inventoryItemId: string,
+        locationId: string,
+        available = 0,
+        onHand?: number
+    ): Promise<{ inventoryLevel: any; userErrors: any[] }> {
+        const mutation = `
+            mutation inventoryActivate(
+                $inventoryItemId: ID!
+                $locationId: ID!
+                $available: Int
+                $onHand: Int
+            ) {
+                inventoryActivate(
+                    inventoryItemId: $inventoryItemId
+                    locationId: $locationId
+                    available: $available
+                    onHand: $onHand
+                ) {
+                    inventoryLevel {
+                        id
+                        available
+                        location {
+                            id
+                            name
+                        }
+                        item {
+                            id
+                        }
+                    }
+                    userErrors {
+                        field
+                        message
+                        code
+                    }
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, mutation, {
+            inventoryItemId,
+            locationId,
+            available,
+            onHand,
+        });
+
+        return response.inventoryActivate;
+    }
+
+    /**
+     * Deactivate inventory tracking at a location
+     */
+    async deactivateInventoryAtLocation(
+        connection: PlatformConnection,
+        inventoryLevelId: string
+    ): Promise<{ userErrors: any[] }> {
+        const mutation = `
+            mutation inventoryDeactivate($inventoryLevelId: ID!) {
+                inventoryDeactivate(inventoryLevelId: $inventoryLevelId) {
+                    userErrors {
+                        field
+                        message
+                        code
+                    }
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, mutation, {
+            inventoryLevelId,
+        });
+
+        return response.inventoryDeactivate;
+    }
+
+    /**
+     * Utility Operations
+     */
+
+    /**
+     * Get product count for reporting/pagination
+     */
+    async getProductCount(
+        connection: PlatformConnection,
+        query?: string
+    ): Promise<number> {
+        const countQuery = `
+            query getProductCount($query: String) {
+                productsCount(query: $query) {
+                    count
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, countQuery, { query });
+        return response.productsCount.count;
+    }
+
+    /**
+     * Check if a product handle is available
+     */
+    async isHandleAvailable(connection: PlatformConnection, handle: string): Promise<boolean> {
+        const query = `
+            query checkHandle($handle: String!) {
+                productByHandle(handle: $handle) {
+                    id
+                }
+            }
+        `;
+
+        const response = await this.requestWithConnection(connection, query, { handle });
+        return !response.productByHandle;
+    }
+
+    /**
+     * Ensures that all inventory items for a product have inventory tracking enabled
+     * This is important for Shopify to properly track inventory quantities
+     */
+    async enableInventoryTrackingForProduct(
+        connection: PlatformConnection,
+        productGid: string
+    ): Promise<void> {
+        const query = `
+            query GetProductInventoryItems($productId: ID!) {
+                product(id: $productId) {
+                    id
+                    variants(first: 250) {
+                        edges {
+                            node {
+                                id
+                                inventoryItem {
+                                    id
+                                    tracked
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        `;
+
+        try {
+            const response = await this.requestWithConnection(connection, query, {
+                productId: productGid
+            });
+
+            const product = response.data?.product;
+            if (!product?.variants?.edges) {
+                this.logger.warn(`No variants found for product ${productGid}`);
+                return;
+            }
+
+            // Check which inventory items need tracking enabled
+            const itemsToUpdate: string[] = [];
+            
+            for (const edge of product.variants.edges) {
+                const inventoryItem = edge.node.inventoryItem;
+                if (inventoryItem && !inventoryItem.tracked) {
+                    itemsToUpdate.push(inventoryItem.id);
+                }
+            }
+
+            if (itemsToUpdate.length === 0) {
+                this.logger.debug(`All inventory items already have tracking enabled for product ${productGid}`);
+                return;
+            }
+
+            // Enable tracking for items that need it
+            await this.enableInventoryTrackingForItems(connection, itemsToUpdate);
+            
+            this.logger.log(`Enabled inventory tracking for ${itemsToUpdate.length} items in product ${productGid}`);
+            
+        } catch (error) {
+            this.logger.error(`Failed to enable inventory tracking for product ${productGid}:`, error);
+            throw error;
+        }
+    }
+
+    /**
+     * Enables inventory tracking for specific inventory items
+     */
+    private async enableInventoryTrackingForItems(
+        connection: PlatformConnection,
+        inventoryItemIds: string[]
+    ): Promise<void> {
+        // Process in batches to avoid overwhelming the API
+        const batchSize = 10;
+        
+        for (let i = 0; i < inventoryItemIds.length; i += batchSize) {
+            const batch = inventoryItemIds.slice(i, i + batchSize);
+            
+            const mutation = `
+                mutation EnableInventoryTracking($inventoryItemUpdates: [InventoryItemUpdateInput!]!) {
+                    inventoryItemUpdate(inventoryItems: $inventoryItemUpdates) {
+                        inventoryItems {
+                            id
+                            tracked
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
+                    }
+                }
+            `;
+
+            const inventoryItemUpdates = batch.map(id => ({
+                id,
+                tracked: true
+            }));
+
+            try {
+                const response = await this.requestWithConnection(connection, mutation, {
+                    inventoryItemUpdates
+                });
+
+                if (response.data?.inventoryItemUpdate?.userErrors?.length > 0) {
+                    this.logger.warn(`Errors enabling inventory tracking:`, 
+                        response.data.inventoryItemUpdate.userErrors);
+                }
+                
+            } catch (error) {
+                this.logger.error(`Failed to enable tracking for batch starting at index ${i}:`, error);
+                // Continue with next batch rather than failing entirely
+            }
+        }
+    }
+
+    /**
+     * Ensures inventory tracking is enabled for all products in a connection
+     * This can be called during initial sync or periodically to ensure compliance
+     */
+    async enableInventoryTrackingForAllProducts(connection: PlatformConnection): Promise<void> {
+        this.logger.log(`Starting inventory tracking enablement for connection ${connection.Id}`);
+        
+        let hasNextPage = true;
+        let cursor: string | null = null;
+        let processedCount = 0;
+
+        while (hasNextPage) {
+            const query = `
+                query GetAllProducts($first: Int!, $after: String) {
+                    products(first: $first, after: $after) {
+                        edges {
+                            node {
+                                id
+                                title
+                            }
+                        }
+                        pageInfo {
+                            hasNextPage
+                            endCursor
+                        }
+                    }
+                }
+            `;
+
+            try {
+                const response = await this.requestWithConnection(connection, query, {
+                    first: 50,
+                    after: cursor
+                });
+
+                const products = response.data?.products;
+                if (!products?.edges) {
+                    break;
+                }
+
+                // Process each product
+                for (const edge of products.edges) {
+                    try {
+                        await this.enableInventoryTrackingForProduct(connection, edge.node.id);
+                        processedCount++;
+                        
+                        // Add small delay to avoid rate limiting
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    } catch (error) {
+                        this.logger.error(`Failed to process product ${edge.node.id} (${edge.node.title}):`, error);
+                        // Continue with next product
+                    }
+                }
+
+                hasNextPage = products.pageInfo.hasNextPage;
+                cursor = products.pageInfo.endCursor;
+
+            } catch (error) {
+                this.logger.error(`Failed to fetch products page:`, error);
+                break;
+            }
+        }
+
+        this.logger.log(`Completed inventory tracking enablement. Processed ${processedCount} products.`);
+    }
+
     // TODO: Add methods for updating inventory, creating products etc.
 }

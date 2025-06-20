@@ -1,14 +1,21 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { PlatformConnectionsModule } from '../platform-connections/platform-connections.module';
 import { CommonModule } from '../common/common.module';
 import { CanonicalDataModule } from '../canonical-data/canonical-data.module';
 import { MappingService } from './mapping.service';
 import { InitialSyncService } from './initial-sync.service';
 import { SyncCoordinatorService } from './sync-coordinator.service';
+import { SyncEventsService } from './sync-events.service';
+import { SyncEventListenersService } from './sync-event-listeners.service';
+import { WebhookRegistrationService } from './webhook-registration.service';
+import { RealtimeSyncService } from './realtime-sync.service';
 import { WebhookController } from './webhook.controller';
 import { SyncController } from './sync.controller';
+import { RealtimeSyncController } from './realtime-sync.controller';
+import { WebhookTestController } from './webhook-test.controller';
 import { ReconciliationProcessor } from './processors/reconciliation.processor';
 import { PushOperationsProcessor } from './processors/push-operations.processor';
 import { InitialScanProcessor } from './processors/initial-scan.processor';
@@ -30,6 +37,7 @@ import {
 @Module({
   imports: [
     ConfigModule,
+    EventEmitterModule.forRoot(),
     PlatformConnectionsModule,
     CommonModule,
     CanonicalDataModule,
@@ -72,11 +80,15 @@ import {
       { name: INITIAL_SYNC_QUEUE }
     ),
   ],
-  controllers: [SyncController, WebhookController],
+  controllers: [SyncController, WebhookController, RealtimeSyncController, WebhookTestController],
   providers: [
     MappingService,
     InitialSyncService,
     SyncCoordinatorService,
+    SyncEventsService,
+    SyncEventListenersService,
+    WebhookRegistrationService,
+    RealtimeSyncService,
     ReconciliationProcessor,
     PushOperationsProcessor,
     InitialScanProcessor,
@@ -90,6 +102,10 @@ import {
     MappingService,
     BullModule,
     SyncCoordinatorService,
+    SyncEventsService,
+    SyncEventListenersService,
+    WebhookRegistrationService,
+    RealtimeSyncService,
     InitialScanProcessor,
     InitialSyncProcessor,
     UltraLowQueueService,

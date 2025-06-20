@@ -48,17 +48,15 @@ export class PushOperationsProcessor extends WorkerHost {
         default:
           this.logger.warn(`Unknown change type: ${changeType} for job ${job.id}`);
           // Log to activity log as well for visibility on unknown job types attempted
-          await this.activityLogService.logActivity(
-            userId,
-            null, // No specific entity type for an unknown operation
-            entityId,
-            'PUSH_OPERATION_UNKNOWN_TYPE',
-            'Error',
-            `Job ${job.id} attempted with unknown change type: ${changeType}`,
-            null,
-            null,
-            { jobName: job.name, receivedChangeType: changeType }
-          );
+          await this.activityLogService.logActivity({
+            UserId: userId,
+            EntityType: null, // No specific entity type for an unknown operation
+            EntityId: entityId,
+            EventType: 'PUSH_OPERATION_UNKNOWN_TYPE',
+            Status: 'Error',
+            Message: `Job ${job.id} attempted with unknown change type: ${changeType}`,
+            Details: { jobName: job.name, receivedChangeType: changeType }
+          });
           throw new Error(`Unknown change type: ${changeType}`);
       }
       this.logger.log(`Successfully processed job ${job.id} for ${changeType} on entity ${entityId}. More detailed activity logs within execution methods.`);

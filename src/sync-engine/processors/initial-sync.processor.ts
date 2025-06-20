@@ -65,8 +65,16 @@ export class InitialSyncProcessor extends WorkerHost {
         const supabaseClient = this.supabaseService.getClient(); 
 
         try {
-            await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'INITIAL_SYNC_STARTED', 'Info',
-                `Initial sync process started for ${platformType} connection: ${connection.DisplayName}. Processing ${confirmedMatches.length} items.`, connectionId, platformType);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Connection',
+                EntityId: connectionId,
+                EventType: 'INITIAL_SYNC_STARTED',
+                Status: 'Info',
+                Message: `Initial sync process started for ${platformType} connection: ${connection.DisplayName}. Processing ${confirmedMatches.length} items.`,
+                PlatformConnectionId: connectionId,
+                Details: { platform: platformType }
+            });
 
             await this.connectionService.updateConnectionStatus(connectionId, userId, 'syncing');
 
@@ -121,8 +129,16 @@ export class InitialSyncProcessor extends WorkerHost {
                     itemsFailedToSync++;
                     this.logger.error(`Failed to process item for platform ID ${match.platformProductId} (Action: ${match.action}): ${itemError.message}`, itemError.stack);
                     // Log individual item failure but continue processing others
-                    await this.activityLogService.logActivity(userId, 'ProductMapping', match.platformProductId, 'INITIAL_SYNC_ITEM_FAILED', 'Error',
-                        `Failed processing item ${match.platformProductSku || match.platformProductId} during initial sync (Action: ${match.action}): ${itemError.message}`, connectionId, platformType, { error: itemError.message });
+                    await this.activityLogService.logActivity({
+                        UserId: userId,
+                        EntityType: 'ProductMapping',
+                        EntityId: match.platformProductId,
+                        EventType: 'INITIAL_SYNC_ITEM_FAILED',
+                        Status: 'Error',
+                        Message: `Failed processing item ${match.platformProductSku || match.platformProductId} during initial sync (Action: ${match.action}): ${itemError.message}`,
+                        PlatformConnectionId: connectionId,
+                        Details: { platform: platformType, error: itemError.message }
+                    });
                 }
             }
 
@@ -132,9 +148,16 @@ export class InitialSyncProcessor extends WorkerHost {
             await this.connectionService.updateConnectionStatus(connectionId, userId, itemsFailedToSync > 0 ? 'error' : 'active');
             await this.connectionService.updateLastSyncSuccess(connectionId, new Date().toISOString());
 
-            await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'INITIAL_SYNC_COMPLETED', itemsFailedToSync > 0 ? 'Warning' : 'Success',
-                `Initial sync completed for ${platformType} connection: ${connection.DisplayName}. Processed: ${totalItemsProcessed}, Succeeded: ${itemsSuccessfullySynced}, Failed: ${itemsFailedToSync}.`,
-                connectionId, platformType, { totalItemsProcessed, itemsSuccessfullySynced, itemsFailedToSync });
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'Connection',
+                EntityId: connectionId,
+                EventType: 'INITIAL_SYNC_COMPLETED',
+                Status: itemsFailedToSync > 0 ? 'Warning' : 'Success',
+                Message: `Initial sync completed for ${platformType} connection: ${connection.DisplayName}. Processed: ${totalItemsProcessed}, Succeeded: ${itemsSuccessfullySynced}, Failed: ${itemsFailedToSync}.`,
+                PlatformConnectionId: connectionId,
+                Details: { platform: platformType, totalItemsProcessed, itemsSuccessfullySynced, itemsFailedToSync }
+            });
 
             return { totalItemsProcessed, itemsSuccessfullySynced, itemsFailedToSync };
 
@@ -143,9 +166,16 @@ export class InitialSyncProcessor extends WorkerHost {
             // await supabaseClient.rpc('rollback_transaction'); // Conceptual rollback
             try {
                 await this.connectionService.updateConnectionStatus(connectionId, userId, 'error');
-                await this.activityLogService.logActivity(userId, 'Connection', connectionId, 'INITIAL_SYNC_FAILED', 'Error',
-                `Initial sync critically failed for ${platformType} connection: ${connection.DisplayName}. Error: ${error.message}`,
-                connectionId, platformType, { error: error.message });
+                await this.activityLogService.logActivity({
+                    UserId: userId,
+                    EntityType: 'Connection',
+                    EntityId: connectionId,
+                    EventType: 'INITIAL_SYNC_FAILED',
+                    Status: 'Error',
+                    Message: `Initial sync critically failed for ${platformType} connection: ${connection.DisplayName}. Error: ${error.message}`,
+                    PlatformConnectionId: connectionId,
+                    Details: { platform: platformType, error: error.message }
+                });
             } catch (statusError: any) {
                 this.logger.error(`Failed to update connection status to error after critical sync failure for ${connectionId}: ${statusError.message}`);
             }
@@ -277,16 +307,16 @@ export class InitialSyncProcessor extends WorkerHost {
             this.logger.warn(`No full platform data found for linked item ${match.platformProductId}. Skipping Source-of-Truth updates for this item.`);
         }
 
-        await this.activityLogService.logActivity(
-            userId,
-            'ProductMapping',
-            mapping.Id,
-            'PRODUCT_MAPPING_LINKED',
-            'Success',
-            `Product ${match.platformProductSku || match.platformProductId} from ${connection.PlatformType} linked to SSSync variant ${match.sssyncVariantId}. SoT rules applied: ${syncRules.productDetailsSoT} for details, ${syncRules.inventorySoT} for inventory.`,
-            connection.Id,
-            connection.PlatformType
-        );
+        await this.activityLogService.logActivity({
+            UserId: userId,
+            EntityType: 'ProductMapping',
+            EntityId: mapping.Id,
+            EventType: 'PRODUCT_MAPPING_LINKED',
+            Status: 'Success',
+            Message: `Product ${match.platformProductSku || match.platformProductId} from ${connection.PlatformType} linked to SSSync variant ${match.sssyncVariantId}. SoT rules applied: ${syncRules.productDetailsSoT} for details, ${syncRules.inventorySoT} for inventory.`,
+            PlatformConnectionId: connection.Id,
+            Details: { platform: connection.PlatformType }
+        });
     }
 
     private async handleCreateAction(
@@ -302,16 +332,16 @@ export class InitialSyncProcessor extends WorkerHost {
 
         if (!platformProductFullData) {
             this.logger.error(`Cannot 'create' for platform product ${match.platformProductId} because full platform data is missing. Skipping.`);
-            await this.activityLogService.logActivity(
-                userId,
-                'ProductMapping',
-                match.platformProductId, // Use platform ID as entityId if no mapping yet
-                'PRODUCT_MAPPING_CREATE_FAILED',
-                'Error',
-                `Create action failed for ${match.platformProductSku || match.platformProductId} from ${connection.PlatformType}. Reason: Missing full platform data.`,
-                connection.Id,
-                connection.PlatformType
-            );
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'ProductMapping',
+                EntityId: match.platformProductId,
+                EventType: 'PRODUCT_MAPPING_CREATE_FAILED',
+                Status: 'Error',
+                Message: `Create action failed for ${match.platformProductSku || match.platformProductId} from ${connection.PlatformType}. Reason: Missing full platform data.`,
+                PlatformConnectionId: connection.Id,
+                Details: { platform: connection.PlatformType }
+            });
             return;
         }
         
@@ -406,7 +436,16 @@ export class InitialSyncProcessor extends WorkerHost {
             createdSssyncProduct = await this.canonicalProductsService.saveProduct(sssyncProductInput);
             if (!createdSssyncProduct || !createdSssyncProduct.Id) {
                 this.logger.error(`Failed to create SSSync product for platform product ${match.platformProductId} or it has no ID.`);
-                 await this.activityLogService.logActivity(userId, 'Product', match.platformProductId, 'PRODUCT_CREATE_FAILED', 'Error', `Failed to create canonical product for ${connection.PlatformType} product ${match.platformProductSku || match.platformProductId}.`, connection.Id, connection.PlatformType);
+                 await this.activityLogService.logActivity({
+                    UserId: userId,
+                    EntityType: 'Product',
+                    EntityId: match.platformProductId,
+                    EventType: 'PRODUCT_CREATE_FAILED',
+                    Status: 'Error',
+                    Message: `Failed to create canonical product for ${connection.PlatformType} product ${match.platformProductSku || match.platformProductId}.`,
+                    PlatformConnectionId: connection.Id,
+                    Details: { platform: connection.PlatformType }
+                });
                 return; // Stop if product creation fails
             }
             canonicalProductIdToUse = createdSssyncProduct.Id;
@@ -415,7 +454,16 @@ export class InitialSyncProcessor extends WorkerHost {
         
         if (!canonicalProductIdToUse) {
             this.logger.error(`Failed to determine canonicalProductIdToUse for platform product ${match.platformProductId}.`);
-            await this.activityLogService.logActivity(userId, 'ProductVariant', match.platformVariantId || match.platformProductId, 'VARIANT_CREATE_FAILED', 'Error', `Failed to determine canonical product ID for ${connection.PlatformType} variant ${match.platformVariantId || match.platformProductSku}.`, connection.Id, connection.PlatformType);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'ProductVariant',
+                EntityId: match.platformVariantId || match.platformProductId,
+                EventType: 'VARIANT_CREATE_FAILED',
+                Status: 'Error',
+                Message: `Failed to determine canonical product ID for ${connection.PlatformType} variant ${match.platformVariantId || match.platformProductSku}.`,
+                PlatformConnectionId: connection.Id,
+                Details: { platform: connection.PlatformType }
+            });
             return;
         }
 
@@ -432,9 +480,18 @@ export class InitialSyncProcessor extends WorkerHost {
         
         const createdSssyncVariant = await this.canonicalProductsService.saveVariants([sssyncVariantToSave]);
 
-        if (!createdSssyncVariant || createdSssyncVariant.length === 0 || !createdSssyncVariant[0]?.Id || !createdSssyncVariant[0]?.ProductId) {
-            this.logger.error(`Failed to create SSSync variant for platform product ${match.platformProductId}, variant ${match.platformVariantId}.`);
-             await this.activityLogService.logActivity(userId, 'ProductVariant', match.platformVariantId || match.platformProductId, 'VARIANT_CREATE_FAILED', 'Error', `Failed to create canonical variant for ${connection.PlatformType} variant ${match.platformVariantId || match.platformProductSku}.`, connection.Id, connection.PlatformType);
+        if (!createdSssyncVariant || createdSssyncVariant.length === 0 || !createdSssyncVariant[0]?.Id) {
+            this.logger.error(`Failed to create SSSync variant for platform variant ${match.platformVariantId || match.platformProductId} or it has no ID.`);
+            await this.activityLogService.logActivity({
+                UserId: userId,
+                EntityType: 'ProductVariant',
+                EntityId: match.platformVariantId || match.platformProductId,
+                EventType: 'VARIANT_CREATE_FAILED',
+                Status: 'Error',
+                Message: `Failed to create canonical variant for ${connection.PlatformType} variant ${match.platformVariantId || match.platformProductSku}.`,
+                PlatformConnectionId: connection.Id,
+                Details: { platform: connection.PlatformType }
+            });
             return;
         }
         const finalSssyncVariant = createdSssyncVariant[0];
@@ -480,16 +537,16 @@ export class InitialSyncProcessor extends WorkerHost {
             this.logger.log(`No direct inventory levels mapped during 'create' for variant ${finalSssyncVariant.Id}. Will be synced by reconciliation if SoT is platform.`);
         }
 
-        await this.activityLogService.logActivity(
-            userId,
-            'ProductVariant',
-            finalSssyncVariant.Id,
-            'PRODUCT_VARIANT_CREATED_FROM_PLATFORM',
-            'Success',
-            `New SSSync variant ${finalSssyncVariant.Sku} (ID: ${finalSssyncVariant.Id}) created from ${connection.PlatformType} product ${match.platformProductSku || match.platformProductId} (Variant: ${platformVariantIdForMapping || 'N/A'}). SoT rules applied: ${syncRules.productDetailsSoT} for details, ${syncRules.inventorySoT} for inventory.`,
-            connection.Id,
-            connection.PlatformType
-        );
+        await this.activityLogService.logActivity({
+            UserId: userId,
+            EntityType: 'ProductVariant',
+            EntityId: finalSssyncVariant.Id,
+            EventType: 'PRODUCT_MAPPING_CREATED',
+            Status: 'Success',
+            Message: `Product ${match.platformProductSku || match.platformProductId} from ${connection.PlatformType} successfully created as SSSync variant ${finalSssyncVariant.Id}. Mapping created with ID ${newMapping.Id}.`,
+            PlatformConnectionId: connection.Id,
+            Details: { platform: connection.PlatformType }
+        });
     }
 
     private async handleIgnoreAction(connectionId: string, userId: string, match: ConfirmedMatch): Promise<void> {
@@ -519,16 +576,18 @@ export class InitialSyncProcessor extends WorkerHost {
             this.logger.debug(`No existing mapping found for platform ID ${match.platformProductId} to mark as ignored. Logging decision.`);
         }
 
-        await this.activityLogService.logActivity(
-            userId,
-            'ProductMapping',
-            match.platformProductId, // Using platform ID as entityId for ignore if no mapping exists
-            'PRODUCT_MAPPING_IGNORED',
-            'Info',
-            `Product ${match.platformProductSku || match.platformProductId} from platform will be ignored for sync as per user confirmation.`,
-            connectionId,
-            (await this.connectionService.getConnectionById(connectionId, userId))?.PlatformType
-        );
+        await this.activityLogService.logActivity({
+            UserId: userId,
+            EntityType: 'ProductMapping',
+            EntityId: match.platformProductId,
+            EventType: 'PRODUCT_MAPPING_IGNORED',
+            Status: 'Info',
+            Message: `Product ${match.platformProductSku || match.platformProductId} was marked for ignore during initial sync.`,
+            PlatformConnectionId: connectionId,
+            Details: {
+                platform: (await this.connectionService.getConnectionById(connectionId, userId))?.PlatformType
+            }
+        });
     }
 
     async handleCompleted(job: Job<JobData, any, string>, result: any): Promise<void> {

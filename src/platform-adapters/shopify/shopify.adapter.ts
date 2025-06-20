@@ -8,6 +8,7 @@ import { InventoryService, CanonicalInventoryLevel } from '../../canonical-data/
 import { PlatformProductMappingsService, PlatformProductMapping } from '../../platform-product-mappings/platform-product-mappings.service';
 import { Product, ProductVariant as SupabaseProductVariant } from '../../common/types/supabase.types';
 import { AiGenerationService } from '../../products/ai-generation/ai-generation.service';
+import { SyncEventsService } from '../../sync-engine/sync-events.service';
 
 // Facade for Shopify interactions
 @Injectable()
@@ -22,6 +23,7 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
         private readonly mappingsService: PlatformProductMappingsService,
         private readonly connectionsService: PlatformConnectionsService,
         private readonly aiGenerationService: AiGenerationService,
+        private readonly syncEventsService: SyncEventsService,
     ) {}
 
     // Return the configured client instance
@@ -366,67 +368,39 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
     async processWebhook(
         connection: PlatformConnection,
         payload: any,
-        headers: Record<string, string>
+        headers: Record<string, string>,
+        webhookId?: string
     ): Promise<void> {
         const shopifyTopic = headers['x-shopify-topic'];
         const shopDomain = headers['x-shopify-shop-domain'];
-        this.logger.log(`ShopifyAdapter: Processing webhook for topic '${shopifyTopic}' from shop '${shopDomain}' on connection ${connection.Id}`);
-        this.logger.debug(`Webhook payload: ${JSON.stringify(payload).substring(0, 500)}...`);
+        const logPrefix = webhookId ? `[${webhookId}]` : '';
+        
+        this.logger.log(`${logPrefix} ShopifyAdapter: Processing webhook for topic '${shopifyTopic}' from shop '${shopDomain}' on connection ${connection.Id}`);
+        this.logger.debug(`${logPrefix} Webhook payload: ${JSON.stringify(payload).substring(0, 500)}...`);
 
-        // Example: products/update webhook
+        // Handle different webhook topics
         if (shopifyTopic === 'products/update' || shopifyTopic === 'products/create' || shopifyTopic === 'products/delete') {
             const productId = payload.id; // Shopify product ID (numeric, needs GID conversion)
             const platformProductGid = `gid://shopify/Product/${productId}`;
 
             if (shopifyTopic === 'products/delete') {
-                this.logger.log(`Received Shopify products/delete webhook for GID ${platformProductGid}. Handling deletion...`);
-                // Find mapping, delete canonical product/variants, delete mapping
-                const mappings = await this.mappingsService.getMappingsByPlatformProductId(connection.Id, platformProductGid);
-                for (const mapping of mappings) {
-                    if (mapping.ProductVariantId) {
-                        const variant = await this.productsService.getVariantById(mapping.ProductVariantId);
-                        if (variant && variant.ProductId) {
-                            // This is a simplified deletion. A more robust version might check other mappings
-                            // or use a soft delete / archive on the canonical product.
-                            await this.productsService.deleteProductAndVariants(variant.ProductId, connection.UserId);
-                            this.logger.log(`Deleted canonical product ${variant.ProductId} and its variants.`);
-                        }
-                    }
-                    await this.mappingsService.deleteMapping(mapping.Id);
-                    this.logger.log(`Deleted platform mapping ${mapping.Id}.`);
-                }
+                this.logger.log(`${logPrefix} Received Shopify products/delete webhook for GID ${platformProductGid}. Handling deletion...`);
+                await this.handleProductDeletion(connection, platformProductGid, logPrefix, webhookId);
             } else {
-                 this.logger.log(`Received Shopify ${shopifyTopic} webhook for GID ${platformProductGid}. Triggering single product sync.`);
-                try {
-                    await this.syncSingleProductFromPlatform(connection, platformProductGid, connection.UserId);
-                } catch (error) {
-                    this.logger.error(`Error syncing Shopify product ${platformProductGid} from webhook: ${error.message}`, error.stack);
-                }
+                this.logger.log(`${logPrefix} Received Shopify ${shopifyTopic} webhook for GID ${platformProductGid}. Triggering sync and cross-platform propagation.`);
+                await this.handleProductUpdate(connection, platformProductGid, shopifyTopic, logPrefix, webhookId);
             }
         } else if (shopifyTopic === 'inventory_levels/update') {
             const inventoryItemId = payload.inventory_item_id;
             const locationId = payload.location_id;
             const available = payload.available;
-            const inventoryItemGid = `gid://shopify/InventoryItem/${inventoryItemId}`;
-            const locationGid = `gid://shopify/Location/${locationId}`;
-
-            this.logger.log(`Received Shopify inventory_levels/update for item GID ${inventoryItemGid}, loc GID ${locationGid}, available: ${available}`);
             
-            const mapping = await this.mappingsService.getMappingByPlatformVariantInventoryItemId(connection.Id, inventoryItemGid);
-            if (mapping && mapping.ProductVariantId) {
-                await this.inventoryService.updateLevel({
-                    ProductVariantId: mapping.ProductVariantId,
-                    PlatformConnectionId: connection.Id,
-                    PlatformLocationId: locationGid,
-                    Quantity: available,
-                    LastPlatformUpdateAt: new Date().toISOString(),
-                });
-                this.logger.log(`Updated canonical inventory for sssync variant ${mapping.ProductVariantId} (Shopify InventoryItem ${inventoryItemGid}) at location ${locationGid} to ${available}`);
-            } else {
-                this.logger.warn(`No mapping found for Shopify InventoryItem GID ${inventoryItemGid} from inventory_levels/update webhook. Cannot update canonical inventory.`);
-            }
+            this.logger.log(`${logPrefix} Received Shopify inventory_levels/update for item ${inventoryItemId}, location ${locationId}, available: ${available}`);
+            await this.handleInventoryUpdate(connection, inventoryItemId, locationId, available, logPrefix, webhookId);
+        } else if (shopifyTopic === 'products/paid_media') {
+            this.logger.log(`${logPrefix} Received Shopify products/paid_media webhook - ignoring as not relevant for sync`);
         } else {
-            this.logger.warn(`ShopifyAdapter received unhandled webhook topic: ${shopifyTopic}`);
+            this.logger.warn(`${logPrefix} ShopifyAdapter received unhandled webhook topic: ${shopifyTopic}`);
         }
     }
 
@@ -600,6 +574,156 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
         } catch (error) {
             this.logger.error(`Error during Shopify single product sync for ${platformProductGid}: ${error.message}`, error.stack);
             throw new InternalServerErrorException(`Shopify single product sync failed for ${platformProductGid}: ${error.message}`);
+        }
+    }
+
+    // --- Helper methods for webhook processing ---
+
+    private async handleProductDeletion(
+        connection: PlatformConnection,
+        platformProductGid: string,
+        logPrefix: string,
+        webhookId?: string,
+    ): Promise<void> {
+        try {
+            // Find mapping, delete canonical product/variants, delete mapping
+            const mappings = await this.mappingsService.getMappingsByPlatformProductId(connection.Id, platformProductGid);
+            
+            for (const mapping of mappings) {
+                if (mapping.ProductVariantId) {
+                    const variant = await this.productsService.getVariantById(mapping.ProductVariantId);
+                    if (variant && variant.ProductId) {
+                        // Check if this product has mappings to other platforms
+                        const otherMappings = await this.mappingsService.getMappingsByProductIdAndConnection(variant.ProductId, connection.Id);
+                        const hasOtherPlatformMappings = otherMappings.length > 1; // More than just this Shopify mapping
+                        
+                        if (hasOtherPlatformMappings) {
+                            // Product exists on other platforms, emit deletion event to sync to others
+                            this.logger.log(`${logPrefix} Product ${variant.ProductId} has other platform mappings. Emitting deletion sync event.`);
+                            this.syncEventsService.emitProductSyncEvent({
+                                type: 'PRODUCT_DELETED',
+                                productId: variant.ProductId,
+                                userId: connection.UserId,
+                                sourceConnectionId: connection.Id,
+                                sourcePlatform: 'shopify',
+                                platformProductId: platformProductGid,
+                                webhookId,
+                            });
+                        } else {
+                            // No other platform mappings, safe to delete canonical product
+                            await this.productsService.deleteProductAndVariants(variant.ProductId, connection.UserId);
+                            this.logger.log(`${logPrefix} Deleted canonical product ${variant.ProductId} and its variants.`);
+                        }
+                    }
+                }
+                await this.mappingsService.deleteMapping(mapping.Id);
+                this.logger.log(`${logPrefix} Deleted platform mapping ${mapping.Id}.`);
+            }
+        } catch (error) {
+            this.logger.error(`${logPrefix} Error handling product deletion for ${platformProductGid}: ${error.message}`, error.stack);
+            throw error;
+        }
+    }
+
+    private async handleProductUpdate(
+        connection: PlatformConnection,
+        platformProductGid: string,
+        shopifyTopic: string,
+        logPrefix: string,
+        webhookId?: string,
+    ): Promise<void> {
+        try {
+            // First, sync the changes from Shopify to our canonical data
+            await this.syncSingleProductFromPlatform(connection, platformProductGid, connection.UserId);
+            
+            // Find the canonical product that was just updated
+            const mappings = await this.mappingsService.getMappingsByPlatformProductId(connection.Id, platformProductGid);
+            
+            for (const mapping of mappings) {
+                if (mapping.ProductVariantId) {
+                    const variant = await this.productsService.getVariantById(mapping.ProductVariantId);
+                    if (variant && variant.ProductId) {
+                        // Get sync rules for this connection to determine if we should propagate changes
+                        const syncRules = connection.SyncRules || {};
+                        const shouldPropagate = syncRules.propagateChanges !== false; // Default to true
+                        
+                        if (shouldPropagate) {
+                            // Emit cross-platform sync event
+                            this.logger.log(`${logPrefix} Emitting cross-platform sync event for product ${variant.ProductId} due to Shopify ${shopifyTopic}`);
+                            
+                            const eventType = shopifyTopic === 'products/create' ? 'PRODUCT_CREATED' : 'PRODUCT_UPDATED';
+                            this.syncEventsService.emitProductSyncEvent({
+                                type: eventType,
+                                productId: variant.ProductId,
+                                userId: connection.UserId,
+                                sourceConnectionId: connection.Id,
+                                sourcePlatform: 'shopify',
+                                platformProductId: platformProductGid,
+                                webhookId,
+                            });
+                        }
+                        break; // Only need to process one mapping per product
+                    }
+                }
+            }
+        } catch (error) {
+            this.logger.error(`${logPrefix} Error handling product update for ${platformProductGid}: ${error.message}`, error.stack);
+            throw error;
+        }
+    }
+
+    private async handleInventoryUpdate(
+        connection: PlatformConnection,
+        inventoryItemId: string,
+        locationId: string,
+        available: number,
+        logPrefix: string,
+        webhookId?: string,
+    ): Promise<void> {
+        try {
+            const inventoryItemGid = `gid://shopify/InventoryItem/${inventoryItemId}`;
+            const locationGid = `gid://shopify/Location/${locationId}`;
+            
+            // Find the mapping for this inventory item
+            const mapping = await this.mappingsService.getMappingByPlatformVariantInventoryItemId(connection.Id, inventoryItemGid);
+            
+            if (mapping && mapping.ProductVariantId) {
+                // Update canonical inventory
+                await this.inventoryService.updateLevel({
+                    ProductVariantId: mapping.ProductVariantId,
+                    PlatformConnectionId: connection.Id,
+                    PlatformLocationId: locationGid,
+                    Quantity: available,
+                    LastPlatformUpdateAt: new Date().toISOString(),
+                });
+                
+                this.logger.log(`${logPrefix} Updated canonical inventory for variant ${mapping.ProductVariantId} at location ${locationGid} to ${available}`);
+                
+                // Check sync rules for inventory propagation
+                const syncRules = connection.SyncRules || {};
+                const shouldPropagateInventory = syncRules.propagateInventory !== false; // Default to true
+                
+                if (shouldPropagateInventory) {
+                    // Emit cross-platform inventory sync event
+                    this.logger.log(`${logPrefix} Emitting cross-platform inventory sync event for variant ${mapping.ProductVariantId}`);
+                    
+                    this.syncEventsService.emitInventorySyncEvent({
+                        type: 'INVENTORY_UPDATED',
+                        variantId: mapping.ProductVariantId,
+                        userId: connection.UserId,
+                        sourceConnectionId: connection.Id,
+                        sourcePlatform: 'shopify',
+                        locationId: locationGid,
+                        newQuantity: available,
+                        webhookId,
+                    });
+                }
+            } else {
+                this.logger.warn(`${logPrefix} No mapping found for Shopify InventoryItem GID ${inventoryItemGid} from inventory_levels/update webhook. Cannot update canonical inventory.`);
+            }
+        } catch (error) {
+            this.logger.error(`${logPrefix} Error handling inventory update for item ${inventoryItemId}: ${error.message}`, error.stack);
+            throw error;
         }
     }
 }
