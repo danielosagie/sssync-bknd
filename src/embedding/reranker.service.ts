@@ -189,7 +189,7 @@ export class RerankerService {
       const imageHash = await this.calculateImageHash(interaction.imageUrl);
 
       // Prepare vectors (simplified - would need actual embeddings)
-      const mockImageEmbedding = new Array(1664).fill(0.5);
+      const mockImageEmbedding = new Array(768).fill(0.5);
       const mockTextEmbedding = new Array(1024).fill(0.5);
 
       // Log the match interaction
