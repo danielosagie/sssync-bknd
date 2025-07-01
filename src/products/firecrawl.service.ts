@@ -277,11 +277,35 @@ export class FirecrawlService {
       businessTemplate?: string;
     } = {}
   ): Promise<any[]> {
-    const searchQuery = options.websites 
-      ? `${query} site:${options.websites.join(' OR site:')}`
-      : query;
-    
-    const results = await this.search(searchQuery);
-    return results.data || [];
+    try {
+      const searchResults = await this.search(query);
+      const targetWebsites = options.websites;
+
+      if (!targetWebsites || targetWebsites.length === 0) {
+        this.logger.warn('No websites provided for deep product search, returning raw search results.');
+        return searchResults.data || [];
+      }
+      
+      const urlsToScrape = searchResults.data
+        .filter(r => targetWebsites.some(w => r.url.includes(w)))
+        .map(r => r.url)
+        .slice(0, 5); // Limit to top 5 relevant URLs
+
+      if (urlsToScrape.length === 0) {
+        this.logger.log('No relevant URLs found in initial search for deep product search.');
+        return [];
+      }
+
+      const schema = this.getProductSchema(options.businessTemplate);
+      // Add imageUrl to the schema we want to extract
+      schema.properties.imageUrl = { type: 'string', description: 'The URL of the main product image.' };
+
+      const extractedData = await this.extract(urlsToScrape, schema);
+      return extractedData;
+
+    } catch (error) {
+      this.logger.error(`Deep product search failed for query "${query}":`, error);
+      throw new Error(`Failed to perform deep product search: ${error.message}`);
+    }
   }
 } 

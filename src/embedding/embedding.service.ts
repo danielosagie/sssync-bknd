@@ -459,4 +459,21 @@ export class EmbeddingService {
       combinedScore: 1 - item.combined_score
     }));
   }
+
+  /**
+   * Calculates the cosine similarity between two vectors.
+   * Assumes vectors are normalized.
+   */
+  calculateEmbeddingSimilarity(vecA: number[], vecB: number[]): number {
+    if (!vecA || !vecB || vecA.length !== vecB.length) {
+      return 0;
+    }
+
+    let dotProduct = 0;
+    for (let i = 0; i < vecA.length; i++) {
+      dotProduct += vecA[i] * vecB[i];
+    }
+    // For normalized vectors, the dot product is the cosine similarity.
+    return dotProduct;
+  }
 } 

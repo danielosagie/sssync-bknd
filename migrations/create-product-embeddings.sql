@@ -8,9 +8,9 @@ CREATE TABLE IF NOT EXISTS "ProductEmbeddings" (
     "VariantId" UUID REFERENCES "ProductVariants"("Id") ON DELETE CASCADE,
     
     -- Multi-modal embeddings
-    "ImageEmbedding" vector(768), -- SigLIP-base-patch16-224 dimension
+    "ImageEmbedding" vector(1664), -- SigLIP-large-patch16-384 dimension
     "TextEmbedding" vector(1024), -- Qwen3-Embedding-0.6B dimension
-    "CombinedEmbedding" vector(1792), -- Concatenated or weighted combination (768+1024)
+    "CombinedEmbedding" vector(2688), -- Concatenated or weighted combination
     
     -- Source data
     "ImageUrl" TEXT,
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS "ProductEmbeddings" (
     "BusinessTemplate" TEXT, -- 'comic-book', 'electronics', 'fashion', etc.
     "ScrapedData" JSONB,
     "SearchKeywords" TEXT[],
-    "ModelVersions" JSONB DEFAULT '{"siglip": "google/siglip-base-patch16-224", "qwen3": "Qwen/Qwen3-Embedding-0.6B"}',
+    "ModelVersions" JSONB DEFAULT '{"siglip": "google/siglip-large-patch16-384", "qwen3": "Qwen/Qwen3-Embedding-0.6B"}',
     
     "CreatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     "UpdatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS "ProductMatches" (
     "UserId" UUID REFERENCES "Users"("Id") ON DELETE CASCADE,
     "SourceImageUrl" TEXT NOT NULL,
     "SourceImageHash" TEXT NOT NULL,
-    "ImageEmbedding" vector(768),
+    "ImageEmbedding" vector(1664),
     "TextQuery" TEXT, -- Extracted or user-provided query
     "TextEmbedding" vector(1024),
     
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS "TrainingExamples" (
     
     -- Image data
     "ImageUrl" TEXT NOT NULL,
-    "ImageEmbedding" vector(768) NOT NULL,
+    "ImageEmbedding" vector(1664) NOT NULL,
     
     -- Product data  
     "ProductId" UUID REFERENCES "Products"("Id") ON DELETE SET NULL,
@@ -189,7 +189,7 @@ CREATE OR REPLACE FUNCTION log_product_match(
     p_user_id UUID,
     p_image_url TEXT,
     p_image_hash TEXT,
-    p_image_embedding vector(768),
+    p_image_embedding vector(1664),
     p_text_query TEXT,
     p_text_embedding vector(1024),
     p_candidates JSONB,
@@ -287,7 +287,7 @@ $$ LANGUAGE plpgsql;
 
 -- Helper function: Multi-modal product search
 CREATE OR REPLACE FUNCTION search_products_multimodal(
-    p_image_embedding vector(768),
+    p_image_embedding vector(1664),
     p_text_embedding vector(1024),
     p_business_template TEXT DEFAULT NULL,
     p_image_weight REAL DEFAULT 0.6,

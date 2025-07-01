@@ -2,14 +2,21 @@ import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TasksService } from './tasks.service';
 import { PlatformConnectionsModule } from '../platform-connections/platform-connections.module';
-import { SyncEngineModule } from '../sync-engine/sync-engine.module'; // For InitialSyncService
+import { SyncEngineModule } from '../sync-engine/sync-engine.module';
+import { ManualTasksService } from './manual-tasks.service';
+import { TasksController } from './tasks.controller';
+import { CommonModule } from '../common/common.module';
+import { EmbeddingModule } from '../embedding/embedding.module';
 
 @Module({
   imports: [
-    ScheduleModule, // Not forRoot() here, as it's already in AppModule
-    PlatformConnectionsModule, // To provide PlatformConnectionsService
-    SyncEngineModule,          // To provide InitialSyncService
+    ScheduleModule.forRoot(),
+    PlatformConnectionsModule,
+    SyncEngineModule,
+    CommonModule,
+    EmbeddingModule,
   ],
-  providers: [TasksService],
+  providers: [TasksService, ManualTasksService],
+  controllers: [TasksController],
 })
 export class TasksModule {} 

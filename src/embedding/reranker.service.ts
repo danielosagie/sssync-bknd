@@ -34,7 +34,7 @@ export interface RerankerResponse {
   rankedCandidates: RankedCandidate[];
   confidenceTier: 'high' | 'medium' | 'low';
   topScore: number;
-  systemAction: 'show_single_match' | 'show_multiple_candidates' | 'fallback_to_external';
+  systemAction: 'show_single_match' | 'show_multiple_candidates' | 'fallback_to_external' | 'fallback_to_manual';
   processingTimeMs: number;
   metadata: {
     model: string;
@@ -189,7 +189,7 @@ export class RerankerService {
       const imageHash = await this.calculateImageHash(interaction.imageUrl);
 
       // Prepare vectors (simplified - would need actual embeddings)
-      const mockImageEmbedding = new Array(768).fill(0.5);
+      const mockImageEmbedding = new Array(1664).fill(0.5);
       const mockTextEmbedding = new Array(1024).fill(0.5);
 
       // Log the match interaction
@@ -319,15 +319,15 @@ export class RerankerService {
   private determineSystemAction(
     confidenceTier: 'high' | 'medium' | 'low',
     candidateCount: number
-  ): 'show_single_match' | 'show_multiple_candidates' | 'fallback_to_external' {
-    switch (confidenceTier) {
-      case 'high':
-        return 'show_single_match';
-      case 'medium':
-        return candidateCount > 1 ? 'show_multiple_candidates' : 'fallback_to_external';
-      case 'low':
-      default:
-        return 'fallback_to_external';
+  ): 'show_single_match' | 'show_multiple_candidates' | 'fallback_to_external' | 'fallback_to_manual' {
+    if (confidenceTier === 'high' && candidateCount > 0) {
+      return 'show_single_match';
+    } else if (confidenceTier === 'medium' && candidateCount > 0) {
+      return 'show_multiple_candidates';
+    } else if (candidateCount === 0) {
+      return 'fallback_to_manual';
+    } else {
+      return 'fallback_to_external';
     }
   }
 

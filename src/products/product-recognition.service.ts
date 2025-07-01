@@ -19,7 +19,7 @@ export interface ProductRecognitionRequest {
 export interface RecognitionResult {
   // Core results
   confidence: 'high' | 'medium' | 'low';
-  systemAction: 'show_single_match' | 'show_multiple_candidates' | 'fallback_to_external';
+  systemAction: 'show_single_match' | 'show_multiple_candidates' | 'fallback_to_external' | 'fallback_to_manual';
   
   // Product matches
   productMatches?: ProductMatch[];
@@ -96,6 +96,50 @@ export class ProductRecognitionService {
       rerankerContext: 'fashion and apparel marketplace',
       fallbackSources: ['amazon.com', 'zappos.com', 'nordstrom.com', 'asos.com'],
       confidenceThresholds: { high: 0.88, medium: 0.60 }
+    }],
+    ['amazon', {
+      name: 'Amazon',
+      searchKeywords: ['amazon', 'marketplace', 'e-commerce'],
+      embeddingInstructions: {
+        image: 'Encode this product image for Amazon, focusing on details that would appear in a product listing.',
+        text: 'Encode this product text for Amazon, focusing on title, brand, and key features to find it on the marketplace.'
+      },
+      rerankerContext: 'a general e-commerce marketplace like Amazon',
+      fallbackSources: ['amazon.com'],
+      confidenceThresholds: { high: 0.95, medium: 0.70 }
+    }],
+    ['ebay', {
+      name: 'eBay',
+      searchKeywords: ['ebay', 'auction', 'marketplace', 'second-hand'],
+      embeddingInstructions: {
+        image: 'Encode this product image for eBay, focusing on condition, unique identifiers, and listing-style photography.',
+        text: 'Encode this product text for eBay, focusing on title, brand, condition, and keywords used in auction listings.'
+      },
+      rerankerContext: 'an auction and second-hand marketplace like eBay',
+      fallbackSources: ['ebay.com'],
+      confidenceThresholds: { high: 0.90, medium: 0.65 }
+    }],
+    ['depop', {
+      name: 'Depop',
+      searchKeywords: ['depop', 'fashion', 'vintage', 'streetwear', 'second-hand clothing'],
+      embeddingInstructions: {
+        image: 'Encode this fashion item for Depop, focusing on unique style, brand, era, and visual elements common in social commerce listings.',
+        text: 'Encode this clothing item text for Depop, focusing on brand, style, size, condition, and descriptive tags used in social marketplaces.'
+      },
+      rerankerContext: 'a social fashion marketplace like Depop',
+      fallbackSources: ['depop.com'],
+      confidenceThresholds: { high: 0.88, medium: 0.60 }
+    }],
+    ['previewsworld', {
+        name: 'Previews World',
+        searchKeywords: ['previews world', 'comic distribution', 'diamond comics'],
+        embeddingInstructions: {
+          image: 'Encode this comic book or collectible cover/image, focusing on character art, logos, and trade dress for catalog identification.',
+          text: 'Encode this comic or collectible text, focusing on series title, issue number, publisher, and creator names for catalog search.'
+        },
+        rerankerContext: 'a comic book distributor catalog like Previews World',
+        fallbackSources: ['previewsworld.com'],
+        confidenceThresholds: { high: 0.92, medium: 0.65 }
     }]
   ]);
 
@@ -343,64 +387,72 @@ export class ProductRecognitionService {
     steps: string[]
   ): Promise<void> {
     try {
-      steps.push('🌐 Executing external fallback search');
-
-      const template = this.businessTemplates.get(request.businessTemplate || 'electronics');
-      const searchQuery = request.textQuery || 
-        `${request.businessTemplate || 'product'} from image`;
-
-      // Use Firecrawl for deep search with correct method signature
-      const searchResults = await this.firecrawlService.deepProductSearch(
+      steps.push('🌐 Executing external deep search');
+      const template = this.businessTemplates.get(request.businessTemplate || 'electronics') || 
+                      this.businessTemplates.get('electronics')!; // Fallback to electronics template
+      const searchQuery = request.textQuery || ` unidentified ${template.name}`;
+      
+      const externalCandidates = await this.firecrawlService.deepProductSearch(
         searchQuery,
-        {
-          websites: template?.fallbackSources || ['amazon.com', 'google.com'],
-          businessTemplate: request.businessTemplate
-        }
+        { websites: template.fallbackSources, businessTemplate: request.businessTemplate }
       );
 
-      result.webSearchResults = searchResults;
-      result.scrapedData = { results: searchResults };
+      if (externalCandidates.length === 0) {
+        steps.push('🟡 No external candidates found.');
+        result.systemAction = 'fallback_to_manual'; // A new final state
+        return;
+      }
+      steps.push(`✅ Found ${externalCandidates.length} potential products from web search.`);
 
-      steps.push(`🔍 Found ${searchResults.length} external results`);
+      // The "Agentic" part: Verify candidates with image-to-image similarity
+      const verifiedCandidates: Array<any & { visualSimilarity: number }> = [];
+      if (result.imageEmbedding) {
+        steps.push('🤖 Agent: Verifying web results against original image...');
+        for (const candidate of externalCandidates) {
+          if (candidate.imageUrl) {
+            try {
+              // Get embedding for the image found on the web
+              const candidateEmbedding = await this.embeddingService.generateImageEmbedding({ imageUrl: candidate.imageUrl });
+              // Compare it to the user's original image embedding
+              const similarity = this.embeddingService.calculateEmbeddingSimilarity(result.imageEmbedding, candidateEmbedding);
+              
+              steps.push(`- Comparing with ${candidate.title || candidate.url}: Visual Similarity = ${similarity.toFixed(3)}`);
+              
+              if (similarity > 0.75) { // High confidence visual match
+                verifiedCandidates.push({ ...candidate, visualSimilarity: similarity });
+              }
+            } catch (e) {
+              steps.push(`- ⚠️ Could not process image for candidate: ${candidate.title || candidate.url}`);
+            }
+          }
+        }
+        steps.push(`✅ Found ${verifiedCandidates.length} visually similar products.`);
+      }
 
-      // Try to find better matches from external data
-      if (searchResults.length > 0) {
-        await this.enhanceWithExternalData({ results: searchResults }, result, steps);
+      result.webSearchResults = verifiedCandidates.length > 0 ? verifiedCandidates : externalCandidates;
+      
+      if (verifiedCandidates.length > 0) {
+        // Sort by visual similarity
+        verifiedCandidates.sort((a, b) => b.visualSimilarity - a.visualSimilarity);
+        result.rankedCandidates = verifiedCandidates.slice(0, 5); // Take top 5
+        
+        // If the top match is very strong, we can be confident
+        if (verifiedCandidates[0].visualSimilarity > 0.90) {
+          result.confidence = 'medium'; // Not 'high' as it's from the web, but good
+          result.systemAction = 'show_single_match';
+        } else {
+          result.confidence = 'low';
+          result.systemAction = 'show_multiple_candidates'; // Let the user choose
+        }
+      } else {
+        // If no visual matches, just show the top text-based results
+        result.rankedCandidates = externalCandidates.slice(0, 5);
+        result.systemAction = 'show_multiple_candidates';
       }
 
     } catch (error) {
-      steps.push(`❌ External fallback failed: ${error.message}`);
-    }
-  }
-
-  /**
-   * Enhance results with external search data
-   */
-  private async enhanceWithExternalData(
-    searchResults: any,
-    result: RecognitionResult,
-    steps: string[]
-  ): Promise<void> {
-    try {
-      // Convert external results to candidates for potential reranking
-      const externalCandidates = searchResults.results.slice(0, 5).map((item: any, index: number) => ({
-        id: `external_${index}`,
-        title: item.title || 'Unknown Product',
-        description: item.description || '',
-        price: item.price,
-        imageUrl: item.image,
-        metadata: {
-          source: 'external_search',
-          url: item.url,
-          confidence: item.confidence || 0.5
-        }
-      }));
-
-      result.rankedCandidates = [...(result.rankedCandidates || []), ...externalCandidates];
-      steps.push(`🔗 Enhanced with ${externalCandidates.length} external candidates`);
-
-    } catch (error) {
-      steps.push(`❌ External enhancement failed: ${error.message}`);
+      steps.push(`❌ External search failed: ${error.message}`);
+      this.logger.error(`External fallback search failed: ${error.message}`, error.stack);
     }
   }
 
@@ -461,9 +513,20 @@ export class ProductRecognitionService {
         break;
         
       case 'show_multiple_candidates':
-        result.userMessage = `Found ${result.rankedCandidates?.length || 0} similar products 📋`;
-        result.userInstructions = "Select the best match or tap 'None of These' to search externally.";
+        if (result.rankedCandidates && result.rankedCandidates.length > 0) {
+           result.userMessage = "We found a few potential matches. Please select the correct one.";
+           result.userInstructions = "Tap the item that matches your product, or 'None of these' to enter details manually.";
+        } else {
+           // Fallback if candidates are unexpectedly empty
+           result.userMessage = "We couldn't find a confident match.";
+           result.userInstructions = "Please try searching with more details or add the product manually.";
+        }
         break;
+        
+      case 'fallback_to_manual':
+         result.userMessage = "We couldn't find your product online.";
+         result.userInstructions = "Please add the product details manually.";
+         break;
         
       case 'fallback_to_external':
         result.userMessage = "Searching the web for better matches... 🌐";
