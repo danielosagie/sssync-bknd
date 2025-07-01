@@ -53,8 +53,6 @@ CREATE TABLE "PlatformConnections" (
     "IsEnabled" boolean NOT NULL DEFAULT true,
     "LastSyncAttemptAt" timestamptz,
     "LastSyncSuccessAt" timestamptz,
-    "PlatformSpecificData" jsonb, -- e.g., { shop: '...', merchantId: '...', scanSummary: {...}, mappingSuggestions: [...] }
-    "SyncRules" jsonb, -- e.g., { "productDetailsSoT": "SSSYNC", "inventorySoT": "PLATFORM", "allowCreate": true }
     "CreatedAt" timestamptz NOT NULL DEFAULT now(),
     "UpdatedAt" timestamptz NOT NULL DEFAULT now()
 );
@@ -106,19 +104,38 @@ CREATE INDEX idx_productvariants_sku ON "ProductVariants"("Sku");
 CREATE INDEX idx_productvariants_barcode ON "ProductVariants"("Barcode");
 CREATE INDEX idx_productvariants_userid_barcode ON "ProductVariants"("UserId", "Barcode");
 
-CREATE TABLE "ProductEmbeddings" (
-    "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    "ProductVariantId" uuid REFERENCES "ProductVariants"("Id") ON DELETE CASCADE,
-    "AiGeneratedContentId" uuid REFERENCES "AiGeneratedContent"("Id") ON DELETE SET NULL, -- Optional link
-    "SourceType" text NOT NULL, -- e.g., 'canonical_title', 'canonical_description', 'serpapi_match_title', 'generated_shopify_description'
-    "ContentText" text NOT NULL, -- The text that was embedded
-    embedding vector(384) NOT NULL, -- Or 768, 1536 depending on model
-    "ModelName" text NOT NULL, -- e.g., 'all-MiniLM-L6-v2'
-    "CreatedAt" timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX idx_productembeddings_variant_id ON "ProductEmbeddings"("ProductVariantId");
-CREATE INDEX idx_productembeddings_embedding ON "ProductEmbeddings" USING ivfflat (Embedding vector_cosine_ops) WITH (lists = 100); -- Example HNSW or IVFFlat index
 
+-- Create the ProductImages table
+CREATE TABLE "ProductImages" (
+    "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique identifier for the image
+    "ProductVariantId" uuid NOT NULL REFERENCES "ProductVariants"("Id") ON DELETE CASCADE, -- Link to ProductVariants
+    "ImageUrl" text NOT NULL, -- URL of the product image
+    "AltText" text, -- Optional alternative text for the image
+    "Position" integer NOT NULL DEFAULT 0, -- Position for ordering images
+    "PlatformMappingId" uuid REFERENCES "PlatformProductMappings"("Id") ON DELETE SET NULL, -- Optional link to platform mappings
+    "CreatedAt" timestamptz NOT NULL DEFAULT now() -- Timestamp for when the record was created
+);
+
+-- Create indexes for ProductImages
+CREATE INDEX idx_productimages_productvariantid ON "ProductImages"("ProductVariantId");
+CREATE INDEX idx_productimages_platformmappingid ON "ProductImages"("PlatformMappingId");
+
+
+-- Create the ProductEmbeddings table
+CREATE TABLE "ProductEmbeddings" (
+    "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique identifier for the embedding
+    "ProductVariantId" uuid REFERENCES "ProductVariants"("Id") ON DELETE CASCADE, -- Link to ProductVariants
+    "AiGeneratedContentId" uuid REFERENCES "AiGeneratedContent"("Id") ON DELETE SET NULL, -- Optional link to AI-generated content
+    "SourceType" text NOT NULL, -- Source type of the embedding (e.g., 'canonical_title', 'canonical_description')
+    "ContentText" text NOT NULL, -- The text that was embedded
+    embedding vector(384) NOT NULL, -- Embedding vector for the product
+    "ModelName" text NOT NULL, -- Name of the model used for embedding (e.g., 'all-MiniLM-L6-v2')
+    "CreatedAt" timestamptz NOT NULL DEFAULT now() -- Timestamp for when the record was created
+);
+
+-- Create indexes for ProductEmbeddings
+CREATE INDEX idx_productembeddings_variant_id ON "ProductEmbeddings"("ProductVariantId");
+CREATE INDEX idx_productembeddings_embedding ON "ProductEmbeddings" USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100); -- Example HNSW or IVFFlat index
 
 -- Mappings and Levels (Depend on Products/Variants and Connections)
 CREATE TABLE "PlatformProductMappings" (
@@ -136,8 +153,6 @@ CREATE TABLE "PlatformProductMappings" (
     "CreatedAt" timestamptz NOT NULL DEFAULT now(),
     "UpdatedAt" timestamptz NOT NULL DEFAULT now(),
     UNIQUE ("PlatformConnectionId", "ProductVariantId"),
-    -- This constraint may be too strict if a platform product can have multiple variants that map to different sssync variants.
-    -- Consider if this should be (PlatformConnectionId, PlatformVariantId) if PlatformVariantId is always unique.
     UNIQUE ("PlatformConnectionId", "PlatformProductId", "PlatformVariantId"),
     "status" text,
 );
@@ -251,3 +266,216 @@ CREATE INDEX idx_activitylogs_userid ON "ActivityLogs"("UserId");
 CREATE INDEX idx_activitylogs_platformconnectionid ON "ActivityLogs"("PlatformConnectionId");
 CREATE INDEX idx_activitylogs_eventtype ON "ActivityLogs"("EventType");
 
+
+ALTER TABLE "ProductVariants" 
+ADD COLUMN "OnShopify" boolean NOT NULL DEFAULT false,
+ADD COLUMN "OnSquare" boolean NOT NULL DEFAULT false,
+ADD COLUMN "OnClover" boolean NOT NULL DEFAULT false,
+ADD COLUMN "OnAmazon" boolean NOT NULL DEFAULT false,
+ADD COLUMN "OnEbay" boolean NOT NULL DEFAULT false,
+ADD COLUMN "OnFacebook" boolean NOT NULL DEFAULT false;
+
+-- Add indexes for fast filtering
+CREATE INDEX idx_productvariants_onshopify ON "ProductVariants"("OnShopify") WHERE "OnShopify" = true;
+CREATE INDEX idx_productvariants_onsquare ON "ProductVariants"("OnSquare") WHERE "OnSquare" = true;
+CREATE INDEX idx_productvariants_onclover ON "ProductVariants"("OnClover") WHERE "OnClover" = true;
+CREATE INDEX idx_productvariants_onamazon ON "ProductVariants"("OnAmazon") WHERE "OnAmazon" = true;
+CREATE INDEX idx_productvariants_onebay ON "ProductVariants"("OnEbay") WHERE "OnEbay" = true;
+CREATE INDEX idx_productvariants_onfacebook ON "ProductVariants"("OnFacebook") WHERE "OnFacebook" = true;
+
+-- Composite index for multiple platform filtering
+CREATE INDEX idx_productvariants_platforms ON "ProductVariants"("OnShopify", "OnSquare", "OnClover", "OnAmazon", "OnEbay", "OnFacebook");
+
+-- Update existing records based on current mappings
+UPDATE "ProductVariants" 
+SET "OnShopify" = true 
+WHERE "Id" IN (
+    SELECT DISTINCT ppm."ProductVariantId" 
+    FROM "PlatformProductMappings" ppm
+    JOIN "PlatformConnections" pc ON ppm."PlatformConnectionId" = pc."Id"
+    WHERE LOWER(pc."PlatformType") = 'shopify' AND ppm."IsEnabled" = true
+);
+
+UPDATE "ProductVariants" 
+SET "OnSquare" = true 
+WHERE "Id" IN (
+    SELECT DISTINCT ppm."ProductVariantId" 
+    FROM "PlatformProductMappings" ppm
+    JOIN "PlatformConnections" pc ON ppm."PlatformConnectionId" = pc."Id"
+    WHERE LOWER(pc."PlatformType") = 'square' AND ppm."IsEnabled" = true
+);
+
+UPDATE "ProductVariants" 
+SET "OnClover" = true 
+WHERE "Id" IN (
+    SELECT DISTINCT ppm."ProductVariantId" 
+    FROM "PlatformProductMappings" ppm
+    JOIN "PlatformConnections" pc ON ppm."PlatformConnectionId" = pc."Id"
+    WHERE LOWER(pc."PlatformType") = 'clover' AND ppm."IsEnabled" = true
+);
+
+UPDATE "ProductVariants" 
+SET "OnAmazon" = true 
+WHERE "Id" IN (
+    SELECT DISTINCT ppm."ProductVariantId" 
+    FROM "PlatformProductMappings" ppm
+    JOIN "PlatformConnections" pc ON ppm."PlatformConnectionId" = pc."Id"
+    WHERE LOWER(pc."PlatformType") = 'amazon' AND ppm."IsEnabled" = true
+);
+
+UPDATE "ProductVariants" 
+SET "OnEbay" = true 
+WHERE "Id" IN (
+    SELECT DISTINCT ppm."ProductVariantId" 
+    FROM "PlatformProductMappings" ppm
+    JOIN "PlatformConnections" pc ON ppm."PlatformConnectionId" = pc."Id"
+    WHERE LOWER(pc."PlatformType") = 'ebay' AND ppm."IsEnabled" = true
+);
+
+UPDATE "ProductVariants" 
+SET "OnFacebook" = true 
+WHERE "Id" IN (
+    SELECT DISTINCT ppm."ProductVariantId" 
+    FROM "PlatformProductMappings" ppm
+    JOIN "PlatformConnections" pc ON ppm."PlatformConnectionId" = pc."Id"
+    WHERE LOWER(pc."PlatformType") = 'facebook' AND ppm."IsEnabled" = true
+);
+
+
+-- Create SearchTemplates table for user-customizable business templates
+CREATE TABLE IF NOT EXISTS "SearchTemplates" (
+    "Id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "UserId" UUID REFERENCES "Users"("Id") ON DELETE CASCADE,
+    "Name" TEXT NOT NULL,
+    "Category" TEXT NOT NULL,
+    "Description" TEXT,
+    "SearchPrompt" TEXT NOT NULL,
+    "SuggestedSites" TEXT[],
+    "ExtractionSchema" JSONB,
+    "SearchKeywords" TEXT[],
+    "IsDefault" BOOLEAN DEFAULT false,
+    "IsPublic" BOOLEAN DEFAULT false,
+    "UsageCount" INTEGER DEFAULT 0,
+    "CreatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    "UpdatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create indexes for better performance
+CREATE INDEX IF NOT EXISTS "idx_search_templates_user_id" ON "SearchTemplates"("UserId");
+CREATE INDEX IF NOT EXISTS "idx_search_templates_category" ON "SearchTemplates"("Category");
+CREATE INDEX IF NOT EXISTS "idx_search_templates_is_default" ON "SearchTemplates"("IsDefault") WHERE "IsDefault" = true;
+CREATE INDEX IF NOT EXISTS "idx_search_templates_is_public" ON "SearchTemplates"("IsPublic") WHERE "IsPublic" = true;
+CREATE INDEX IF NOT EXISTS "idx_search_templates_keywords" ON "SearchTemplates" USING gin("SearchKeywords");
+
+-- Create trigger for UpdatedAt
+CREATE OR REPLACE FUNCTION update_search_templates_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW."UpdatedAt" = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_search_templates_updated_at
+    BEFORE UPDATE ON "SearchTemplates"
+    FOR EACH ROW
+    EXECUTE FUNCTION update_search_templates_updated_at();
+
+-- Enable RLS
+ALTER TABLE "SearchTemplates" ENABLE ROW LEVEL SECURITY;
+
+-- Policy: Users can access their own templates and public templates
+CREATE POLICY "Users can access their own and public search templates"
+ON "SearchTemplates"
+FOR ALL
+USING (
+    "UserId" = auth.uid() OR "IsPublic" = true
+);
+
+
+INSERT INTO "SearchTemplates" ("Name", "Category", "Description", "SearchPrompt", "SuggestedSites", "ExtractionSchema", "SearchKeywords", "IsDefault", "IsPublic", "UserId") VALUES
+(
+    'Comic Books',
+    'Collectibles',
+    'Template for comic book product listings',
+    'Extract comic book details: title, issue number, variant cover, condition/grade, publisher, publication year, key characters, creators, story arcs, and market value',
+    ARRAY['metropoliscomics.com', 'mycomicshop.com', 'comicconnect.com', 'heritage-auctions.com', 'covrprice.com'],
+    '{
+        "title": "Comic book title and series name",
+        "issue_number": "Issue number and variant details",
+        "condition": "Condition grade (CGC, CBCS, raw)",
+        "publisher": "Publisher name (Marvel, DC, etc.)",
+        "year": "Publication year",
+        "characters": "Key characters featured",
+        "creators": "Writer, artist, cover artist",
+        "key_issues": "First appearances, deaths, major events"
+    }'::jsonb,
+    ARRAY['comic', 'issue', 'variant', 'cgc', 'cbcs', 'marvel', 'dc'],
+    true,
+    true,
+    NULL -- No specific user, applicable for all users
+),
+(
+    'Electronics',
+    'Technology',
+    'Template for electronic devices and gadgets',
+    'Extract electronics details: product name, brand, model number, specifications, compatibility, condition, warranty status, accessories included, and current market price',
+    ARRAY['bestbuy.com', 'newegg.com', 'amazon.com', 'bhphotovideo.com', 'adorama.com'],
+    '{
+        "product_name": "Device name and model",
+        "brand": "Manufacturer brand",
+        "model_number": "Specific model number",
+        "specifications": "Technical specifications",
+        "compatibility": "Compatible systems/devices",
+        "condition": "Working condition and cosmetic state",
+        "accessories": "Included accessories and cables"
+    }'::jsonb,
+    ARRAY['electronics', 'tech', 'device', 'model', 'specifications', 'warranty'],
+    true,
+    true,
+    NULL -- No specific user, applicable for all users
+),
+(
+    'Trading Cards',
+    'Collectibles',
+    'Template for trading cards and sports cards',
+    'Extract trading card details: player/character name, card number, set name, year, condition/grade, rookie status, parallel/insert type, and current market value',
+    ARRAY['cardmarket.com', 'tcgplayer.com', 'comc.com', 'psacard.com', 'beckett.com'],
+    '{
+        "player_name": "Player or character name",
+        "card_number": "Card number within set",
+        "set_name": "Set or series name",
+        "year": "Year of release",
+        "condition": "Grade or condition (PSA, BGS, raw)",
+        "card_type": "Base, rookie, insert, parallel, autograph",
+        "sport": "Sport or game type"
+    }'::jsonb,
+    ARRAY['card', 'rookie', 'psa', 'bgs', 'autograph', 'parallel', 'insert'],
+    true,
+    true,
+    NULL -- No specific user, applicable for all users
+),
+(
+    'General Products',
+    'General',
+    'Default template for any product type',
+    'Extract comprehensive product details: title, brand, model, price, description, specifications, dimensions, weight, materials, features, and condition',
+    ARRAY['amazon.com', 'ebay.com', 'walmart.com', 'target.com', 'google.com'],
+    '{
+        "title": "Product name and model",
+        "brand": "Manufacturer or brand name",
+        "price": "Current market price",
+        "description": "Detailed product description",
+        "specifications": "Technical specifications",
+        "condition": "Product condition (new, used, refurbished)",
+        "features": "Key features and benefits",
+        "dimensions": "Size and weight information"
+    }'::jsonb,
+    ARRAY['product', 'brand', 'model', 'specifications', 'features'],
+    true,
+    true,
+    NULL -- No specific user, applicable for all users
+);
+
+-- Grant permissions
+GRANT ALL ON "SearchTemplates" TO authenticated;

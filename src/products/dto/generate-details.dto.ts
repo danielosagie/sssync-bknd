@@ -43,6 +43,20 @@ class SerpApiLensResponseDto implements Partial<SerpApiLensResponse> { // Use Pa
     visual_matches?: VisualMatchDto[];
 }
 
+// Add enhanced web data interface
+export class EnhancedWebDataDto {
+  @IsString()
+  @IsUrl()
+  url: string;
+
+  @IsObject()
+  scrapedData: any;
+
+  @IsOptional()
+  @IsString()
+  analysis?: string;
+}
+
 export class GenerateDetailsDto {
   @IsUUID() // ID of the draft product created by /analyze
   productId: string;
@@ -70,6 +84,12 @@ export class GenerateDetailsDto {
   @ValidateNested()
   @Type(() => SelectedMatchDto)
   selectedMatch?: SelectedMatchDto;
+
+  // NEW: Enhanced web data from Firecrawl scraping
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => EnhancedWebDataDto)
+  enhancedWebData?: EnhancedWebDataDto;
 
   // Remove lensResponse - no longer needed here
   // lensResponse?: any;

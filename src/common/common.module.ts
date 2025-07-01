@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { SupabaseService } from './supabase.service';
 import { EncryptionService } from './encryption.service';
 import { ActivityLogService } from './activity-log.service';
+import { AiUsageTrackerService } from './ai-usage-tracker.service';
 
 //@Global()
 @Module({
@@ -20,6 +21,7 @@ import { ActivityLogService } from './activity-log.service';
   providers: [
     EncryptionService, 
     ActivityLogService,
+    AiUsageTrackerService,
     {
       provide: SupabaseService,
       useFactory: async (configService: ConfigService) => {
@@ -30,6 +32,6 @@ import { ActivityLogService } from './activity-log.service';
       inject: [ConfigService],
     },
   ],
-  exports: [SupabaseService, EncryptionService, JwtModule, ActivityLogService],
+  exports: [SupabaseService, EncryptionService, JwtModule, ActivityLogService, AiUsageTrackerService],
 })
 export class CommonModule {}

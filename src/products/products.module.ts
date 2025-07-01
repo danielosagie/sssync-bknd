@@ -11,6 +11,10 @@ import { ImageRecognitionService } from './image-recognition/image-recognition.s
 import { AiGenerationService } from './ai-generation/ai-generation.service';
 import { CrossAccountSyncService } from './cross-account-sync.service';
 import { ActivityLogService } from '../common/activity-log.service';
+import { FirecrawlService } from './firecrawl.service';
+import { ProductRecognitionService } from './product-recognition.service';
+import { EmbeddingModule } from '../embedding/embedding.module';
+import { RerankerService } from '../embedding/reranker.service';
 
 @Module({
   imports: [
@@ -20,9 +24,26 @@ import { ActivityLogService } from '../common/activity-log.service';
     PlatformProductMappingsModule,
     forwardRef(() => PlatformConnectionsModule),
     forwardRef(() => PlatformAdaptersModule),
+    EmbeddingModule,
   ],
   controllers: [ProductsController],
-  providers: [ProductsService, ImageRecognitionService, AiGenerationService, CrossAccountSyncService, ActivityLogService],
-  exports: [ProductsService, ImageRecognitionService, AiGenerationService, CrossAccountSyncService, ActivityLogService],
+  providers: [
+    ProductsService, 
+    ImageRecognitionService, 
+    AiGenerationService, 
+    CrossAccountSyncService, 
+    ActivityLogService, 
+    FirecrawlService,
+    ProductRecognitionService,
+    RerankerService,
+  ],
+  exports: [
+    ProductsService, 
+    ImageRecognitionService, 
+    AiGenerationService, 
+    CrossAccountSyncService, 
+    ActivityLogService,
+    ProductRecognitionService,
+  ],
 })
 export class ProductsModule {}

@@ -56,13 +56,16 @@ export class AiGenerationService {
   private groq: Groq | null = null; // Groq client instance
 
   constructor(private readonly configService: ConfigService) {
-    const apiKey = this.configService.get<string>('GROQ_API_KEY');
-    if (apiKey) {
-      this.groq = new Groq({ apiKey }); // Initialize Groq client
-      this.logger.log('Groq client initialized.');
+    const groqApiKey = this.configService.get<string>('GROQ_API_KEY');
+    if (groqApiKey) {
+      this.groq = new Groq({ apiKey: groqApiKey });
     } else {
-      this.logger.error('GROQ_API_KEY is not configured. AI Generation Service disabled.');
+      this.logger.warn('GROQ_API_KEY not found. AI generation features will be limited.');
     }
+  }
+
+  private getGroqClient(): Groq | null {
+    return this.groq;
   }
 
   // Safety settings might not be directly applicable/configurable in Groq SDK in the same way
@@ -73,6 +76,7 @@ export class AiGenerationService {
     coverImageUrl: string,
     targetPlatforms: string[],
     selectedMatchContext?: { visual_matches: VisualMatch[] } | null,
+    enhancedWebData?: { url: string; scrapedData: any; analysis?: string } | null,
   ): Promise<GeneratedDetails | null> {
     if (!this.groq) {
       this.logger.warn('Groq client not initialized. Cannot generate product details.');
@@ -91,11 +95,27 @@ export class AiGenerationService {
         ).join('\n')}`;
       }
 
-      const prompt = `You are an expert e-commerce product listing specialist. Analyze this product image and generate optimized details for the specified platforms.
+      // Build context from enhanced web data if available
+      let enhancedDataContext = '';
+      if (enhancedWebData) {
+        enhancedDataContext = `\n\nDETAILED PRODUCT INFORMATION (scraped from ${enhancedWebData.url}):\n${JSON.stringify(enhancedWebData.scrapedData, null, 2)}`;
+        if (enhancedWebData.analysis) {
+          enhancedDataContext += `\n\nAdditional Analysis: ${enhancedWebData.analysis}`;
+        }
+      }
 
-Image URL: ${coverImageUrl}${visualMatchContext}
+      const prompt = `You are an expert e-commerce product listing specialist. Analyze this product using the image and detailed web data to generate highly accurate, optimized details for the specified platforms.
+
+Image URL: ${coverImageUrl}${visualMatchContext}${enhancedDataContext}
 
 Target Platforms: ${targetPlatforms.join(', ')}
+
+PRIORITY INSTRUCTIONS:
+${enhancedWebData ? '- USE THE DETAILED PRODUCT INFORMATION as your PRIMARY source for accuracy' : ''}
+- Cross-reference image with ${enhancedWebData ? 'web data' : 'visual matches'} for consistency
+- Generate realistic, competitive pricing
+- Create detailed, engaging descriptions
+- Extract specific specifications and features
 
 Generate a JSON response with platform-specific details. For each platform, provide:
 
@@ -166,6 +186,51 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
     } catch (error) {
       this.logger.error(`Error generating product details: ${error.message}`, error.stack);
       return null;
+    }
+  }
+
+  async generateProductDetailsFromScrapedData(
+    scrapedContents: any[],
+    contextQuery: string,
+    businessTemplate?: string,
+  ): Promise<GeneratedDetails | null> {
+    const groq = this.getGroqClient();
+    if (!groq) return null;
+
+    const systemPrompt = `You are an expert at creating compelling product listings for e-commerce platforms from scraped web data. Your goal is to generate a complete, accurate, and attractive product listing. Business Template: ${businessTemplate || 'General'}`;
+
+    const contentString = scrapedContents.map(c => JSON.stringify(c.data.markdown)).join('\n\n---\n\n');
+
+    const userPrompt = `
+      Based on the following scraped data from one or more websites, and the original user query "${contextQuery}", generate a comprehensive product listing.
+
+      **Scraped Content:**
+      ${contentString.substring(0, 15000)}
+
+      **Instructions:**
+      1.  **Synthesize Information:** Combine details from all provided sources to create a single, coherent product listing.
+      2.  **Extract Key Fields:** Identify and extract the product title, a detailed description, price, brand, and any relevant specifications (like model number, size, color).
+      3.  **Generate Compelling Copy:** Write a product description that is engaging and highlights the key features and benefits.
+      4.  **Suggest Tags/Keywords:** Provide a list of relevant tags or keywords for better searchability.
+      5.  **Format as JSON:** Return the output as a single JSON object with the following structure: { "title": "...", "description": "...", "price": 123.45, "brand": "...", "specifications": { ... }, "tags": ["...", "..."] }.
+    `;
+
+    try {
+      const chatCompletion = await groq.chat.completions.create({
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        model: 'llama3-70b-8192',
+        temperature: 0.2,
+        response_format: { type: 'json_object' },
+      });
+
+      const generatedJson = JSON.parse(chatCompletion.choices[0]?.message?.content || '{}');
+      return generatedJson as GeneratedDetails;
+    } catch (error) {
+      this.logger.error('Error generating product details from scraped data with Groq:', error);
+      throw new Error(`Groq API call failed: ${error.message}`);
     }
   }
 

@@ -9,6 +9,7 @@ import { PublishProductDto, PublishIntent } from './dto/publish-product.dto';
 import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { ActivityLogService } from '../common/activity-log.service';
+import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
 import { Product, ProductVariant, ProductImage } from '../common/types/supabase.types';
 import * as QueueManager from '../queue-manager';
 
@@ -67,6 +68,7 @@ export class ProductsService {
     private readonly adapterRegistry: PlatformAdapterRegistry,
     private readonly connectionsService: PlatformConnectionsService,
     private readonly activityLogService: ActivityLogService,
+    private readonly aiUsageTracker: AiUsageTrackerService,
   ) {
     this.logger.log('ProductsService Constructor called.');
 
@@ -110,7 +112,7 @@ export class ProductsService {
     this.logger.log(`Starting product analysis...`);
 
     let analysisResultJson: SerpApiLensResponse | null = null;
-    let productId: string | null = null;
+    let productId: string | undefined;
     let variantId: string | null = null;
     let aiContentId: string | null = null;
     let product: SimpleProduct | null = null;
@@ -140,6 +142,15 @@ export class ProductsService {
              // Don't store this result later, but the attempt was made
          } else if (analysisResultJson) {
              this.logger.log(`SerpApi Lens analysis successful (or resolved without data).`);
+             // Track SerpAPI usage
+             try {
+               await this.aiUsageTracker.trackSerpApiUsage(userId, 'visual_search', {
+                 productId: productId,
+                 imageUrl: imageUrl
+               });
+             } catch (error) {
+               this.logger.warn('Failed to track SerpAPI usage:', error);
+             }
          } else {
              this.logger.warn(`SerpApi Lens promise resolved with unexpected null/undefined result.`);
          }
@@ -305,6 +316,7 @@ export class ProductsService {
     coverImageIndex: number,
     selectedPlatforms: string[],
     selectedMatch?: VisualMatch | null, // Use the specific match selected by user
+    enhancedWebData?: { url: string; scrapedData: any; analysis?: string } | null, // NEW: Enhanced web data from Firecrawl
   ): Promise<{ generatedDetails: GeneratedDetails | null }> { // Only return generatedDetails now
 
     // Optional: Fetch Product/Variant to verify ownership/existence if needed
@@ -327,12 +339,37 @@ export class ProductsService {
       coverImageUrl,
       selectedPlatforms,
       selectedMatch ? { visual_matches: [selectedMatch] } : null, // Pass selected match context if available
-                                                                  // The AI service prompt needs slight adjustment to look for visual_matches[0] if present
+      enhancedWebData, // NEW: Pass enhanced web data to AI service
     );
 
      if (!generatedDetails) {
          // Log already happens in AI service
          throw new InternalServerErrorException('Failed to generate product details from AI.');
+     }
+
+     // Track AI generation usage (approximate token counts)
+     try {
+       const estimatedInputTokens = Math.ceil((coverImageUrl.length + 
+         selectedPlatforms.join(',').length + 
+         (enhancedWebData?.analysis?.length || 0)) / 4);
+       const estimatedOutputTokens = Math.ceil(
+         JSON.stringify(generatedDetails).length / 4
+       );
+       
+       await this.aiUsageTracker.trackGenerationUsage(
+         userId, 
+         estimatedInputTokens, 
+         estimatedOutputTokens, 
+         'generate_details',
+         {
+           productId,
+           variantId,
+           platforms: selectedPlatforms.join(','),
+           hasEnhancedData: !!enhancedWebData
+         }
+       );
+     } catch (error) {
+       this.logger.warn('Failed to track AI generation usage:', error);
      }
 
     // 2. Save Generated AI Content to DB
@@ -673,7 +710,7 @@ export class ProductsService {
       variantInput: Omit<ProductVariant, 'Id' | 'ProductId' | 'UserId' | 'CreatedAt' | 'UpdatedAt'>
   ): Promise<{ product: SimpleProduct; variant: SimpleProductVariant; analysis?: SimpleAiGeneratedContent }> {
       const supabase = this.getSupabaseClient();
-      let productId: string | null = null;
+      let productId: string | undefined;
       let variantId: string | null = null;
 
       try {
