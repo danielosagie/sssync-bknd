@@ -1,8 +1,6 @@
 import { Injectable, InternalServerErrorException, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Groq from 'groq-sdk'; // Import Groq SDK
-// Try importing the specific content part type
-import { ChatCompletionContentPart } from 'groq-sdk/resources/chat/completions';
 import { SerpApiLensResponse, VisualMatch } from '../image-recognition/image-recognition.service'; // Keep using these interfaces
 
 // Define richer expected output structure based on platform keys
@@ -179,18 +177,7 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
         messages: [
           {
             role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: prompt,
-              },
-              {
-                type: 'image_url',
-                image_url: {
-                  url: coverImageUrl,
-                },
-              },
-            ] as ChatCompletionContentPart[],
+            content: `${prompt}\n\nImage URL: ${coverImageUrl}`,
           },
         ],
         temperature: 0.6,

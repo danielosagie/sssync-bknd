@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../common/supabase.service';
 import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
+import sharp from 'sharp';
 
 export interface ImageEmbeddingInput {
   imageUrl?: string;
@@ -65,6 +66,18 @@ export class EmbeddingService {
     private readonly aiUsageTracker: AiUsageTrackerService
   ) {
     this.aiServerUrl = this.configService.get<string>('AI_SERVER_URL') || 'http://localhost:8000';
+    
+    // Verify Sharp is available
+    try {
+      // Test Sharp availability by checking if it's a function
+      if (typeof sharp === 'function') {
+        this.logger.log('Sharp image processing library loaded successfully');
+      } else {
+        throw new Error('Sharp is not a function');
+      }
+    } catch (error) {
+      this.logger.error('Sharp not available - image preprocessing will fail. Run: npm install sharp');
+    }
   }
 
   /**
@@ -79,23 +92,59 @@ export class EmbeddingService {
       if (input.imageBase64) {
         imageData = input.imageBase64;
       } else if (input.imageUrl) {
+        // 🚨 NEW: Validate that URL is not a local file path
+        if (input.imageUrl.startsWith('file://')) {
+          throw new Error(
+            'Local file URLs (file://) are not supported. ' +
+            'Please convert the image to base64 and use the imageBase64 field instead, ' +
+            'or upload the image to a server and provide an https:// URL.'
+          );
+        }
+        
+        if (!input.imageUrl.startsWith('http://') && !input.imageUrl.startsWith('https://')) {
+          throw new Error(
+            'Invalid image URL format. Only http:// and https:// URLs are supported. ' +
+            'For local images, please convert to base64 and use the imageBase64 field instead.'
+          );
+        }
+        
         // Download and convert to base64
         imageData = await this.downloadImageAsBase64(input.imageUrl);
       } else {
         throw new Error('Either imageUrl or imageBase64 must be provided');
       }
 
+      // Log request details for debugging
+      const instruction = input.instruction || 'Encode this product image for visual similarity search';
+      const base64Length = imageData.length;
+      
+      this.logger.log(`Sending to AI server: base64 length ${base64Length} chars, instruction: "${instruction}"`);
+      
       const response = await fetch(`${this.aiServerUrl}/embed/image`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           image_data: imageData,
-          instruction: input.instruction || 'Encode this product image for visual similarity search'
+          instruction: instruction
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`Image embedding API error: ${response.statusText}`);
+        let errorDetails = response.statusText;
+        
+        // Try to get more detailed error information
+        try {
+          const errorBody = await response.text();
+          this.logger.error(`AI Server Error Details: ${errorBody}`);
+          
+          if (response.status === 422) {
+            errorDetails = `Image format/size issue. AI server couldn't process the image. Details: ${errorBody}`;
+          }
+        } catch (e) {
+          // Ignore JSON parsing errors
+        }
+        
+        throw new Error(`Image embedding API error (${response.status}): ${errorDetails}`);
       }
 
       const data = await response.json();
@@ -331,13 +380,73 @@ export class EmbeddingService {
   /**
    * Private helper methods
    */
+  /**
+   * Download image and convert to base64 with preprocessing
+   */
   private async downloadImageAsBase64(imageUrl: string): Promise<string> {
-    const response = await fetch(imageUrl);
-    if (!response.ok) {
-      throw new Error(`Failed to download image: ${response.statusText}`);
+    try {
+      this.logger.log(`Downloading image from: ${imageUrl}`);
+      
+      const response = await fetch(imageUrl);
+      if (!response.ok) {
+        throw new Error(`Failed to download image: ${response.statusText}`);
+      }
+      
+      const buffer = await response.arrayBuffer();
+      const sizeInMB = buffer.byteLength / (1024 * 1024);
+      
+      this.logger.log(`Downloaded image: ${sizeInMB.toFixed(2)}MB`);
+      
+      // If image is larger than 2MB, we need to resize it
+      if (sizeInMB > 2) {
+        this.logger.warn(`Image too large (${sizeInMB.toFixed(2)}MB), preprocessing required`);
+        return await this.preprocessLargeImage(buffer, imageUrl);
+      }
+      
+      return Buffer.from(buffer).toString('base64');
+      
+    } catch (error) {
+      this.logger.error(`Failed to download/process image from ${imageUrl}: ${error.message}`);
+      throw error;
     }
-    const buffer = await response.arrayBuffer();
-    return Buffer.from(buffer).toString('base64');
+  }
+
+  /**
+   * Preprocess large images by resizing them using Sharp
+   */
+  private async preprocessLargeImage(buffer: ArrayBuffer, originalUrl: string): Promise<string> {
+    try {
+      this.logger.log(`Preprocessing large image from ${originalUrl}`);
+      
+      // Convert to Buffer for Sharp processing
+      const inputBuffer = Buffer.from(buffer);
+      
+      // Get image metadata
+      const metadata = await sharp(inputBuffer).metadata();
+      this.logger.log(`Original image: ${metadata.width}x${metadata.height}, format: ${metadata.format}`);
+      
+      // Resize image to max 800x800 pixels, maintain aspect ratio
+      const resizedBuffer = await sharp(inputBuffer)
+        .resize(800, 800, { 
+          fit: 'inside',
+          withoutEnlargement: true 
+        })
+        .jpeg({ 
+          quality: 85,
+          progressive: true 
+        })
+        .toBuffer();
+      
+      const resizedSizeInMB = resizedBuffer.length / (1024 * 1024);
+      this.logger.log(`Resized image to: ${resizedSizeInMB.toFixed(2)}MB`);
+      
+      // Convert resized image to base64
+      return resizedBuffer.toString('base64');
+      
+    } catch (error) {
+      this.logger.error(`Failed to preprocess image with Sharp: ${error.message}`);
+      throw new Error(`Image preprocessing failed: ${error.message}. Try uploading a smaller image.`);
+    }
   }
 
   private formatProductText(input: TextEmbeddingInput): string {

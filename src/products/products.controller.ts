@@ -2118,6 +2118,14 @@ Return JSON format:
 
         } catch (error) {
             this.logger.error(`[POST /recognize/quick-scan] User: ${userId} - Error: ${error.message}`, error.stack);
+            
+            // Pass through validation errors (like file:// URL errors) as BadRequestException
+            if (error.message.includes('Local file URLs') || 
+                error.message.includes('Invalid image URL format') ||
+                error.message.includes('Either imageUrl or imageBase64 must be provided')) {
+                throw new BadRequestException(error.message);
+            }
+            
             throw new InternalServerErrorException(`Quick scan failed: ${error.message}`);
         }
     }
