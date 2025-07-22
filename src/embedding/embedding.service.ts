@@ -47,6 +47,8 @@ export interface ProductMatch {
   description?: string;
   imageUrl?: string;
   businessTemplate?: string;
+  price?: number; // Add price
+  productUrl?: string; // Add productUrl
   imageSimilarity: number;
   textSimilarity: number;
   combinedScore: number;

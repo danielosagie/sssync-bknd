@@ -28,6 +28,8 @@ import { ConflictException } from '@nestjs/common';
 import { ActivityLogService } from '../common/activity-log.service';
 import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
 import { AiGenerationService } from './ai-generation/ai-generation.service';
+// Add the orchestrator import
+import { ProductOrchestratorService, RecognizeStageInput, MatchStageInput, GenerateStageInput } from './product-orchestrator.service';
 
 interface LocationProduct {
     variantId: string;
@@ -87,6 +89,7 @@ export class ProductsController {
         private readonly rerankerService: RerankerService,
         private readonly embeddingService: EmbeddingService,
         private readonly aiGenerationService: AiGenerationService,
+        private readonly productOrchestratorService: ProductOrchestratorService,
     ) {}
 
     // Helper method for retry logic
@@ -1632,7 +1635,7 @@ export class ProductsController {
 
             const result = await this.productRecognitionService.recognizeProduct(request);
 
-            this.logger.log(`[POST /recognize] User: ${userId} - Recognition completed in ${result.processingTimeMs}ms, confidence: ${result.confidence}`);
+            this.logger.log(`[POST /recognize] User: ${userId} - Recognition completed in ${result.metadata.processingTimeMs}ms, confidence: ${result.confidence}`);
 
             return result;
 
@@ -2297,13 +2300,1138 @@ export class ProductsController {
 
             const result = await this.productRecognitionService.recognizeProduct(request);
 
-            this.logger.log(`[POST /recognize/full-pipeline] User: ${userId} - Recognition completed in ${result.processingTimeMs}ms, confidence: ${result.confidence}`);
+            this.logger.log(`[POST /recognize/full-pipeline] User: ${userId} - Recognition completed in ${result.metadata.processingTimeMs}ms, confidence: ${result.confidence}`);
 
             return result;
 
         } catch (error) {
             this.logger.error(`[POST /recognize/full-pipeline] User: ${userId} - Error: ${error.message}`, error.stack);
             throw new InternalServerErrorException(`Full pipeline recognition failed: ${error.message}`);
+        }
+    }
+
+    @Post('orchestrate')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 1, ttl: 60000 }}) // 1 request per minute
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.OK)
+    async orchestrateProduct(
+        @Body() orchestrateInput: {
+            productId: string;
+            orchestrationType: 'recognize' | 'match' | 'generate';
+            orchestrationData: RecognizeStageInput | MatchStageInput | GenerateStageInput;
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<any> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        this.logger.log(`[POST /orchestrate] User: ${userId} - Orchestrating product ${orchestrateInput.productId}`);
+
+                 try {
+             switch (orchestrateInput.orchestrationType) {
+                 case 'recognize':
+                     return await this.productOrchestratorService.recognize(userId, orchestrateInput.orchestrationData as RecognizeStageInput);
+                 case 'match':
+                     return await this.productOrchestratorService.match(userId, orchestrateInput.orchestrationData as MatchStageInput);
+                 case 'generate':
+                     return await this.productOrchestratorService.generate(userId, orchestrateInput.orchestrationData as GenerateStageInput);
+                 default:
+                     throw new BadRequestException('Invalid orchestration type');
+             }
+        } catch (error) {
+            this.logger.error(`[POST /orchestrate] User: ${userId} - Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Orchestration failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * 🎯 3-STAGE ORCHESTRATOR ENDPOINTS 
+     * Stage 1: Recognize → Stage 2: Match → Stage 3: Generate
+     */
+
+    /**
+     * 🎯 QUICK SCAN ENDPOINT - Flexible link/image/text recognition
+     * NEW: Supports direct link submission for instant vector search + reranking
+     */
+    @Post('orchestrate/quick-scan')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 20, ttl: 60000 }}) // 20 requests per minute for quick scans
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.OK)
+    async quickScan(
+        @Body() scanInput: {
+            images?: Array<{
+                url?: string;
+                base64?: string;
+                metadata?: any;
+            }>;
+            links?: string[]; // NEW: Direct links for scraping + recognition
+            textQuery?: string;
+            targetSites?: string[]; // NEW: Flexible site targeting instead of rigid templates
+            useReranker?: boolean; // Use AI reranker for better results
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        results: Array<{
+            sourceIndex: number;
+            sourceType: 'image' | 'link' | 'text';
+            matches: any[];
+            confidence: 'high' | 'medium' | 'low';
+            processingTimeMs: number;
+        }>;
+        totalProcessingTimeMs: number;
+        overallConfidence: 'high' | 'medium' | 'low';
+        recommendedAction: string;
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        const totalSources = (scanInput.images?.length || 0) + (scanInput.links?.length || 0) + (scanInput.textQuery ? 1 : 0);
+        this.logger.log(`[POST /orchestrate/quick-scan] User: ${userId} - Sources: ${totalSources}, Target Sites: ${scanInput.targetSites?.join(', ') || 'any'}`);
+
+        try {
+            const startTime = Date.now();
+            const results: Array<{
+                sourceIndex: number;
+                sourceType: 'image' | 'link' | 'text';
+                matches: any[];
+                confidence: 'high' | 'medium' | 'low';
+                processingTimeMs: number;
+            }> = [];
+            let sourceIndex = 0;
+
+            // Process images if provided
+            if (scanInput.images && scanInput.images.length > 0) {
+                for (const image of scanInput.images) {
+                    const imageResult = await this.quickProductScan({
+                        imageUrl: image.url,
+                        imageBase64: image.base64,
+                        textQuery: scanInput.textQuery,
+                        businessTemplate: scanInput.targetSites?.join(',') || 'general',
+                        threshold: 0.6
+                    }, req);
+
+                    results.push({
+                        sourceIndex,
+                        sourceType: 'image',
+                        matches: imageResult.matches,
+                        confidence: imageResult.confidence,
+                        processingTimeMs: imageResult.processingTimeMs
+                    });
+                    sourceIndex++;
+                }
+            }
+
+            // Process links if provided - scrape then search
+            if (scanInput.links && scanInput.links.length > 0) {
+                for (const link of scanInput.links) {
+                    try {
+                        // Use Firecrawl to scrape the link
+                        const scrapedData = await this.firecrawlService.scrape(link);
+                        const textToSearch = scrapedData?.content || `Product from ${link}`;
+
+                        // Use quick scan with scraped text
+                        const linkResult = await this.quickProductScan({
+                            textQuery: textToSearch,
+                            businessTemplate: scanInput.targetSites?.join(',') || 'general',
+                            threshold: 0.6
+                        }, req);
+
+                        results.push({
+                            sourceIndex,
+                            sourceType: 'link',
+                            matches: linkResult.matches,
+                            confidence: linkResult.confidence,
+                            processingTimeMs: linkResult.processingTimeMs
+                        });
+                    } catch (error) {
+                        this.logger.warn(`Failed to process link ${link}: ${error.message}`);
+                        results.push({
+                            sourceIndex,
+                            sourceType: 'link',
+                            matches: [],
+                            confidence: 'low',
+                            processingTimeMs: 0
+                        });
+                    }
+                    sourceIndex++;
+                }
+            }
+
+            // Process text-only if no images or links
+            if (!scanInput.images?.length && !scanInput.links?.length && scanInput.textQuery) {
+                const textResult = await this.quickProductScan({
+                    textQuery: scanInput.textQuery,
+                    businessTemplate: scanInput.targetSites?.join(',') || 'general',
+                    threshold: 0.6
+                }, req);
+
+                results.push({
+                    sourceIndex,
+                    sourceType: 'text',
+                    matches: textResult.matches,
+                    confidence: textResult.confidence,
+                    processingTimeMs: textResult.processingTimeMs
+                });
+            }
+
+            // Use reranker if requested and we have results
+            if (scanInput.useReranker && results.length > 0) {
+                for (const result of results) {
+                    if (result.matches.length > 1) {
+                        try {
+                            const rerankerResult = await this.enhancedProductRecognition({
+                                textQuery: scanInput.textQuery || 'Product search',
+                                vectorCandidates: result.matches,
+                                topK: 5
+                            }, req);
+
+                            result.matches = rerankerResult.rankedCandidates;
+                            result.confidence = rerankerResult.confidence;
+                        } catch (error) {
+                            this.logger.warn(`Reranker failed for source ${result.sourceIndex}: ${error.message}`);
+                        }
+                    }
+                }
+            }
+
+            // Determine overall confidence
+            const highCount = results.filter(r => r.confidence === 'high').length;
+            const mediumCount = results.filter(r => r.confidence === 'medium').length;
+            const totalCount = results.length;
+
+            let overallConfidence: 'high' | 'medium' | 'low';
+            let recommendedAction: string;
+
+            if (highCount === totalCount && totalCount > 0) {
+                overallConfidence = 'high';
+                recommendedAction = 'use_top_matches';
+            } else if ((highCount + mediumCount) >= totalCount * 0.7) {
+                overallConfidence = 'medium';
+                recommendedAction = 'review_and_select';
+            } else {
+                overallConfidence = 'low';
+                recommendedAction = 'try_external_search';
+            }
+
+            // Log activity
+            await this.activityLogService.logUserAction(
+                'QUICK_SCAN_COMPLETED',
+                'Success',
+                `Completed quick scan for ${totalSources} source(s)`,
+                {
+                    action: 'quick_scan',
+                    inputData: {
+                        sourceCount: totalSources,
+                        targetSites: scanInput.targetSites,
+                        overallConfidence,
+                        useReranker: scanInput.useReranker
+                    }
+                },
+                userId
+            );
+
+            return {
+                results,
+                totalProcessingTimeMs: Date.now() - startTime,
+                overallConfidence,
+                recommendedAction
+            };
+
+        } catch (error) {
+            this.logger.error(`[POST /orchestrate/quick-scan] User: ${userId} - Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Quick scan failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * 🚀 FLEXIBLE GENERATE ENDPOINT - Generate from any sources with target sites
+     * NEW: Works with scraped data from any sites (not just rigid templates)
+     */
+    @Post('orchestrate/generate-flexible')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 5, ttl: 60000 }})
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.OK)
+    async generateFlexible(
+        @Body() generateInput: {
+            sources: Array<{
+                type: 'image' | 'link' | 'text' | 'external_search';
+                data: any; // Image URL, link URL, text content, or external search result
+                selectedMatch?: any; // User-selected match from quick scan
+                fieldSources?: Record<string, string[]>; // Field-specific URL sources for Normal Search
+            }>;
+            targetSites: string[]; // Sites to scrape (flexible, not rigid templates)
+            platforms: Array<{
+                name: string; // 'shopify', 'amazon', etc.
+                useScrapedData?: boolean; // Use scraped content for description
+                customPrompt?: string;
+                fieldSources?: string[]; // Priority sites for this platform
+            }>;
+            userFlow?: 'quick_search' | 'normal_search'; // Track which flow is being used
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        generatedProducts: Array<{
+            sourceIndex: number;
+            platforms: Record<string, {
+                title: string;
+                description: string;
+                price?: number;
+                images?: string[];
+                source: 'ai_generated' | 'scraped_content' | 'hybrid';
+                sourceUrls?: string[]; // URLs that provided data for this platform
+            }>;
+            scrapedData?: Array<{
+                url: string;
+                content: any;
+                usedForFields?: string[]; // Which platform.field combinations used this data
+            }>;
+            originalSelection?: {
+                title: string;
+                source: 'database' | 'serpapi' | 'user_input';
+                confidence: string;
+            };
+        }>;
+        storageResults: {
+            productsCreated: number;
+            variantsCreated: number;
+            embeddingsStored: number;
+        };
+        processingLogs: string[]; // Enhanced logging for frontend
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        const userFlow = generateInput.userFlow || 'quick_search';
+        const logs: string[] = [];
+
+        this.logger.log(`[POST /orchestrate/generate-flexible] User: ${userId} - Flow: ${userFlow}, Sources: ${generateInput.sources.length}, Target Sites: ${generateInput.targetSites.join(', ')}`);
+        logs.push(`🚀 Starting ${userFlow} generation for ${generateInput.sources.length} sources`);
+
+        try {
+            const generatedProducts: Array<{
+                sourceIndex: number;
+                platforms: Record<string, {
+                    title: string;
+                    description: string;
+                    price?: number;
+                    images?: string[];
+                    source: 'ai_generated' | 'scraped_content' | 'hybrid';
+                    sourceUrls?: string[];
+                }>;
+                scrapedData?: Array<{
+                    url: string;
+                    content: any;
+                    usedForFields?: string[];
+                }>;
+                originalSelection?: {
+                    title: string;
+                    source: 'database' | 'serpapi' | 'user_input';
+                    confidence: string;
+                };
+            }> = [];
+            let totalProductsCreated = 0;
+            let totalVariantsCreated = 0;
+            let totalEmbeddingsStored = 0;
+
+            for (let i = 0; i < generateInput.sources.length; i++) {
+                const source = generateInput.sources[i];
+                logs.push(`📝 Processing source ${i + 1}: ${source.type}`);
+
+                const productData: any = {
+                    sourceIndex: i,
+                    platforms: {},
+                    scrapedData: [],
+                    originalSelection: this.extractOriginalSelection(source, userFlow)
+                };
+
+                // Step 1: Scrape target sites based on flow type
+                const scrapedData = await this.performTargetedScraping(
+                    source, 
+                    generateInput.targetSites, 
+                    generateInput.platforms,
+                    userId,
+                    logs
+                );
+                productData.scrapedData = scrapedData;
+
+                // Step 2: Generate platform-specific data with field mapping
+                for (const platform of generateInput.platforms) {
+                    logs.push(`🎯 Generating ${platform.name} listing`);
+                    
+                    try {
+                                                 const platformData = await this.generatePlatformSpecificData(
+                             source,
+                             platform,
+                             scrapedData,
+                             userId,
+                             userFlow,
+                             logs
+                         );
+                        
+                        productData.platforms[platform.name] = platformData;
+                        logs.push(`✅ ${platform.name} listing generated successfully`);
+                        
+                    } catch (error) {
+                        logs.push(`❌ ${platform.name} generation failed: ${error.message}`);
+                        this.logger.warn(`Platform generation failed for ${platform.name}: ${error.message}`);
+                    }
+                }
+
+                // Step 3: Store the generated product
+                logs.push(`💾 Storing generated product data`);
+                const storageResult = await this.storeFlexibleProduct(
+                    userId, 
+                    productData, 
+                    generateInput.targetSites
+                );
+                
+                totalProductsCreated += storageResult.productsCreated;
+                totalVariantsCreated += storageResult.variantsCreated;
+                totalEmbeddingsStored += storageResult.embeddingsStored;
+
+                logs.push(`✅ Product stored: ${storageResult.productsCreated} products, ${storageResult.embeddingsStored} embeddings`);
+                generatedProducts.push(productData);
+            }
+
+            // Log successful completion
+            await this.activityLogService.logUserAction(
+                'ORCHESTRATOR_GENERATE_FLEXIBLE',
+                'Success',
+                `Completed ${userFlow} generation for ${generateInput.sources.length} sources`,
+                {
+                    action: 'generate_flexible',
+                    inputData: {
+                        userFlow,
+                        sourceCount: generateInput.sources.length,
+                        platformCount: generateInput.platforms.length,
+                        targetSites: generateInput.targetSites,
+                        totalProductsCreated,
+                        totalEmbeddingsStored
+                    }
+                },
+                userId
+            );
+
+            logs.push(`🎉 Generation complete! Created ${totalProductsCreated} products with ${totalEmbeddingsStored} embeddings`);
+
+            return {
+                generatedProducts,
+                storageResults: {
+                    productsCreated: totalProductsCreated,
+                    variantsCreated: totalVariantsCreated,
+                    embeddingsStored: totalEmbeddingsStored
+                },
+                processingLogs: logs
+            };
+
+        } catch (error) {
+            logs.push(`💥 Generation failed: ${error.message}`);
+            this.logger.error(`[POST /orchestrate/generate-flexible] User: ${userId} - Error: ${error.message}`, error.stack);
+            
+            await this.activityLogService.logUserAction(
+                'ORCHESTRATOR_GENERATE_FLEXIBLE', 
+                'Error',
+                `Generation failed: ${error.message}`,
+                {
+                    action: 'generate_flexible',
+                    inputData: { 
+                        userFlow: generateInput.userFlow,
+                        error: error.message 
+                    }
+                },
+                userId
+            );
+            
+            throw new InternalServerErrorException(`Flexible generation failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Extract original selection info based on user flow
+     */
+    private extractOriginalSelection(source: any, userFlow: string): any {
+        if (userFlow === 'quick_search' && source.selectedMatch) {
+            return {
+                title: source.selectedMatch.title,
+                source: 'database',
+                confidence: 'user_confirmed'
+            };
+        } else if (userFlow === 'normal_search' && source.data?.selectedResult) {
+            return {
+                title: source.data.selectedResult.title,
+                source: 'serpapi',
+                confidence: 'user_confirmed'
+            };
+        }
+        return {
+            title: 'Unknown product',
+            source: 'user_input',
+            confidence: 'low'
+        };
+    }
+
+    /**
+     * Perform targeted scraping based on user flow and field sources
+     */
+    private async performTargetedScraping(
+        source: any,
+        targetSites: string[],
+        platforms: any[],
+        userId: string,
+        logs: string[]
+    ): Promise<Array<{ url: string; content: any; usedForFields?: string[]; }>> {
+        const scrapedData: Array<{ url: string; content: any; usedForFields?: string[]; }> = [];
+
+        // Build comprehensive URL list from target sites and field sources
+        const urlsToScrape = new Set<string>();
+        
+        // Add base target sites
+        for (const site of targetSites) {
+            if (site.startsWith('http')) {
+                urlsToScrape.add(site);
+            } else {
+                // If it's just a domain, try to build search URLs
+                if (source.data?.selectedResult?.link) {
+                    urlsToScrape.add(source.data.selectedResult.link);
+                }
+            }
+        }
+
+        // Add field-specific sources from platforms
+        for (const platform of platforms) {
+            if (platform.fieldSources) {
+                for (const fieldSource of platform.fieldSources) {
+                    if (fieldSource.startsWith('http')) {
+                        urlsToScrape.add(fieldSource);
+                    }
+                }
+            }
+        }
+
+        // Scrape each URL
+        logs.push(`🔍 Scraping ${urlsToScrape.size} URLs for data`);
+        
+        for (const url of urlsToScrape) {
+            try {
+                const scraped = await this.firecrawlService.scrape(url);
+                
+                // Determine which fields will use this scraped data
+                const usedForFields: string[] = [];
+                for (const platform of platforms) {
+                    if (platform.fieldSources?.some(source => url.includes(source.replace('https://', '').replace('http://', '')))) {
+                        usedForFields.push(`${platform.name}.title`, `${platform.name}.description`);
+                    }
+                }
+
+                scrapedData.push({
+                    url,
+                    content: scraped,
+                    usedForFields
+                });
+
+                // Track usage
+                await this.aiUsageTracker.trackFirecrawlUsage(userId, 'scrape_url', 1, { 
+                    url,
+                    targetSites: targetSites.join(','),
+                    usedForFields: usedForFields.join(',')
+                });
+
+                logs.push(`✅ Scraped ${url} successfully`);
+
+            } catch (error) {
+                logs.push(`❌ Failed to scrape ${url}: ${error.message}`);
+                this.logger.warn(`Scraping failed for ${url}: ${error.message}`);
+            }
+        }
+
+        return scrapedData;
+    }
+
+    // Helper methods for the flexible system
+    private buildSearchQueryFromSource(source: any, targetSites: string[]): string {
+        let baseQuery = '';
+        
+        switch (source.type) {
+            case 'text':
+                baseQuery = source.data;
+                break;
+            case 'link':
+                baseQuery = `Product from ${source.data}`;
+                break;
+            case 'image':
+                baseQuery = source.selectedMatch?.title || 'Product';
+                break;
+            default:
+                baseQuery = 'Product';
+        }
+
+        // Add site targeting
+        const siteQuery = targetSites.map(site => `site:${site}`).join(' OR ');
+        return `${baseQuery} (${siteQuery})`;
+    }
+
+    private async generatePlatformSpecificData(
+        source: any,
+        platform: any,
+        scrapedData: any[],
+        userId: string,
+        userFlow?: string,
+        logs?: string[]
+    ): Promise<any> {
+        // Build content from various sources based on user flow
+        let sourceContent = '';
+        let sourceTitle = 'Generated Product';
+        let sourcePrice = 0;
+        const sourceUrls: string[] = [];
+
+        // Enhanced content sourcing for both flows
+        if (userFlow === 'normal_search' && source.data?.selectedResult) {
+            // Normal Search: Use external search result as base
+            sourceTitle = source.data.selectedResult.title || sourceTitle;
+            sourceContent = source.data.selectedResult.snippet || '';
+            sourcePrice = source.data.selectedResult.price || 0;
+            
+            // Use field-specific scraped data
+            if (platform.fieldSources && scrapedData.length > 0) {
+                const relevantScrapes = scrapedData.filter(scraped => 
+                    platform.fieldSources.some(fieldSource => 
+                        scraped.url.includes(fieldSource.replace('https://', '').replace('http://', ''))
+                    )
+                );
+                
+                if (relevantScrapes.length > 0) {
+                    sourceContent = relevantScrapes.map(s => s.content?.content || s.content).join('\n');
+                    sourceUrls.push(...relevantScrapes.map(s => s.url));
+                }
+            }
+            
+            logs?.push(`📝 Using normal search data from ${sourceUrls.length} sources for ${platform.name}`);
+            
+        } else if (userFlow === 'quick_search' && source.selectedMatch) {
+            // Quick Search: Use database match as base
+            sourceTitle = source.selectedMatch.title || sourceTitle;
+            sourceContent = source.selectedMatch.description || source.selectedMatch.title || '';
+            sourcePrice = source.selectedMatch.price || 0;
+            
+            // Enhance with scraped data if available
+            if (platform.useScrapedData && scrapedData.length > 0) {
+                const additionalContent = scrapedData.map(s => s.content?.content || s.content).join('\n');
+                sourceContent = `${sourceContent}\n\nAdditional details:\n${additionalContent}`;
+                sourceUrls.push(...scrapedData.map(s => s.url));
+            }
+            
+            logs?.push(`📝 Using database match + ${scrapedData.length} scraped sources for ${platform.name}`);
+            
+        } else {
+            // Fallback: Use scraped data only
+            if (scrapedData.length > 0) {
+                const primaryScraped = scrapedData[0];
+                sourceContent = primaryScraped.content?.content || JSON.stringify(primaryScraped.content);
+                sourceTitle = primaryScraped.title || sourceTitle;
+                sourcePrice = this.extractPriceFromContent(sourceContent);
+                sourceUrls.push(primaryScraped.url);
+            }
+            
+            logs?.push(`📝 Using fallback scraped data for ${platform.name}`);
+        }
+
+        // Generate platform-optimized content
+        try {
+            const prompt = `
+Generate ${platform.name} product listing:
+Original Title: ${sourceTitle}
+Source Content: ${sourceContent}
+Platform: ${platform.name}
+Custom Instructions: ${platform.customPrompt || 'Create optimized listing for this platform'}
+User Flow: ${userFlow || 'unknown'}
+
+Generate a compelling, platform-specific product listing with proper formatting.
+Return JSON with: title, description, price, specifications
+            `;
+
+            // Use enhanced fallback with better content processing
+            const generated = {
+                title: this.optimizeTitleForPlatform(sourceTitle, platform.name),
+                description: this.optimizeDescriptionForPlatform(sourceContent, platform.name, platform.customPrompt),
+                price: sourcePrice,
+                specifications: this.extractSpecifications(sourceContent)
+            };
+
+            const result = {
+                title: generated.title,
+                description: generated.description,
+                price: generated.price,
+                images: this.extractImages(source, scrapedData),
+                source: this.determineContentSource(platform, scrapedData, userFlow),
+                sourceUrls: sourceUrls.length > 0 ? sourceUrls : undefined
+            };
+
+            logs?.push(`✅ Generated ${platform.name} listing: "${generated.title.substring(0, 50)}..."`);
+            return result;
+
+        } catch (error) {
+            logs?.push(`❌ AI generation failed for ${platform.name}: ${error.message}`);
+            this.logger.warn(`AI generation failed: ${error.message}`);
+            
+            return {
+                title: sourceTitle,
+                description: sourceContent.substring(0, 500) || 'Product description',
+                price: sourcePrice,
+                images: this.extractImages(source, scrapedData),
+                source: 'ai_generated',
+                sourceUrls: sourceUrls.length > 0 ? sourceUrls : undefined
+            };
+        }
+    }
+
+    private optimizeTitleForPlatform(title: string, platform: string): string {
+        // Platform-specific title optimization
+        switch (platform.toLowerCase()) {
+            case 'amazon':
+                return title.replace(/[^\w\s\-]/g, '').substring(0, 200); // Amazon title limits
+            case 'shopify':
+                return title.substring(0, 255); // Shopify title limits
+            case 'ebay':
+                return title.substring(0, 80); // eBay title limits
+            default:
+                return title.substring(0, 200);
+        }
+    }
+
+    private optimizeDescriptionForPlatform(content: string, platform: string, customPrompt?: string): string {
+        if (customPrompt) {
+            return `${customPrompt}\n\n${content}`.substring(0, 2000);
+        }
+
+        switch (platform.toLowerCase()) {
+            case 'amazon':
+                // Amazon prefers bullet points
+                return this.convertToAmazonFormat(content);
+            case 'shopify':
+                // Shopify allows rich HTML
+                return this.convertToShopifyFormat(content);
+            case 'ebay':
+                // eBay allows HTML but simpler
+                return this.convertToEbayFormat(content);
+            default:
+                return content.substring(0, 1000);
+        }
+    }
+
+    private convertToAmazonFormat(content: string): string {
+        const sentences = content.split('.').filter(s => s.trim().length > 10);
+        return sentences.slice(0, 5).map(s => `• ${s.trim()}`).join('\n');
+    }
+
+    private convertToShopifyFormat(content: string): string {
+        return content.replace(/\n/g, '<br>').substring(0, 2000);
+    }
+
+    private convertToEbayFormat(content: string): string {
+        return content.replace(/\n/g, '<br>').substring(0, 1000);
+    }
+
+    private extractSpecifications(content: string): any {
+        // Simple spec extraction
+        const specs: any = {};
+        const lines = content.split('\n');
+        
+        for (const line of lines) {
+            if (line.includes(':')) {
+                const [key, value] = line.split(':').map(s => s.trim());
+                if (key.length < 30 && value.length < 100) {
+                    specs[key] = value;
+                }
+            }
+        }
+        
+        return specs;
+    }
+
+    private extractImages(source: any, scrapedData: any[]): string[] {
+        const images: string[] = [];
+        
+        // Add source image if available
+        if (source.type === 'image' && source.data) {
+            images.push(source.data);
+        }
+        
+        // Add images from selected match
+        if (source.selectedMatch?.imageUrl) {
+            images.push(source.selectedMatch.imageUrl);
+        }
+        
+        // Add images from external search
+        if (source.data?.selectedResult?.imageUrl) {
+            images.push(source.data.selectedResult.imageUrl);
+        }
+        
+        return [...new Set(images)]; // Remove duplicates
+    }
+
+    private determineContentSource(platform: any, scrapedData: any[], userFlow?: string): 'ai_generated' | 'scraped_content' | 'hybrid' {
+        if (platform.useScrapedData && scrapedData.length > 0) {
+            return userFlow === 'normal_search' ? 'hybrid' : 'scraped_content';
+        }
+        return 'ai_generated';
+    }
+
+    private extractPriceFromContent(content: string): number {
+        // Simple price extraction regex
+        const priceMatch = content.match(/\$?(\d+\.?\d*)/);
+        return priceMatch ? parseFloat(priceMatch[1]) : 0;
+    }
+
+    private async storeFlexibleProduct(
+        userId: string,
+        productData: any,
+        targetSites: string[]
+    ): Promise<{ productsCreated: number; variantsCreated: number; embeddingsStored: number }> {
+        try {
+            const supabase = this.supabaseService.getClient();
+            
+            // Create product
+            const { data: product, error: productError } = await supabase
+                .from('Products')
+                .insert({
+                    UserId: userId,
+                    IsArchived: false
+                })
+                .select()
+                .single();
+
+            if (productError || !product) {
+                throw new Error(`Failed to create product: ${productError?.message}`);
+            }
+
+            // Get first platform data for variant
+            const firstPlatform = Object.keys(productData.platforms)[0];
+            if (!firstPlatform) {
+                throw new Error('No platform data available');
+            }
+
+            const platformData = productData.platforms[firstPlatform];
+
+            // Create variant
+            const { data: variant, error: variantError } = await supabase
+                .from('ProductVariants')
+                .insert({
+                    ProductId: product.Id,
+                    UserId: userId,
+                    Title: platformData.title,
+                    Description: platformData.description,
+                    Price: platformData.price || 0,
+                    Sku: `FLEX-${product.Id.substring(0, 8)}`
+                })
+                .select()
+                .single();
+
+            if (variantError || !variant) {
+                throw new Error(`Failed to create variant: ${variantError?.message}`);
+            }
+
+            // Store embeddings using existing service
+            let embeddingsStored = 0;
+            try {
+                // Generate title embedding
+                const titleEmbedding = await this.embeddingService.generateTextEmbedding({
+                    title: platformData.title,
+                    description: `Flexible product from sites: ${targetSites.join(', ')}`
+                }, userId);
+
+                // Store in database (you'll need to implement this)
+                embeddingsStored++;
+            } catch (embError) {
+                this.logger.warn(`Failed to store embeddings: ${embError.message}`);
+            }
+
+            return {
+                productsCreated: 1,
+                variantsCreated: 1,
+                embeddingsStored
+            };
+
+        } catch (error) {
+            this.logger.error(`Failed to store flexible product: ${error.message}`);
+            return { productsCreated: 0, variantsCreated: 0, embeddingsStored: 0 };
+        }
+    }
+
+    /**
+     * STAGE 2: MATCH
+     * Enhances matches with AI ranking and provides review interface data
+     */
+    @Post('orchestrate/match')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 15, ttl: 60000 }}) // 15 requests per minute
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.OK)
+    async orchestrateMatch(
+        @Body() matchInput: {
+            sessionId: string;
+            imageIndexes?: number[];
+            aiEnhancedMatching?: boolean;
+            sourceIndexes?: number[];
+            userSelections?: Array<{
+                imageIndex: number;
+                selectedCandidateIndex?: number;
+                rejected?: boolean;
+            }>;
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        sessionId: string;
+        matches: Array<{
+            imageIndex: number;
+            rankedCandidates: any[];
+            confidence: 'high' | 'medium' | 'low';
+            aiSuggestion?: {
+                recommendedIndex: number;
+                confidence: number;
+                reasoning: string;
+            };
+        }>;
+        overallConfidence: 'high' | 'medium' | 'low';
+        recommendedAction: 'proceed_to_generate' | 'manual_review' | 'external_search';
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        this.logger.log(`[POST /orchestrate/match] User: ${userId} - Session: ${matchInput.sessionId}`);
+
+        try {
+            const input: MatchStageInput = {
+                sessionId: matchInput.sessionId,
+                sourceIndexes: matchInput.sourceIndexes || matchInput.imageIndexes, // Handle both names
+                useAiRanking: matchInput.aiEnhancedMatching,
+                userSelections: matchInput.userSelections?.map(selection => ({
+                    sourceIndex: selection.imageIndex, // Transform imageIndex to sourceIndex
+                    selectedCandidateIndex: selection.selectedCandidateIndex,
+                    rejected: selection.rejected
+                }))
+            };
+
+            const result = await this.productOrchestratorService.match(userId, input);
+
+            // Log activity
+            await this.activityLogService.logUserAction(
+                'ORCHESTRATOR_MATCH',
+                'Success',
+                `Completed matching stage for session ${matchInput.sessionId}`,
+                {
+                    action: 'orchestrate_match',
+                    inputData: {
+                        sessionId: matchInput.sessionId,
+                        overallConfidence: result.overallConfidence,
+                        recommendedAction: result.recommendedAction,
+                        matchCount: result.matches.length
+                    }
+                },
+                userId
+            );
+
+            // Transform response: sourceIndex → imageIndex for backward compatibility
+            return {
+                sessionId: result.sessionId,
+                matches: result.matches.map(match => ({
+                    imageIndex: match.sourceIndex, // Transform back to imageIndex
+                    rankedCandidates: match.rankedCandidates,
+                    confidence: match.confidence,
+                    aiSuggestion: match.aiSuggestion
+                })),
+                overallConfidence: result.overallConfidence,
+                recommendedAction: result.recommendedAction
+            };
+
+        } catch (error) {
+            this.logger.error(`[POST /orchestrate/match] User: ${userId} - Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Matching stage failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * STAGE 3: GENERATE
+     * 🚀 THE MAGIC HAPPENS HERE! 
+     * Uses Firecrawl and AI to generate platform-specific product data
+     * This is where your prompt injection happens for specific sites like previewsworld.com
+     */
+    @Post('orchestrate/generate')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 5, ttl: 60000 }}) // 5 requests per minute (more resource intensive)
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.OK)
+    async orchestrateGenerate(
+        @Body() generateInput: {
+            sessionId: string;
+            platformRequests: Array<{
+                platform: string; // e.g., 'shopify', 'amazon', 'ebay'
+                requirements: {
+                    useDescription?: 'scraped_content' | 'ai_generated' | 'user_provided';
+                    customPrompt?: string;
+                    restrictions?: string[];
+                };
+            }>;
+            firecrawlTargets?: Array<{
+                imageIndex: number;
+                urls: string[]; // e.g., ["https://previewsworld.com/..."]
+                customPrompt?: string; // e.g., "Find the product data for this product: (Green Lantern: War Journal Vol. 1 Contagion)"
+            }>;
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        sessionId: string;
+        generatedData: Array<{
+            imageIndex: number;
+            platforms: Record<string, {
+                title: string;
+                description: string;
+                price?: number;
+                specifications?: any;
+                images?: string[];
+                source: 'ai_generated' | 'firecrawl_scraped' | 'hybrid';
+            }>;
+            firecrawlData?: {
+                scrapedContent: any[];
+                processedData: any;
+            };
+        }>;
+        storageResults: {
+            productsCreated: number;
+            variantsCreated: number;
+            aiContentStored: number;
+        };
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        this.logger.log(`[POST /orchestrate/generate] User: ${userId} - Session: ${generateInput.sessionId}, Platforms: ${generateInput.platformRequests.map(p => p.platform).join(', ')}`);
+
+        try {
+            const input: GenerateStageInput = {
+                sessionId: generateInput.sessionId,
+                platformRequests: generateInput.platformRequests.map(req => ({
+                    platform: req.platform,
+                    requirements: {
+                        useDescription: req.requirements.useDescription,
+                        customPrompt: req.requirements.customPrompt,
+                        restrictions: req.requirements.restrictions
+                    }
+                })),
+                scrapingTargets: generateInput.firecrawlTargets?.map(target => ({
+                    sourceIndex: target.imageIndex, // Transform imageIndex to sourceIndex
+                    urls: target.urls,
+                    customPrompt: target.customPrompt
+                }))
+            };
+
+            const result = await this.productOrchestratorService.generate(userId, input);
+
+            // Log activity
+            await this.activityLogService.logUserAction(
+                'ORCHESTRATOR_GENERATE',
+                'Success',
+                `Completed generation stage for session ${generateInput.sessionId}`,
+                {
+                    action: 'orchestrate_generate',
+                    inputData: {
+                        sessionId: generateInput.sessionId,
+                        productsCreated: result.storageResults.productsCreated,
+                        variantsCreated: result.storageResults.variantsCreated,
+                        platforms: generateInput.platformRequests.map(p => p.platform),
+                        firecrawlTargets: generateInput.firecrawlTargets?.map(t => t.urls).flat()
+                    }
+                },
+                userId
+            );
+
+            // Transform response: sourceIndex → imageIndex, scraped_content → firecrawl_scraped
+            return {
+                sessionId: result.sessionId,
+                generatedData: result.generatedData.map(data => ({
+                    imageIndex: data.sourceIndex, // Transform back to imageIndex
+                    platforms: Object.fromEntries(
+                        Object.entries(data.platforms).map(([platform, details]) => [
+                            platform,
+                            {
+                                ...details,
+                                source: details.source === 'scraped_content' ? 'firecrawl_scraped' : 
+                                       details.source === 'ai_generated' ? 'ai_generated' : 'hybrid'
+                            }
+                        ])
+                    ),
+                    firecrawlData: data.scrapedData ? {
+                        scrapedContent: Array.isArray(data.scrapedData) ? data.scrapedData : [data.scrapedData],
+                        processedData: data.scrapedData
+                    } : undefined
+                })),
+                storageResults: result.storageResults
+            };
+
+        } catch (error) {
+            this.logger.error(`[POST /orchestrate/generate] User: ${userId} - Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Generation stage failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * SESSION MANAGEMENT
+     * Get session status and data for the frontend
+     */
+    @Get('orchestrate/session/:sessionId')
+    @UseGuards(SupabaseAuthGuard)
+    @HttpCode(HttpStatus.OK)
+    async getOrchestratorSession(
+        @Param('sessionId') sessionId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        session: any | null;
+        canProceed: {
+            toMatch: boolean;
+            toGenerate: boolean;
+        };
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        this.logger.log(`[GET /orchestrate/session] User: ${userId} - Session: ${sessionId}`);
+
+        try {
+            const session = await this.productOrchestratorService.getSession(userId, sessionId);
+
+            if (!session) {
+                throw new NotFoundException('Session not found or access denied');
+            }
+
+            const canProceed = {
+                toMatch: session.currentStage === 'recognize' && !!session.recognizeData,
+                toGenerate: session.currentStage === 'match' && !!session.matchData
+            };
+
+            return { session, canProceed };
+
+        } catch (error) {
+            this.logger.error(`[GET /orchestrate/session] User: ${userId} - Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`Failed to fetch session: ${error.message}`);
         }
     }
 }

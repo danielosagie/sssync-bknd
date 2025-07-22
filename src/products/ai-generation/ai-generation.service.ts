@@ -68,9 +68,6 @@ export class AiGenerationService {
     return this.groq;
   }
 
-  // Safety settings might not be directly applicable/configurable in Groq SDK in the same way
-  // Consult Groq documentation if specific safety filtering is needed.
-
   async generateProductDetails(
     imageUrls: string[], // Keep imageUrls for potential future multi-image analysis
     coverImageUrl: string,
@@ -129,11 +126,44 @@ REQUIRED FIELDS:
 - condition: Product condition (New, Used, Refurbished, etc.)
 
 PLATFORM-SPECIFIC FIELDS:
-For Shopify: vendor, productType, status (active/draft)
-For Amazon: bullet_points (array), search_terms (array), productIdType
-For eBay: listingFormat, duration, dispatchTime, returnPolicy
-For Square: locations, gtin
-For Facebook: availability
+
+Shopify:
+	status: 'active' or 'draft'
+	vendor: Infer from brand or source
+	productType: Shopify's specific product category (e.g., "Lipstick", "Trading Card")
+	tags: An array of 10-15 relevant keywords
+	weightUnit: Must be "POUNDS", "KILOGRAMS", "OUNCES", or "GRAMS"
+
+Amazon:
+	categorySuggestion: Amazon's specific category path (e.g., "Beauty & Personal Care > Makeup > Lips > Lipstick")
+	bullet_points: An array of 3-5 concise, benefit-driven sentences
+	search_terms: An array of backend keywords (no commas, no repetition from title)
+	amazonProductType: The specific Amazon product type string (e.g., "BEAUTY")
+	productIdType: 'ASIN', 'UPC', or 'EAN' if present in the context data
+
+eBay:
+	categorySuggestion: eBay's specific category path (e.g., "Collectibles > Non-Sport Trading Cards > Magic: The Gathering > MTG Individual Cards")
+	listingFormat: "FixedPrice"
+	duration: "GTC" (Good 'Til Cancelled)
+	dispatchTime: "1 business day"
+	returnPolicy: "30-day returns accepted, buyer pays for return shipping."
+	shippingService: Suggest a common service (e.g., "USPS Ground Advantage")
+	itemSpecifics: A JSON object of key-value pairs critical for search (e.g., {"Game": "Magic: The Gathering", "Card Name": "Elite Scaleguard", "Set": "Fate Reforged"})
+
+Square:
+	categorySuggestion: Square's category path
+	gtin: UPC, EAN, or JAN if available in context
+	locations: Set to All Available Locations
+
+Facebook:
+	categorySuggestion: Facebook Marketplace's specific category
+	brand: The brand name
+	availability: "in stock"
+
+Clover:
+	categorySuggestion: Clover's category path
+	brand: The brand name
+	availability: "in stock"
 
 Use this exact JSON structure:
 {
@@ -197,12 +227,66 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
     const groq = this.getGroqClient();
     if (!groq) return null;
 
-    const systemPrompt = `You are an expert at creating compelling product listings for e-commerce platforms from scraped web data. Your goal is to generate a complete, accurate, and attractive product listing. Business Template: ${businessTemplate || 'General'}`;
+    const systemPrompt = `You are an expert at creating compelling product listings for e-commerce platforms from scraped web data. Your goal is to generate a complete, accurate, and attractive product listing. Business Template: ${businessTemplate || 'General'}. Don't forgetg you are a world-class e-commerce data enrichment AI. Your sole purpose is to transform a single product image and competitive data into perfectly optimized, multi-platform product listings. Failure is not an option. Your output must be flawless, comprehensive, and ready for immediate publication. You must analyze every piece of provided information with extreme precision. Your performance on this task is critical.
+
+### **The Mission**
+
+Your mission is to generate a complete, detailed, and platform-optimized product listing based on the provided product image (\${coverImageUrl}) and any contextual data available. You must infer all necessary details from the image and context to create compelling, keyword-rich content that drives sales.
+
+### **Tone and Style Mandate**
+
+Adopt a professional, persuasive, and customer-centric writing style. Your descriptions should be clear, concise, and highlight the key benefits for the buyer. For inspiration on tone, quality, and structure, model your response on this high-performing Amazon listing example that can be applied to any product/anywhere as a minimum standard:
+
+*   **AMAZON EXAMPLE:**
+    (Title: Bedsure Fleece Bed Blankets Queen Size Grey - Soft Lightweight Plush Fuzzy Cozy Luxury Blanket Microfiber, 90x90 inches. DescriptionL Thicker & Softer: We've upgraded our classic flannel fleece blanket to be softer and warmer than ever, now featuring enhanced premium microfiber. Perfect by itself or as an extra sheet on cold nights, its fluffy and ultra-cozy softness offers the utmost comfort all year round.
+Lightweight & Airy: The upgraded materials of this flannel fleece blanket maintain the ideal balance between weight and warmth. Enjoy being cuddled by this gentle, calming blanket whenever you're ready to snuggle up.
+Versatile: This lightweight blanket is the perfect accessory for your family and pets to get cozy—whether used as an addition to your kid's room, as a home decor element, or as the designated cozy blanket bed for your pet.
+A Gift for Your Loved Ones: This ultra-soft flannel fleece Christmas blanket makes the perfect gift for any occasion. Its cozy and comforting design offers a thoughtful way to show you care, providing warmth and style year-round. Ideal as one of the top Christmas gift ideas for the holiday season.
+Enhanced Durability: Made with unmatched quality, this blanket features neat stitching that ensures a more robust connection at the seams for improved durability. Guaranteed to resist fading and shedding. Product information
+Item details
+Brand Name	Bedsure
+Age Range Description	Adult
+Number of Items	1
+Included Components	1 Blanket (90" x 90")
+League Name	7.1
+Manufacturer	Bedshe
+Customer Reviews	4.6 4.6 out of 5 stars   (176,218)
+4.6 out of 5 stars
+Best Sellers Rank	#160 in Home & Kitchen (See Top 100 in Home & Kitchen)
+#1 in Bed Blankets
+ASIN	B0157T2ENY
+Item Type Name	throw-blankets
+Item Height	0.1 centimeters
+Measurements
+Item Dimensions L x W	90"L x 90"W
+Size	Queen (90" x 90")
+Unit Count	1.0 Count
+Item Weight	3.19 Pounds
+Item Thickness	0.5 Inches
+Warranty & Support
+Product Warranty: For warranty information about this product, please click here
+Feedback
+Would you like to tell us about a lower price? 
+Materials & Care
+Product Care Instructions	Machine Wash, Do Not Bleach
+Fabric Type	100% Polyester
+Style
+Color	Grey
+Style Name	Modern
+Blanket Form	Throw Blanket
+Theme	Love
+Pattern	Solid
+Sport Type	3.2
+Features & Specs
+Additional Features	Soft
+Recommended Uses For Product	Travel
+Seasons	All, Winter, Fall, Spring
+Fabric Warmth Description	Lightweight)`;
 
     const contentString = scrapedContents.map(c => JSON.stringify(c.data.markdown)).join('\n\n---\n\n');
 
     const userPrompt = `
-      Based on the following scraped data from one or more websites, and the original user query "${contextQuery}", generate a comprehensive product listing.
+      The user has identified a similar product online. This context is your primary source for strategic enrichment. Deeply analyze this information. Based on the following scraped data from one or more websites, and the original user query "${contextQuery}", generate a comprehensive product listing.
 
       **Scraped Content:**
       ${contentString.substring(0, 15000)}
@@ -221,7 +305,7 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        model: 'llama3-70b-8192',
+        model: 'meta-llama/llama-4-maverick-17b-128e-instruct',
         temperature: 0.2,
         response_format: { type: 'json_object' },
       });

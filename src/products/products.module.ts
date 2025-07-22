@@ -13,6 +13,7 @@ import { CrossAccountSyncService } from './cross-account-sync.service';
 import { ActivityLogService } from '../common/activity-log.service';
 import { FirecrawlService } from './firecrawl.service';
 import { ProductRecognitionService } from './product-recognition.service';
+import { ProductOrchestratorService } from './product-orchestrator.service';
 import { EmbeddingModule } from '../embedding/embedding.module';
 import { RerankerService } from '../embedding/reranker.service';
 
@@ -35,6 +36,7 @@ import { RerankerService } from '../embedding/reranker.service';
     ActivityLogService, 
     FirecrawlService,
     ProductRecognitionService,
+    ProductOrchestratorService,
     RerankerService,
   ],
   exports: [
@@ -44,6 +46,7 @@ import { RerankerService } from '../embedding/reranker.service';
     CrossAccountSyncService, 
     ActivityLogService,
     ProductRecognitionService,
+    ProductOrchestratorService,
   ],
 })
 export class ProductsModule {}

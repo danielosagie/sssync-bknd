@@ -16,31 +16,39 @@ export interface ProductRecognitionRequest {
   platformConnections?: string[];
 }
 
+// NEW: This is the definitive structure for a product candidate returned to the frontend.
+export interface ProductCandidate {
+  id: string; // The database ID (e.g., variantId) if it's an internal match
+  title: string;
+  description?: string;
+  imageUrl?: string;
+  price?: number;
+  source: 'internal' | 'web' | 'marketplace';
+  similarity: number; // The final reranked score (0.0 to 1.0)
+  visualSimilarity?: number; // Optional: raw visual score
+  textSimilarity?: number; // Optional: raw text score
+  url?: string; // The source URL if found on the web
+  metadata?: any; // For any other useful data
+}
+
+// REVISED: This is the primary contract with the frontend.
 export interface RecognitionResult {
-  // Core results
   confidence: 'high' | 'medium' | 'low';
   systemAction: 'show_single_match' | 'show_multiple_candidates' | 'fallback_to_external' | 'fallback_to_manual';
-  
-  // Product matches
-  productMatches?: ProductMatch[];
-  rankedCandidates?: any[];
-  
-  // Embeddings
-  imageEmbedding?: number[];
-  textEmbedding?: number[];
-  
-  // External fallback
-  webSearchResults?: any[];
-  scrapedData?: any;
-  
-  // Metadata
+  rankedCandidates: ProductCandidate[];
   processingSteps: string[];
+  userMessage: string; // Add back for final response
+  userInstructions: string; // Add back for final response
+  metadata: {
   processingTimeMs: number;
-  matchId?: string;
-  
-  // User interaction
-  userMessage: string;
-  userInstructions: string;
+    modelsUsed: string[];
+    matchId?: string; // For feedback logging
+    // Deprecating the direct exposure of embeddings and raw results to the frontend
+    // imageEmbedding?: number[];
+    // textEmbedding?: number[];
+    imageEmbedding?: number[]; // Add imageEmbedding to metadata
+    textEmbedding?: number[]; // Add textEmbedding to metadata
+  };
 }
 
 export interface BusinessTemplateConfig {
@@ -162,10 +170,16 @@ export class ProductRecognitionService {
     const result: RecognitionResult = {
       confidence: 'low',
       systemAction: 'fallback_to_external',
+      rankedCandidates: [],
       processingSteps,
+      userMessage: '', // Initialize
+      userInstructions: '', // Initialize
+      metadata: {
       processingTimeMs: 0,
-      userMessage: '',
-      userInstructions: ''
+        modelsUsed: [],
+        imageEmbedding: undefined, // Initialize embedding fields
+        textEmbedding: undefined,
+      }
     };
 
     try {
@@ -196,14 +210,14 @@ export class ProductRecognitionService {
       // Step 7: Format user messaging
       this.formatUserResponse(result);
 
-      result.processingTimeMs = Date.now() - startTime;
-      processingSteps.push(`✅ Completed in ${result.processingTimeMs}ms`);
+      result.metadata.processingTimeMs = Date.now() - startTime;
+      processingSteps.push(`✅ Completed in ${result.metadata.processingTimeMs}ms`);
 
       return result;
 
     } catch (error) {
       this.logger.error('Product recognition failed:', error);
-      result.processingTimeMs = Date.now() - startTime;
+      result.metadata.processingTimeMs = Date.now() - startTime;
       processingSteps.push(`❌ Failed: ${error.message}`);
       
       // Return error fallback
@@ -226,13 +240,14 @@ export class ProductRecognitionService {
       if (request.imageUrl || request.imageBase64) {
         steps.push('🖼️  Generating image embedding with SigLIP-2');
         
-        result.imageEmbedding = await this.embeddingService.generateImageEmbedding({
+        result.metadata.modelsUsed.push('SigLIP-2');
+        result.metadata.imageEmbedding = await this.embeddingService.generateImageEmbedding({
           imageUrl: request.imageUrl,
           imageBase64: request.imageBase64,
           instruction: template?.embeddingInstructions.image
         }, request.userId);
 
-        steps.push(`✅ Generated ${result.imageEmbedding.length}D image embedding`);
+        steps.push(`✅ Generated ${result.metadata.imageEmbedding.length}D image embedding`);
       }
 
       // Generate text embedding if query provided
@@ -245,15 +260,16 @@ export class ProductRecognitionService {
           businessTemplate: request.businessTemplate
         };
 
-        result.textEmbedding = await this.embeddingService.generateTextEmbedding(
+        result.metadata.modelsUsed.push('Qwen3');
+        result.metadata.textEmbedding = await this.embeddingService.generateTextEmbedding(
           textInput,
           request.userId
         );
 
-        steps.push(`✅ Generated ${result.textEmbedding.length}D text embedding`);
+        steps.push(`✅ Generated ${result.metadata.textEmbedding.length}D text embedding`);
       }
 
-      if (!result.imageEmbedding && !result.textEmbedding) {
+      if (!result.metadata.imageEmbedding && !result.metadata.textEmbedding) {
         throw new Error('At least one input (image or text) must be provided');
       }
 
@@ -275,15 +291,34 @@ export class ProductRecognitionService {
       steps.push('🎯 Searching vector database');
 
       const searchParams = {
-        imageEmbedding: result.imageEmbedding,
-        textEmbedding: result.textEmbedding,
+        imageEmbedding: result.metadata.imageEmbedding,
+        textEmbedding: result.metadata.textEmbedding,
         businessTemplate: request.businessTemplate,
         limit: 20,
         threshold: 0.7
       };
 
       const matches = await this.embeddingService.searchSimilarProducts(searchParams);
-      result.productMatches = matches;
+      
+      // We map the raw matches to the final ProductCandidate structure here
+      result.rankedCandidates = matches.map(m => ({
+        id: m.variantId,
+        title: m.title,
+        description: m.description,
+        imageUrl: m.imageUrl,
+        price: m.price,
+        source: 'internal',
+        similarity: m.combinedScore,
+        visualSimilarity: m.imageSimilarity,
+        textSimilarity: m.textSimilarity,
+        url: m.productUrl, // Ensure your embedding service provides this
+        metadata: { // Keep raw scores in metadata if needed
+          productId: m.productId,
+          imageSimilarity: m.imageSimilarity,
+          textSimilarity: m.textSimilarity,
+          combinedScore: m.combinedScore
+        }
+      }));
 
       steps.push(`🔍 Found ${matches.length} potential matches`);
       
@@ -323,7 +358,8 @@ export class ProductRecognitionService {
           productId: match.productId,
           imageSimilarity: match.imageSimilarity,
           textSimilarity: match.textSimilarity,
-          combinedScore: match.combinedScore
+          combinedScore: match.combinedScore,
+          url: match.productUrl // Pass URL through metadata
         }
       }));
 
@@ -336,7 +372,21 @@ export class ProductRecognitionService {
 
       const rerankerResponse = await this.rerankerService.rerankCandidates(rerankerRequest);
       
-      result.rankedCandidates = rerankerResponse.rankedCandidates;
+      // Map the reranker's response back to our final ProductCandidate structure
+      result.rankedCandidates = rerankerResponse.rankedCandidates.map(c => ({
+        id: c.id,
+        title: c.title,
+        description: c.description,
+        imageUrl: c.imageUrl,
+        price: c.price,
+        source: 'internal', // These are from our DB
+        similarity: c.score, // The reranked score is the final similarity
+        visualSimilarity: c.metadata?.imageSimilarity,
+        textSimilarity: c.metadata?.textSimilarity,
+        url: c.metadata?.url,
+        metadata: c.metadata
+      }));
+
       result.confidence = rerankerResponse.confidenceTier;
       result.systemAction = rerankerResponse.systemAction;
 
@@ -358,7 +408,7 @@ export class ProductRecognitionService {
     const template = this.businessTemplates.get('electronics'); // Default template
     
     if (result.rankedCandidates && result.rankedCandidates.length > 0) {
-      const topScore = result.rankedCandidates[0].score;
+      const topScore = result.rankedCandidates[0].similarity;
       
       if (topScore >= (template?.confidenceThresholds.high || 0.95)) {
         result.confidence = 'high';
@@ -406,7 +456,7 @@ export class ProductRecognitionService {
 
       // The "Agentic" part: Verify candidates with image-to-image similarity
       const verifiedCandidates: Array<any & { visualSimilarity: number }> = [];
-      if (result.imageEmbedding) {
+      if (result.metadata.imageEmbedding) {
         steps.push('🤖 Agent: Verifying web results against original image...');
         for (const candidate of externalCandidates) {
           if (candidate.imageUrl) {
@@ -414,7 +464,7 @@ export class ProductRecognitionService {
               // Get embedding for the image found on the web
               const candidateEmbedding = await this.embeddingService.generateImageEmbedding({ imageUrl: candidate.imageUrl });
               // Compare it to the user's original image embedding
-              const similarity = this.embeddingService.calculateEmbeddingSimilarity(result.imageEmbedding, candidateEmbedding);
+              const similarity = this.embeddingService.calculateEmbeddingSimilarity(result.metadata.imageEmbedding, candidateEmbedding);
               
               steps.push(`- Comparing with ${candidate.title || candidate.url}: Visual Similarity = ${similarity.toFixed(3)}`);
               
@@ -429,7 +479,20 @@ export class ProductRecognitionService {
         steps.push(`✅ Found ${verifiedCandidates.length} visually similar products.`);
       }
 
-      result.webSearchResults = verifiedCandidates.length > 0 ? verifiedCandidates : externalCandidates;
+      result.rankedCandidates = (verifiedCandidates.length > 0 ? verifiedCandidates : externalCandidates)
+        .map(c => ({
+          id: c.id, // Assuming the candidate has an ID
+          title: c.title,
+          description: c.description,
+          imageUrl: c.imageUrl,
+          price: c.price,
+          source: 'web',
+          similarity: c.visualSimilarity ?? c.textSimilarity ?? 0, // Prioritize visual similarity
+          visualSimilarity: c.visualSimilarity,
+          textSimilarity: c.textSimilarity,
+          url: c.url,
+          metadata: c.metadata,
+        }));
       
       if (verifiedCandidates.length > 0) {
         // Sort by visual similarity
@@ -474,18 +537,17 @@ export class ProductRecognitionService {
         userId: request.userId,
         imageUrl: request.imageUrl || '',
         query: request.textQuery || 'Image-based search',
-        candidates: result.rankedCandidates.map(c => ({
-          id: c.id,
-          title: c.title,
-          description: c.description,
-          businessTemplate: request.businessTemplate
-        })),
+        candidates: result.rankedCandidates, // This now matches RerankerCandidate more closely
         rerankerResponse: {
-          rankedCandidates: result.rankedCandidates,
+          rankedCandidates: result.rankedCandidates.map(c => ({ 
+            ...c, 
+            rank: 0, // Add rank to satisfy type
+            score: c.similarity // Map similarity to score for the logger
+          })), 
           confidenceTier: result.confidence,
-          topScore: result.rankedCandidates[0]?.score || 0,
+          topScore: result.rankedCandidates[0]?.similarity || 0,
           systemAction: result.systemAction,
-          processingTimeMs: result.processingTimeMs,
+          processingTimeMs: result.metadata.processingTimeMs,
           metadata: {
             model: 'Qwen3-Reranker-0.5B',
             totalCandidates: result.rankedCandidates.length,
@@ -494,8 +556,8 @@ export class ProductRecognitionService {
         }
       };
 
-      result.matchId = await this.rerankerService.logMatchInteraction(interaction);
-      steps.push(`📝 Logged interaction for training (ID: ${result.matchId.substring(0, 8)}...)`);
+      result.metadata.matchId = await this.rerankerService.logMatchInteraction(interaction);
+      steps.push(`📝 Logged interaction for training (ID: ${result.metadata.matchId.substring(0, 8)}...)`);
 
     } catch (error) {
       steps.push(`❌ Failed to log interaction: ${error.message}`);
@@ -553,7 +615,12 @@ export class ProductRecognitionService {
         ...result.processingSteps,
         `❌ Recognition failed: ${error.message}`,
         '🌐 Falling back to external search'
-      ]
+      ],
+      metadata: {
+        ...result.metadata,
+        processingTimeMs: result.metadata.processingTimeMs,
+        modelsUsed: result.metadata.modelsUsed,
+      }
     };
   }
 
