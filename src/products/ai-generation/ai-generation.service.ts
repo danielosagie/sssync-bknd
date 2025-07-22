@@ -223,6 +223,15 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
     scrapedContents: any[],
     contextQuery: string,
     businessTemplate?: string,
+    userSelections?: {
+      selectedSerpApiResult?: any; // User's choice from SerpAPI results
+      platformRequests?: Array<{
+        platform: string;
+        fieldSources?: Record<string, string[]>; // Field-specific source URLs
+        customPrompt?: string;
+      }>;
+      targetSites?: string[]; // Sites to prioritize for data sourcing
+    },
   ): Promise<GeneratedDetails | null> {
     const groq = this.getGroqClient();
     if (!groq) return null;
@@ -285,18 +294,61 @@ Fabric Warmth Description	Lightweight)`;
 
     const contentString = scrapedContents.map(c => JSON.stringify(c.data.markdown)).join('\n\n---\n\n');
 
-    const userPrompt = `
-      The user has identified a similar product online. This context is your primary source for strategic enrichment. Deeply analyze this information. Based on the following scraped data from one or more websites, and the original user query "${contextQuery}", generate a comprehensive product listing.
+    // Build user selections context
+    let userSelectionsContext = '';
+    if (userSelections?.selectedSerpApiResult) {
+      userSelectionsContext += `\n**USER SELECTED PRODUCT:**\nTitle: ${userSelections.selectedSerpApiResult.title}\nPrice: ${userSelections.selectedSerpApiResult.price}\nSource: ${userSelections.selectedSerpApiResult.source}\nSnippet: ${userSelections.selectedSerpApiResult.snippet}\n`;
+    }
 
-      **Scraped Content:**
+    // Build platform-specific requirements
+    let platformRequirements = '';
+    if (userSelections?.platformRequests) {
+      platformRequirements = '\n**PLATFORM-SPECIFIC REQUIREMENTS:**\n';
+      userSelections.platformRequests.forEach(platform => {
+        platformRequirements += `\n${platform.platform.toUpperCase()}:\n`;
+        if (platform.customPrompt) {
+          platformRequirements += `- Custom Instructions: ${platform.customPrompt}\n`;
+        }
+        if (platform.fieldSources) {
+          platformRequirements += `- Field Sources:\n`;
+          Object.entries(platform.fieldSources).forEach(([field, sources]) => {
+            platformRequirements += `  • ${field}: Use data primarily from ${sources.join(', ')}\n`;
+          });
+        }
+      });
+    }
+
+    // Build target sites priority
+    let targetSitesContext = '';
+    if (userSelections?.targetSites?.length) {
+      targetSitesContext = `\n**PRIORITY DATA SOURCES:** Focus on data from these sites: ${userSelections.targetSites.join(', ')}\n`;
+    }
+
+    const userPrompt = `
+      The user has identified a similar product online and provided specific requirements. This context is your primary source for strategic enrichment. Deeply analyze this information.
+
+      **Query:** "${contextQuery}"
+      ${userSelectionsContext}
+      ${targetSitesContext}
+      ${platformRequirements}
+
+      **SCRAPED CONTENT FROM FIRECRAWL:**
       ${contentString.substring(0, 15000)}
 
-      **Instructions:**
-      1.  **Synthesize Information:** Combine details from all provided sources to create a single, coherent product listing.
-      2.  **Extract Key Fields:** Identify and extract the product title, a detailed description, price, brand, and any relevant specifications (like model number, size, color).
-      3.  **Generate Compelling Copy:** Write a product description that is engaging and highlights the key features and benefits.
-      4.  **Suggest Tags/Keywords:** Provide a list of relevant tags or keywords for better searchability.
-      5.  **Format as JSON:** Return the output as a single JSON object with the following structure: { "title": "...", "description": "...", "price": 123.45, "brand": "...", "specifications": { ... }, "tags": ["...", "..."] }.
+      **ENHANCED INSTRUCTIONS:**
+      1.  **Prioritize User Selections:** Use the user's selected SerpAPI result as the foundation, then enhance with scraped data.
+      2.  **Respect Field Sources:** When platform-specific field sources are specified, prioritize data from those URLs for those fields.
+      3.  **Platform Optimization:** Generate platform-specific content following each platform's requirements and custom prompts.
+      4.  **Synthesize Intelligently:** Combine user selections + scraped data to create compelling, accurate listings.
+      5.  **Extract Complete Data:** Include title, description, price, brand, specifications, tags, and platform-specific fields.
+      6.  **Multi-Platform Support:** Generate for all requested platforms with appropriate formatting and optimization.
+
+      **OUTPUT FORMAT:** Return a JSON object with platform-specific data:
+      {
+        "shopify": { "title": "...", "description": "...", "price": 123.45, "brand": "...", "tags": [...], "vendor": "...", "productType": "..." },
+        "amazon": { "title": "...", "description": "...", "price": 123.45, "bullet_points": [...], "search_terms": [...] },
+        "ebay": { "title": "...", "description": "...", "price": 123.45, "itemSpecifics": {...}, "listingFormat": "FixedPrice" }
+      }
     `;
 
     try {

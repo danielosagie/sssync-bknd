@@ -110,7 +110,8 @@ export class ProductsController {
     }
 
     /**
-     * Endpoint 1 (Revised): Analyzes images, creates draft, saves analysis.
+     * Endpoint 1: Analyzes images using SerpAPI, creates draft, saves analysis.
+     * Updated to work with current flow and generation pipeline.
      */
     @Post('analyze')
     @Feature('aiScans')
@@ -158,7 +159,7 @@ export class ProductsController {
     }
 
     /**
-     * Endpoint 2 (Revised): Generates AI details for an existing draft product/variant.
+     * Endpoint 2: Generates AI details for an existing draft product/variant.
      */
     @Post('generate-details')
     @Feature('aiScans')
@@ -193,7 +194,8 @@ export class ProductsController {
                     generateDetailsDto.selectedMatch,
                     generateDetailsDto.enhancedWebData,
                 );
-                this.logger.log(`[POST /generate-details] User: ${userId} - Details generated for variant ${generateDetailsDto.variantId}`);
+
+                this.logger.log(`[POST /generate-details] User: ${userId} - Generation complete for variant ${generateDetailsDto.variantId}`);
                 return result;
             },
             'generateDetails'
@@ -1582,68 +1584,7 @@ export class ProductsController {
         }
     }
 
-    @Post('update-platform-flags')
-    /**
-     * NEW: Multi-modal product recognition endpoint
-     * Handles both image and text inputs with confidence-based responses
-     */
-    @Post('recognize')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 10, ttl: 60000 }}) // 10 requests per minute
-    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
-    @HttpCode(HttpStatus.OK)
-    async recognizeProduct(
-        @Body() recognitionRequest: {
-            imageUrl?: string;
-            imageBase64?: string;
-            textQuery?: string;
-            businessTemplate?: string;
-            platformConnections?: string[];
-            fallbackSearchAddresses?: string[]; // Specific websites to search if confidence is low
-            enhanceWithGroq?: boolean; // Whether to use Groq AI for final generation
-        },
-        @Req() req: AuthenticatedRequest,
-    ): Promise<RecognitionResult> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found after authentication.');
-        }
 
-        this.logger.log(`[POST /recognize] User: ${userId} - Full multi-modal recognition initiated`);
-
-        try {
-            const request: ProductRecognitionRequest = {
-                imageUrl: recognitionRequest.imageUrl,
-                imageBase64: recognitionRequest.imageBase64,
-                textQuery: recognitionRequest.textQuery,
-                userId,
-                businessTemplate: recognitionRequest.businessTemplate,
-                platformConnections: recognitionRequest.platformConnections
-            };
-
-            // Add custom fallback addresses if provided
-            if (recognitionRequest.fallbackSearchAddresses) {
-                // Store in request for the ProductRecognitionService to use
-                (request as any).customFallbackAddresses = recognitionRequest.fallbackSearchAddresses;
-            }
-
-            // Add Groq enhancement flag
-            if (recognitionRequest.enhanceWithGroq) {
-                (request as any).enhanceWithGroq = true;
-            }
-
-            const result = await this.productRecognitionService.recognizeProduct(request);
-
-            this.logger.log(`[POST /recognize] User: ${userId} - Recognition completed in ${result.metadata.processingTimeMs}ms, confidence: ${result.confidence}`);
-
-            return result;
-
-        } catch (error) {
-            this.logger.error(`[POST /recognize] User: ${userId} - Error: ${error.message}`, error.stack);
-            throw new InternalServerErrorException(`Product recognition failed: ${error.message}`);
-        }
-    }
 
     /**
      * Record user feedback for training data collection
@@ -1840,124 +1781,7 @@ export class ProductsController {
         }
     }
 
-    /**
-     * LEVEL 2: Enhanced Recognition with Reranker - Improved confidence scoring
-     * Uses Qwen3-Reranker for more accurate candidate scoring
-     */
-    @Post('recognize/enhanced')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 8, ttl: 60000 }}) // 8 requests per minute (more compute intensive)
-    @HttpCode(HttpStatus.OK)
-    async enhancedProductRecognition(
-        @Body() recognitionData: {
-            imageUrl?: string;
-            imageBase64?: string;
-            textQuery?: string;
-            businessTemplate?: string;
-            vectorCandidates?: any[]; // Optional: Pass from quick-scan results
-            topK?: number;
-        },
-        @Req() req: AuthenticatedRequest,
-    ): Promise<{
-        rankedCandidates: any[];
-        confidence: 'high' | 'medium' | 'low';
-        systemAction: string;
-        processingTimeMs: number;
-        rerankerScores: number[];
-        metadata: {
-            totalCandidates: number;
-            rerankerModel: string;
-            confidenceThresholds: any;
-        };
-    }> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found after authentication.');
-        }
 
-        const startTime = Date.now();
-        this.logger.log(`[POST /recognize/enhanced] User: ${userId} - Enhanced recognition initiated`);
-
-        try {
-            let candidates = recognitionData.vectorCandidates;
-
-            // If no candidates provided, do vector search first
-            if (!candidates || candidates.length === 0) {
-                const embeddings: any = {};
-
-                if (recognitionData.imageUrl || recognitionData.imageBase64) {
-                    embeddings.imageEmbedding = await this.embeddingService.generateImageEmbedding({
-                        imageUrl: recognitionData.imageUrl,
-                        imageBase64: recognitionData.imageBase64,
-                        instruction: `Encode this ${recognitionData.businessTemplate || 'product'} image for detailed similarity matching.`
-                    }, userId);
-                }
-
-                if (recognitionData.textQuery) {
-                    embeddings.textEmbedding = await this.embeddingService.generateTextEmbedding({
-                        title: recognitionData.textQuery,
-                        businessTemplate: recognitionData.businessTemplate
-                    }, userId);
-                }
-
-                candidates = await this.embeddingService.searchSimilarProducts({
-                    imageEmbedding: embeddings.imageEmbedding,
-                    textEmbedding: embeddings.textEmbedding,
-                    businessTemplate: recognitionData.businessTemplate,
-                    threshold: 0.5, // Lower threshold for reranker
-                    limit: 20
-                });
-            }
-
-            // Convert to reranker format
-            const rerankerCandidates = candidates.map((match: any) => ({
-                id: match.variantId,
-                title: match.title,
-                description: match.description,
-                businessTemplate: match.businessTemplate,
-                imageUrl: match.imageUrl,
-                metadata: {
-                    productId: match.productId,
-                    imageSimilarity: match.imageSimilarity,
-                    textSimilarity: match.textSimilarity,
-                    combinedScore: match.combinedScore
-                }
-            }));
-
-            // Apply reranking
-            const rerankerResponse = await this.rerankerService.rerankCandidates({
-                query: recognitionData.textQuery || `Product recognition for ${recognitionData.businessTemplate || 'general'} category`,
-                candidates: rerankerCandidates,
-                userId,
-                businessTemplate: recognitionData.businessTemplate
-            });
-
-            const processingTimeMs = Date.now() - startTime;
-
-            this.logger.log(`[POST /recognize/enhanced] User: ${userId} - Completed in ${processingTimeMs}ms, confidence: ${rerankerResponse.confidenceTier}`);
-
-            return {
-                rankedCandidates: rerankerResponse.rankedCandidates,
-                confidence: rerankerResponse.confidenceTier,
-                systemAction: rerankerResponse.systemAction,
-                processingTimeMs,
-                rerankerScores: rerankerResponse.rankedCandidates.map(c => c.score || 0),
-                metadata: {
-                    totalCandidates: candidates.length,
-                    rerankerModel: 'Qwen3-Reranker-0.5B',
-                    confidenceThresholds: {
-                        high: 0.95,
-                        medium: 0.70
-                    }
-                }
-            };
-
-        } catch (error) {
-            this.logger.error(`[POST /recognize/enhanced] User: ${userId} - Error: ${error.message}`, error.stack);
-            throw new InternalServerErrorException(`Enhanced recognition failed: ${error.message}`);
-        }
-    }
 
     @Post('update-platform-flags')
     async updatePlatformFlags(): Promise<{ message: string; updatedCount: number }> {
@@ -2036,15 +1860,177 @@ export class ProductsController {
     }
 
     /**
-     * LEVEL 1: Quick Scan & Embed - Realtime vector search with confidence scores
-     * Fast endpoint for immediate product recognition using just vector similarity
+     * AI Visual Matching - Separate step after analyze for better suggestions
+     * Runs in parallel with frontend response for performance
      */
-    @Post('recognize/quick-scan')
+    @Post('orchestrate/ai-visual-match')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 100, ttl: 60000 }}) // 10 requests per minute
+    @Throttle({ default: { limit: 15, ttl: 60000 }}) // 15 requests per minute - faster operation
     @HttpCode(HttpStatus.OK)
-    async quickProductScan(
+    async aiVisualMatch(
+        @Body() matchRequest: {
+            imageUrl?: string;
+            imageBase64?: string;
+            serpApiResults: any[]; // Results from analyze step
+            userContext?: string; // Optional context from user
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        aiSuggestions: Array<{
+            serpApiIndex: number;
+            confidence: number;
+            reasoning: string;
+            visualSimilarity: number;
+            recommendedAction: 'select_this' | 'consider' | 'review_manually';
+        }>;
+        topRecommendation?: {
+            index: number;
+            confidence: number;
+            reasoning: string;
+        };
+        processingTimeMs: number;
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        const startTime = Date.now();
+        this.logger.log(`[AI Visual Match] User: ${userId} - Processing ${matchRequest.serpApiResults.length} SerpAPI results`);
+
+        try {
+            if (!matchRequest.serpApiResults?.length) {
+                return {
+                    aiSuggestions: [],
+                    processingTimeMs: Date.now() - startTime
+                };
+            }
+
+            // Use AI Generation Service for intelligent visual matching
+            const prompt = `You are an expert visual product matcher. Analyze the provided image against these search results and determine which result best matches the user's product visually and contextually.
+
+Image: ${matchRequest.imageUrl || 'base64 image provided'}
+User Context: ${matchRequest.userContext || 'No additional context'}
+
+SerpAPI Results to Match Against:
+${matchRequest.serpApiResults.map((result, idx) => `${idx + 1}. Title: "${result.title}" | Price: ${result.price} | Source: ${result.source} | Snippet: ${result.snippet}`).join('\n')}
+
+For each result, provide:
+1. Visual similarity score (0-1)
+2. Overall confidence (0-1) 
+3. Reasoning for the match/mismatch
+4. Recommended action
+
+Return JSON format:
+{
+  "matches": [
+    {
+      "index": 0,
+      "visualSimilarity": 0.85,
+      "confidence": 0.90,
+      "reasoning": "Strong visual match - same product category, brand, and styling",
+      "recommendedAction": "select_this"
+    }
+  ],
+  "topRecommendation": {
+    "index": 0,
+    "confidence": 0.90,
+    "reasoning": "Best overall match based on visual and contextual analysis"
+  }
+}`;
+
+            const aiResponse = await this.aiGenerationService.generateProductDetails(
+                [matchRequest.imageUrl || ''],
+                matchRequest.imageUrl || '',
+                ['visual_matching'],
+                null,
+                {
+                    url: 'ai_visual_matching',
+                    scrapedData: { serpApiResults: matchRequest.serpApiResults },
+                    analysis: prompt
+                }
+            );
+
+            // Parse AI response for visual matching
+            let aiSuggestions: any[] = [];
+            let topRecommendation: any = null;
+
+            if (aiResponse && aiResponse.visual_matching) {
+                // Try to extract structured data from AI response
+                try {
+                    const matchData = typeof aiResponse.visual_matching === 'string' 
+                        ? JSON.parse(aiResponse.visual_matching) 
+                        : aiResponse.visual_matching;
+                    
+                    aiSuggestions = matchData.matches?.map((match: any, idx: number) => ({
+                        serpApiIndex: match.index || idx,
+                        confidence: match.confidence || 0.5,
+                        reasoning: match.reasoning || 'AI analysis completed',
+                        visualSimilarity: match.visualSimilarity || match.confidence || 0.5,
+                        recommendedAction: match.recommendedAction || 'review_manually'
+                    })) || [];
+
+                    topRecommendation = matchData.topRecommendation;
+                } catch (parseError) {
+                    this.logger.warn(`Failed to parse AI visual match response: ${parseError.message}`);
+                }
+            }
+
+            // Fallback: Use reranker service for basic similarity
+            if (aiSuggestions.length === 0) {
+                this.logger.log(`[AI Visual Match] Falling back to reranker service`);
+                
+                const rerankerCandidates = matchRequest.serpApiResults.map((result, idx) => ({
+                    id: idx.toString(),
+                    title: result.title,
+                    description: result.snippet,
+                    metadata: { source: result.source, price: result.price }
+                }));
+
+                const rerankerResponse = await this.rerankerService.rerankCandidates({
+                    query: matchRequest.userContext || 'product match',
+                    candidates: rerankerCandidates,
+                    userId,
+                    businessTemplate: 'visual_matching'
+                });
+
+                aiSuggestions = rerankerResponse.rankedCandidates.map((candidate: any, idx: number) => ({
+                    serpApiIndex: parseInt(candidate.id),
+                    confidence: candidate.score || 0.5,
+                    reasoning: `Reranker match - score: ${candidate.score?.toFixed(2)}`,
+                    visualSimilarity: candidate.score || 0.5,
+                    recommendedAction: candidate.score > 0.8 ? 'select_this' : 'consider'
+                }));
+
+                if (aiSuggestions.length > 0) {
+                    topRecommendation = {
+                        index: aiSuggestions[0].serpApiIndex,
+                        confidence: aiSuggestions[0].confidence,
+                        reasoning: 'Top reranker result'
+                    };
+                }
+            }
+
+            const processingTimeMs = Date.now() - startTime;
+            this.logger.log(`[AI Visual Match] Completed in ${processingTimeMs}ms with ${aiSuggestions.length} suggestions`);
+
+            return {
+                aiSuggestions: aiSuggestions.slice(0, 5), // Top 5 suggestions
+                topRecommendation,
+                processingTimeMs
+            };
+
+        } catch (error) {
+            this.logger.error(`[AI Visual Match] Error: ${error.message}`, error.stack);
+            throw new InternalServerErrorException(`AI visual matching failed: ${error.message}`);
+        }
+    }
+
+    /**
+     * Private helper method for quick vector search - used by other endpoints
+     */
+    private async quickProductScan(
         @Body() scanData: {
             imageUrl?: string;
             imageBase64?: string;
@@ -2136,179 +2122,9 @@ export class ProductsController {
         }
     }
 
-    /**
-     * LEVEL 4: Deep Search - Search external sites and scrape data
-     * Uses Firecrawl to search the web and prepare for scraping
-     */
-    @Post('recognize/deep-search')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 5, ttl: 60000 }})
-    @HttpCode(HttpStatus.OK)
-    async deepSearch(
-        @Body() searchData: {
-            query: string;
-            searchSites?: string[]; // e.g., ["amazon.com", "ebay.com"]
-            businessTemplate?: string;
-        },
-        @Req() req: AuthenticatedRequest,
-    ): Promise<any> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found.');
-        }
 
-        this.logger.log(`[POST /recognize/deep-search] User: ${userId} - Query: "${searchData.query}"`);
 
-        try {
-            const finalQuery = searchData.searchSites 
-                ? `${searchData.query} site:${searchData.searchSites.join(' OR site:')}`
-                : searchData.query;
 
-            const searchResults = await this.firecrawlService.search(finalQuery);
-
-            await this.aiUsageTracker.trackUsage({
-                userId,
-                serviceType: 'firecrawl_search',
-                modelName: 'firecrawl',
-                operation: 'deep_search',
-                requestCount: 1,
-                metadata: { query: finalQuery, resultsCount: searchResults.length }
-            });
-
-            return searchResults;
-
-        } catch (error) {
-            this.logger.error(`[POST /recognize/deep-search] Error for user ${userId}: ${error.message}`, error.stack);
-            throw new InternalServerErrorException(`Deep search failed: ${error.message}`);
-        }
-    }
-
-    /**
-     * LEVEL 5: Scrape & Generate - Scrape selected URLs and generate product data
-     * Uses Firecrawl to scrape, then Groq to generate structured data
-     */
-    @Post('recognize/scrape-and-generate')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 5, ttl: 60000 }})
-    @HttpCode(HttpStatus.OK)
-    async scrapeAndGenerate(
-        @Body() scrapeData: {
-            urls: string[];
-            contextQuery: string;
-            businessTemplate?: string;
-        },
-        @Req() req: AuthenticatedRequest,
-    ): Promise<any> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found.');
-        }
-
-        this.logger.log(`[POST /recognize/scrape-and-generate] User: ${userId} - Scraping ${scrapeData.urls.length} URLs`);
-
-        try {
-            const scrapedContents = await Promise.all(
-                scrapeData.urls.map(url => this.firecrawlService.scrape(url))
-            );
-            
-            await this.aiUsageTracker.trackUsage({
-                userId,
-                serviceType: 'firecrawl_scrape',
-                modelName: 'firecrawl',
-                operation: 'scrape_and_generate',
-                requestCount: scrapeData.urls.length,
-                metadata: { urls: scrapeData.urls }
-            });
-
-            // This assumes your AiGenerationService can take scraped data
-            // and generate product details using Groq.
-            const generatedDetails = await this.aiGenerationService.generateProductDetailsFromScrapedData(
-                scrapedContents,
-                scrapeData.contextQuery,
-                scrapeData.businessTemplate
-            );
-
-            if (!generatedDetails) {
-                throw new InternalServerErrorException('Failed to generate product details from scraped data');
-            }
-
-            return {
-                source: 'deep_search_generation',
-                confidence: 0.98, // High confidence as it's user-validated
-                data: generatedDetails,
-                title: generatedDetails.title,
-                price: generatedDetails.price,
-                image: generatedDetails.images?.[0],
-            };
-
-        } catch (error) {
-            this.logger.error(`[POST /recognize/scrape-and-generate] Error for user ${userId}: ${error.message}`, error.stack);
-            throw new InternalServerErrorException(`Scrape & Generate failed: ${error.message}`);
-        }
-    }
-
-    /**
-     * LEVEL 3: Full Multi-Modal Recognition Pipeline - Complete AI-powered product recognition
-     * Orchestrates the full pipeline: embeddings → vector search → reranking → external fallback
-     */
-    @Post('recognize/full-pipeline')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 5, ttl: 60000 }})
-    @HttpCode(HttpStatus.OK)
-    async fullPipelineRecognition(
-        @Body() recognitionData: {
-            imageUrl?: string;
-            imageBase64?: string;
-            textQuery?: string;
-            businessTemplate?: string;
-            platformConnections?: string[];
-            fallbackSearchAddresses?: string[]; // Specific websites to search if confidence is low
-            enhanceWithGroq?: boolean; // Whether to use Groq AI for final generation
-        },
-        @Req() req: AuthenticatedRequest,
-    ): Promise<any> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found after authentication.');
-        }
-
-        this.logger.log(`[POST /recognize/full-pipeline] User: ${userId} - Full multi-modal recognition initiated`);
-
-        try {
-            const request: ProductRecognitionRequest = {
-                imageUrl: recognitionData.imageUrl,
-                imageBase64: recognitionData.imageBase64,
-                textQuery: recognitionData.textQuery,
-                userId,
-                businessTemplate: recognitionData.businessTemplate,
-                platformConnections: recognitionData.platformConnections
-            };
-
-            // Add custom fallback addresses if provided
-            if (recognitionData.fallbackSearchAddresses) {
-                // Store in request for the ProductRecognitionService to use
-                (request as any).customFallbackAddresses = recognitionData.fallbackSearchAddresses;
-            }
-
-            // Add Groq enhancement flag
-            if (recognitionData.enhanceWithGroq) {
-                (request as any).enhanceWithGroq = true;
-            }
-
-            const result = await this.productRecognitionService.recognizeProduct(request);
-
-            this.logger.log(`[POST /recognize/full-pipeline] User: ${userId} - Recognition completed in ${result.metadata.processingTimeMs}ms, confidence: ${result.confidence}`);
-
-            return result;
-
-        } catch (error) {
-            this.logger.error(`[POST /recognize/full-pipeline] User: ${userId} - Error: ${error.message}`, error.stack);
-            throw new InternalServerErrorException(`Full pipeline recognition failed: ${error.message}`);
-        }
-    }
 
     @Post('orchestrate')
     @Feature('aiScans')
@@ -2487,14 +2303,30 @@ export class ProductsController {
                 for (const result of results) {
                     if (result.matches.length > 1) {
                         try {
-                            const rerankerResult = await this.enhancedProductRecognition({
-                                textQuery: scanInput.textQuery || 'Product search',
-                                vectorCandidates: result.matches,
-                                topK: 5
-                            }, req);
+                            // Direct reranker call without duplicate endpoint
+                            const rerankerCandidates = result.matches.map((match: any) => ({
+                                id: match.variantId,
+                                title: match.title,
+                                description: match.description,
+                                businessTemplate: match.businessTemplate,
+                                imageUrl: match.imageUrl,
+                                metadata: {
+                                    productId: match.productId,
+                                    imageSimilarity: match.imageSimilarity,
+                                    textSimilarity: match.textSimilarity,
+                                    combinedScore: match.combinedScore
+                                }
+                            }));
 
-                            result.matches = rerankerResult.rankedCandidates;
-                            result.confidence = rerankerResult.confidence;
+                            const rerankerResponse = await this.rerankerService.rerankCandidates({
+                                query: scanInput.textQuery || 'Product search',
+                                candidates: rerankerCandidates,
+                                userId: req.user?.id,
+                                businessTemplate: 'general'
+                            });
+
+                            result.matches = rerankerResponse.rankedCandidates;
+                            result.confidence = rerankerResponse.confidenceTier;
                         } catch (error) {
                             this.logger.warn(`Reranker failed for source ${result.sourceIndex}: ${error.message}`);
                         }
@@ -2671,7 +2503,7 @@ export class ProductsController {
                     logs.push(`🎯 Generating ${platform.name} listing`);
                     
                     try {
-                                                 const platformData = await this.generatePlatformSpecificData(
+                        const platformData = await this.generatePlatformSpecificData(
                              source,
                              platform,
                              scrapedData,
@@ -2890,174 +2722,157 @@ export class ProductsController {
         userFlow?: string,
         logs?: string[]
     ): Promise<any> {
-        // Build content from various sources based on user flow
-        let sourceContent = '';
-        let sourceTitle = 'Generated Product';
-        let sourcePrice = 0;
-        const sourceUrls: string[] = [];
+        logs?.push(`🤖 Using AI Generation Service for ${platform.name} listing`);
 
-        // Enhanced content sourcing for both flows
-        if (userFlow === 'normal_search' && source.data?.selectedResult) {
-            // Normal Search: Use external search result as base
-            sourceTitle = source.data.selectedResult.title || sourceTitle;
-            sourceContent = source.data.selectedResult.snippet || '';
-            sourcePrice = source.data.selectedResult.price || 0;
-            
-            // Use field-specific scraped data
-            if (platform.fieldSources && scrapedData.length > 0) {
-                const relevantScrapes = scrapedData.filter(scraped => 
-                    platform.fieldSources.some(fieldSource => 
-                        scraped.url.includes(fieldSource.replace('https://', '').replace('http://', ''))
-                    )
-                );
-                
-                if (relevantScrapes.length > 0) {
-                    sourceContent = relevantScrapes.map(s => s.content?.content || s.content).join('\n');
-                    sourceUrls.push(...relevantScrapes.map(s => s.url));
-                }
+        try {
+            // Prepare data for AI generation service
+            let coverImageUrl = '';
+            let selectedMatchContext: any = null;
+            let enhancedWebData: any = null;
+
+            // Extract image URL
+            if (source.type === 'image' && source.data) {
+                coverImageUrl = source.data;
+            } else if (source.selectedMatch?.imageUrl) {
+                coverImageUrl = source.selectedMatch.imageUrl;
+            } else if (source.data?.selectedResult?.imageUrl) {
+                coverImageUrl = source.data.selectedResult.imageUrl;
             }
-            
-            logs?.push(`📝 Using normal search data from ${sourceUrls.length} sources for ${platform.name}`);
-            
-        } else if (userFlow === 'quick_search' && source.selectedMatch) {
-            // Quick Search: Use database match as base
-            sourceTitle = source.selectedMatch.title || sourceTitle;
-            sourceContent = source.selectedMatch.description || source.selectedMatch.title || '';
-            sourcePrice = source.selectedMatch.price || 0;
-            
-            // Enhance with scraped data if available
-            if (platform.useScrapedData && scrapedData.length > 0) {
-                const additionalContent = scrapedData.map(s => s.content?.content || s.content).join('\n');
-                sourceContent = `${sourceContent}\n\nAdditional details:\n${additionalContent}`;
-                sourceUrls.push(...scrapedData.map(s => s.url));
+
+            // Prepare context based on user flow
+            if (userFlow === 'quick_search' && source.selectedMatch) {
+                // Use database match as visual match context
+                selectedMatchContext = {
+                    visual_matches: [{
+                        title: source.selectedMatch.title,
+                        price: { value: source.selectedMatch.price?.toString() || '0' },
+                        source: 'database_match',
+                        snippet: source.selectedMatch.description || ''
+                    }]
+                };
+            } else if (userFlow === 'normal_search' && source.data?.selectedResult) {
+                // Use SerpAPI result as visual match context
+                selectedMatchContext = {
+                    visual_matches: [{
+                        title: source.data.selectedResult.title,
+                        price: { value: source.data.selectedResult.price?.toString() || '0' },
+                        source: source.data.selectedResult.source || 'serpapi',
+                        snippet: source.data.selectedResult.snippet || ''
+                    }]
+                };
             }
-            
-            logs?.push(`📝 Using database match + ${scrapedData.length} scraped sources for ${platform.name}`);
-            
-        } else {
-            // Fallback: Use scraped data only
+
+            // Prepare enhanced web data from scraped content
             if (scrapedData.length > 0) {
                 const primaryScraped = scrapedData[0];
-                sourceContent = primaryScraped.content?.content || JSON.stringify(primaryScraped.content);
-                sourceTitle = primaryScraped.title || sourceTitle;
-                sourcePrice = this.extractPriceFromContent(sourceContent);
-                sourceUrls.push(primaryScraped.url);
+                enhancedWebData = {
+                    url: primaryScraped.url,
+                    scrapedData: primaryScraped.content,
+                    analysis: platform.customPrompt || `Generate optimized ${platform.name} listing`
+                };
             }
-            
-            logs?.push(`📝 Using fallback scraped data for ${platform.name}`);
-        }
 
-        // Generate platform-optimized content
-        try {
-            const prompt = `
-Generate ${platform.name} product listing:
-Original Title: ${sourceTitle}
-Source Content: ${sourceContent}
-Platform: ${platform.name}
-Custom Instructions: ${platform.customPrompt || 'Create optimized listing for this platform'}
-User Flow: ${userFlow || 'unknown'}
-
-Generate a compelling, platform-specific product listing with proper formatting.
-Return JSON with: title, description, price, specifications
-            `;
-
-            // Use enhanced fallback with better content processing
-            const generated = {
-                title: this.optimizeTitleForPlatform(sourceTitle, platform.name),
-                description: this.optimizeDescriptionForPlatform(sourceContent, platform.name, platform.customPrompt),
-                price: sourcePrice,
-                specifications: this.extractSpecifications(sourceContent)
-            };
-
-            const result = {
-                title: generated.title,
-                description: generated.description,
-                price: generated.price,
-                images: this.extractImages(source, scrapedData),
-                source: this.determineContentSource(platform, scrapedData, userFlow),
-                sourceUrls: sourceUrls.length > 0 ? sourceUrls : undefined
-            };
-
-            logs?.push(`✅ Generated ${platform.name} listing: "${generated.title.substring(0, 50)}..."`);
-            return result;
-
-        } catch (error) {
-            logs?.push(`❌ AI generation failed for ${platform.name}: ${error.message}`);
-            this.logger.warn(`AI generation failed: ${error.message}`);
-            
-            return {
-                title: sourceTitle,
-                description: sourceContent.substring(0, 500) || 'Product description',
-                price: sourcePrice,
-                images: this.extractImages(source, scrapedData),
-                source: 'ai_generated',
-                sourceUrls: sourceUrls.length > 0 ? sourceUrls : undefined
-            };
-        }
-    }
-
-    private optimizeTitleForPlatform(title: string, platform: string): string {
-        // Platform-specific title optimization
-        switch (platform.toLowerCase()) {
-            case 'amazon':
-                return title.replace(/[^\w\s\-]/g, '').substring(0, 200); // Amazon title limits
-            case 'shopify':
-                return title.substring(0, 255); // Shopify title limits
-            case 'ebay':
-                return title.substring(0, 80); // eBay title limits
-            default:
-                return title.substring(0, 200);
-        }
-    }
-
-    private optimizeDescriptionForPlatform(content: string, platform: string, customPrompt?: string): string {
-        if (customPrompt) {
-            return `${customPrompt}\n\n${content}`.substring(0, 2000);
-        }
-
-        switch (platform.toLowerCase()) {
-            case 'amazon':
-                // Amazon prefers bullet points
-                return this.convertToAmazonFormat(content);
-            case 'shopify':
-                // Shopify allows rich HTML
-                return this.convertToShopifyFormat(content);
-            case 'ebay':
-                // eBay allows HTML but simpler
-                return this.convertToEbayFormat(content);
-            default:
-                return content.substring(0, 1000);
-        }
-    }
-
-    private convertToAmazonFormat(content: string): string {
-        const sentences = content.split('.').filter(s => s.trim().length > 10);
-        return sentences.slice(0, 5).map(s => `• ${s.trim()}`).join('\n');
-    }
-
-    private convertToShopifyFormat(content: string): string {
-        return content.replace(/\n/g, '<br>').substring(0, 2000);
-    }
-
-    private convertToEbayFormat(content: string): string {
-        return content.replace(/\n/g, '<br>').substring(0, 1000);
-    }
-
-    private extractSpecifications(content: string): any {
-        // Simple spec extraction
-        const specs: any = {};
-        const lines = content.split('\n');
-        
-        for (const line of lines) {
-            if (line.includes(':')) {
-                const [key, value] = line.split(':').map(s => s.trim());
-                if (key.length < 30 && value.length < 100) {
-                    specs[key] = value;
+            // Use AI Generation Service if we have scraped data
+            let aiGeneratedDetails: any = null;
+            if (scrapedData.length > 0) {
+                logs?.push(`🔥 Calling AI Generation Service with scraped data for ${platform.name}`);
+                
+                // Use generateProductDetailsFromScrapedData for scraped content
+                const fullDetails = await this.aiGenerationService.generateProductDetailsFromScrapedData(
+                    scrapedData,
+                    `Generate ${platform.name} listing for: ${selectedMatchContext?.visual_matches?.[0]?.title || 'product'}`,
+                    userFlow || 'general',
+                    // Pass user selections and platform requirements
+                    {
+                        selectedSerpApiResult: source.data?.selectedResult || source.selectedMatch,
+                        platformRequests: [{
+                            platform: platform.name,
+                            fieldSources: platform.fieldSources ? { description: platform.fieldSources } : undefined,
+                            customPrompt: platform.customPrompt
+                        }],
+                        targetSites: scrapedData.map(s => new URL(s.url).hostname)
+                    }
+                );
+                
+                if (fullDetails && fullDetails[platform.name]) {
+                    aiGeneratedDetails = fullDetails[platform.name];
+                } else if (fullDetails) {
+                    // Use first platform data or generic data
+                    aiGeneratedDetails = Object.values(fullDetails)[0] || fullDetails;
+                }
+            } else if (coverImageUrl) {
+                logs?.push(`🖼️ Calling AI Generation Service with image for ${platform.name}`);
+                
+                // Use generateProductDetails for image-based generation
+                const fullDetails = await this.aiGenerationService.generateProductDetails(
+                    [coverImageUrl],
+                    coverImageUrl,
+                    [platform.name],
+                    selectedMatchContext,
+                    enhancedWebData
+                );
+                
+                if (fullDetails && fullDetails[platform.name]) {
+                    aiGeneratedDetails = fullDetails[platform.name];
                 }
             }
+
+            // Build result from AI generation or fallback
+            if (aiGeneratedDetails) {
+                logs?.push(`✨ AI generated high-quality ${platform.name} listing`);
+                
+                return {
+                    title: aiGeneratedDetails.title || 'AI Generated Product',
+                    description: aiGeneratedDetails.description || 'AI generated description',
+                    price: aiGeneratedDetails.price || 0,
+                    images: this.extractImages(source, scrapedData),
+                    source: 'ai_generated',
+                    sourceUrls: scrapedData.map(s => s.url),
+                    // Include additional AI-generated fields
+                    brand: aiGeneratedDetails.brand,
+                    tags: aiGeneratedDetails.tags,
+                    categorySuggestion: aiGeneratedDetails.categorySuggestion,
+                    specifications: aiGeneratedDetails.specifications || aiGeneratedDetails
+                };
+            } else {
+                // Fallback when AI generation fails
+                logs?.push(`⚠️ AI generation failed, using fallback for ${platform.name}`);
+                
+                const fallbackTitle = source.selectedMatch?.title || 
+                                     source.data?.selectedResult?.title || 
+                                     'Product Listing';
+                const fallbackDescription = source.selectedMatch?.description || 
+                                           source.data?.selectedResult?.snippet || 
+                                           scrapedData[0]?.content?.content || 
+                                           'Product description';
+                const fallbackPrice = source.selectedMatch?.price || 
+                                     source.data?.selectedResult?.price || 
+                                     0;
+
+                return {
+                    title: fallbackTitle,
+                    description: fallbackDescription,
+                    price: fallbackPrice,
+                    images: this.extractImages(source, scrapedData),
+                    source: 'fallback',
+                    sourceUrls: scrapedData.map(s => s.url)
+                };
+            }
+
+        } catch (error) {
+            logs?.push(`💥 AI generation error for ${platform.name}: ${error.message}`);
+            this.logger.error(`AI generation failed for ${platform.name}: ${error.message}`, error.stack);
+            
+            // Simple fallback
+            return {
+                title: 'Product Listing',
+                description: 'Product description',
+                price: 0,
+                images: [],
+                source: 'error_fallback',
+                sourceUrls: []
+            };
         }
-        
-        return specs;
     }
 
     private extractImages(source: any, scrapedData: any[]): string[] {
@@ -3079,13 +2894,6 @@ Return JSON with: title, description, price, specifications
         }
         
         return [...new Set(images)]; // Remove duplicates
-    }
-
-    private determineContentSource(platform: any, scrapedData: any[], userFlow?: string): 'ai_generated' | 'scraped_content' | 'hybrid' {
-        if (platform.useScrapedData && scrapedData.length > 0) {
-            return userFlow === 'normal_search' ? 'hybrid' : 'scraped_content';
-        }
-        return 'ai_generated';
     }
 
     private extractPriceFromContent(content: string): number {
@@ -3432,6 +3240,275 @@ Return JSON with: title, description, price, specifications
         } catch (error) {
             this.logger.error(`[GET /orchestrate/session] User: ${userId} - Error: ${error.message}`, error.stack);
             throw new InternalServerErrorException(`Failed to fetch session: ${error.message}`);
+        }
+    }
+
+    /**
+     * 🔥 BULK LIQUIDATION ENDPOINT - Perfect for liquidation use cases
+     * Takes multiple images, runs SerpAPI on each, returns organized results per product
+     */
+    @Post('orchestrate/bulk-recognize')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 3, ttl: 120000 }}) // 3 requests per 2 minutes (resource intensive)
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.OK)
+    async bulkRecognize(
+        @Body() bulkRequest: {
+            products: Array<{
+                images: Array<{
+                    url?: string;
+                    base64?: string;
+                    metadata?: any;
+                }>;
+                textQuery?: string; // Optional text hint for each product
+                productId?: string; // Optional: If user wants to associate with specific ID
+            }>;
+            searchOptions?: {
+                enhanceWithGroq?: boolean;
+                fallbackSearchAddresses?: string[];
+                businessTemplate?: string;
+            };
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        sessionId: string;
+        results: Array<{
+            productIndex: number;
+            productId?: string; // User-provided ID if any
+            primaryImage: string;
+            textQuery?: string;
+            databaseMatches: any[]; // Quick scan of your database
+            externalMatches: any[]; // SerpAPI results
+            confidence: 'high' | 'medium' | 'low';
+            processingTimeMs: number;
+            recommendedAction: 'show_database_match' | 'show_external_matches' | 'manual_entry';
+            serpApiAnalysis?: {
+                analysisId: string;
+                rawData: string;
+                metadata: any;
+            } | null;
+        }>;
+        summary: {
+            totalProducts: number;
+            highConfidenceCount: number;
+            mediumConfidenceCount: number;
+            lowConfidenceCount: number;
+            estimatedCostPerProduct: number;
+            totalProcessingTimeMs: number;
+        };
+        nextSteps: {
+            canProceedToGenerate: boolean;
+            requiresUserSelection: boolean;
+            suggestedBatchSize: number;
+        };
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        const sessionId = `bulk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const totalProducts = bulkRequest.products.length;
+
+        // Validate bulk request size
+        if (totalProducts === 0) {
+            throw new BadRequestException('At least one product is required');
+        }
+        if (totalProducts > 50) {
+            throw new BadRequestException('Maximum 50 products per bulk request. Please split into smaller batches.');
+        }
+
+        this.logger.log(`[POST /orchestrate/bulk-recognize] User: ${userId} - Processing ${totalProducts} products in session ${sessionId}`);
+
+        try {
+            const startTime = Date.now();
+            const results: Array<{
+                productIndex: number;
+                productId?: string;
+                primaryImage: string;
+                textQuery?: string;
+                databaseMatches: any[];
+                externalMatches: any[];
+                confidence: 'high' | 'medium' | 'low';
+                processingTimeMs: number;
+                recommendedAction: 'show_database_match' | 'show_external_matches' | 'manual_entry';
+                serpApiAnalysis?: {
+                    analysisId: string;
+                    rawData: string;
+                    metadata: any;
+                } | null;
+            }> = [];
+
+            // Process each product
+            for (let i = 0; i < bulkRequest.products.length; i++) {
+                const product = bulkRequest.products[i];
+                const productStartTime = Date.now();
+                
+                this.logger.log(`[Bulk Recognize] Processing product ${i + 1}/${totalProducts}`);
+
+                // Get primary image (first image)
+                const primaryImage = product.images[0];
+                if (!primaryImage?.url && !primaryImage?.base64) {
+                    throw new BadRequestException(`Product ${i + 1}: Primary image is required`);
+                }
+
+                const primaryImageUrl = primaryImage.url || `data:image/jpeg;base64,${primaryImage.base64}`;
+
+                // Step 1: Quick database scan for duplicates
+                let databaseMatches: any[] = [];
+                try {
+                    const quickScanResult = await this.quickProductScan({
+                        imageUrl: primaryImage.url,
+                        imageBase64: primaryImage.base64,
+                        textQuery: product.textQuery,
+                        businessTemplate: bulkRequest.searchOptions?.businessTemplate || 'general',
+                        threshold: 0.7
+                    }, req);
+                    
+                    databaseMatches = quickScanResult.matches || [];
+                } catch (error) {
+                    this.logger.warn(`Database scan failed for product ${i + 1}: ${error.message}`);
+                }
+
+                // Step 2: Always call analyze (SerpAPI) for external matches
+                let externalMatches: any[] = [];
+                let serpApiAnalysis: any = null;
+                
+                try {
+                    this.logger.log(`[Bulk Recognize] Calling analyze for product ${i + 1}`);
+                    
+                    // Call analyze endpoint to get SerpAPI data
+                    const analysisResult = await this.productsService.analyzeAndCreateDraft(
+                        userId, 
+                        primaryImageUrl
+                    );
+                    
+                    serpApiAnalysis = analysisResult.analysis;
+                    
+                    // Extract visual matches from analysis if available
+                    if (serpApiAnalysis?.GeneratedText) {
+                        const serpData = JSON.parse(serpApiAnalysis.GeneratedText);
+                        externalMatches = serpData.visual_matches || [];
+                    }
+                    
+                    this.logger.log(`[Bulk Recognize] Analyze complete for product ${i + 1}, found ${externalMatches.length} external matches`);
+                    
+                } catch (error) {
+                    this.logger.warn(`Analyze failed for product ${i + 1}: ${error.message}`);
+                    externalMatches = [];
+                }
+
+                // Step 3: Determine confidence and recommended action
+                const topDatabaseScore = databaseMatches.length > 0 ? Math.max(...databaseMatches.map(m => m.combinedScore || 0)) : 0;
+                const externalMatchesCount = externalMatches.length;
+
+                let confidence: 'high' | 'medium' | 'low';
+                let recommendedAction: 'show_database_match' | 'show_external_matches' | 'manual_entry';
+
+                if (topDatabaseScore >= 0.90) {
+                    confidence = 'high';
+                    recommendedAction = 'show_database_match';
+                } else if (externalMatchesCount >= 3) {
+                    confidence = 'medium';  
+                    recommendedAction = 'show_external_matches';
+                } else if (externalMatchesCount >= 1) {
+                    confidence = 'medium';
+                    recommendedAction = 'show_external_matches';
+                } else {
+                    confidence = 'low';
+                    recommendedAction = 'manual_entry';
+                }
+
+                const productProcessingTime = Date.now() - productStartTime;
+
+                results.push({
+                    productIndex: i,
+                    productId: product.productId,
+                    primaryImage: primaryImageUrl,
+                    textQuery: product.textQuery,
+                    databaseMatches,
+                    externalMatches,
+                    confidence,
+                    processingTimeMs: productProcessingTime,
+                    recommendedAction,
+                    // Include SerpAPI analysis for frontend to use in generation step
+                    serpApiAnalysis: serpApiAnalysis ? {
+                        analysisId: serpApiAnalysis.Id,
+                        rawData: serpApiAnalysis.GeneratedText,
+                        metadata: serpApiAnalysis.Metadata
+                    } : null
+                });
+
+                // Brief pause between products to avoid rate limits
+                if (i < bulkRequest.products.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+            }
+
+            const totalProcessingTime = Date.now() - startTime;
+
+            // Calculate summary statistics
+            const highConfidenceCount = results.filter(r => r.confidence === 'high').length;
+            const mediumConfidenceCount = results.filter(r => r.confidence === 'medium').length;
+            const lowConfidenceCount = results.filter(r => r.confidence === 'low').length;
+
+            // Log bulk processing completion
+            await this.activityLogService.logUserAction(
+                'BULK_RECOGNITION_COMPLETED',
+                'Success',
+                `Bulk recognition completed for ${totalProducts} products`,
+                {
+                    action: 'bulk_recognize',
+                    inputData: {
+                        sessionId,
+                        totalProducts,
+                        highConfidenceCount,
+                        mediumConfidenceCount,
+                        lowConfidenceCount,
+                        totalProcessingTimeMs: totalProcessingTime
+                    }
+                },
+                userId
+            );
+
+            return {
+                sessionId,
+                results,
+                summary: {
+                    totalProducts,
+                    highConfidenceCount,
+                    mediumConfidenceCount,
+                    lowConfidenceCount,
+                    estimatedCostPerProduct: 0.05, // Rough estimate
+                    totalProcessingTimeMs: totalProcessingTime
+                },
+                nextSteps: {
+                    canProceedToGenerate: highConfidenceCount + mediumConfidenceCount > 0,
+                    requiresUserSelection: mediumConfidenceCount + lowConfidenceCount > 0,
+                    suggestedBatchSize: totalProducts <= 10 ? totalProducts : Math.ceil(totalProducts / 3)
+                }
+            };
+
+        } catch (error) {
+            this.logger.error(`[POST /orchestrate/bulk-recognize] User: ${userId} - Error: ${error.message}`, error.stack);
+            
+            await this.activityLogService.logUserAction(
+                'BULK_RECOGNITION_FAILED',
+                'Error',
+                `Bulk recognition failed: ${error.message}`,
+                {
+                    action: 'bulk_recognize',
+                    inputData: {
+                        sessionId,
+                        totalProducts,
+                        error: error.message
+                    }
+                },
+                userId
+            );
+            
+            throw new InternalServerErrorException(`Bulk recognition failed: ${error.message}`);
         }
     }
 }
