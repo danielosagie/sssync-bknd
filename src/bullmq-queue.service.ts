@@ -10,7 +10,6 @@ import { ProductAnalysisProcessor } from './products/processors/product-analysis
 import { ProductAnalysisJobData } from './products/types/product-analysis-job.types';
 import { MatchJobProcessor } from './products/processors/match-job.processor';
 import { MatchJobData } from './products/types/match-job.types';
-import { ModuleRef } from '@nestjs/core';
 
 const BULLMQ_HIGH_QUEUE_NAME = 'bullmq-high-queue';
 
@@ -20,14 +19,17 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
   private connection: IORedis;
   private queue: Queue;
   private worker: Worker | null = null;
-  private initialScanProcessor: InitialScanProcessor;
-  private initialSyncProcessor: InitialSyncProcessor;
-  private productAnalysisProcessor: ProductAnalysisProcessor;
-  private matchJobProcessor: MatchJobProcessor;
 
   constructor(
     private readonly configService: ConfigService,
-    private readonly moduleRef: ModuleRef,
+    @Inject(forwardRef(() => InitialScanProcessor))
+    private readonly initialScanProcessor: InitialScanProcessor, 
+    @Inject(forwardRef(() => InitialSyncProcessor))
+    private readonly initialSyncProcessor: InitialSyncProcessor,
+    @Inject(forwardRef(() => ProductAnalysisProcessor))
+    private readonly productAnalysisProcessor: ProductAnalysisProcessor,
+    @Inject(forwardRef(() => MatchJobProcessor))
+    private readonly matchJobProcessor: MatchJobProcessor,
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
@@ -111,10 +113,6 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
 
   async onModuleInit() {
     this.logger.log('BullMQQueueService initializing worker...');
-    this.initialScanProcessor = await this.moduleRef.resolve(InitialScanProcessor);
-    this.initialSyncProcessor = await this.moduleRef.resolve(InitialSyncProcessor);
-    this.productAnalysisProcessor = await this.moduleRef.resolve(ProductAnalysisProcessor);
-    this.matchJobProcessor = await this.moduleRef.resolve(MatchJobProcessor);
     this.initializeWorker(); // Initialize worker now that dependencies should be resolved
   }
 

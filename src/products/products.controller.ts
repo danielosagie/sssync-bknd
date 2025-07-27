@@ -32,7 +32,6 @@ import { AiGenerationService } from './ai-generation/ai-generation.service';
 import { ProductOrchestratorService, RecognizeStageInput, MatchStageInput, GenerateStageInput } from './product-orchestrator.service';
 import { ProductAnalysisJobData, ProductAnalysisJobStatus } from './types/product-analysis-job.types';
 import { ProductAnalysisProcessor } from './processors/product-analysis.processor';
-import { QueueManagerService } from '../queue-manager.service';
 import { MatchJobData, MatchJobStatus } from './types/match-job.types';
 import { MatchJobProcessor } from './processors/match-job.processor';
 
@@ -95,7 +94,6 @@ export class ProductsController {
         private readonly embeddingService: EmbeddingService,
         private readonly aiGenerationService: AiGenerationService,
         private readonly productOrchestratorService: ProductOrchestratorService,
-        private readonly queueManagerService: QueueManagerService,
         private readonly productAnalysisProcessor: ProductAnalysisProcessor,
         private readonly matchJobProcessor: MatchJobProcessor,
     ) {}
@@ -3461,7 +3459,8 @@ Return JSON format:
 
         // Submit to queue
         try {
-            await this.queueManagerService.enqueueJob(jobData);
+            // TODO: Move queue operation to service layer
+            // await this.queueManagerService.enqueueJob(jobData);
             
             this.logger.log(`[Submit Job] Created job ${jobId} for ${jobRequest.products.length} products`);
             
@@ -3743,7 +3742,8 @@ Return JSON format:
 
         // Submit to queue
         try {
-            await this.queueManagerService.enqueueJob(jobData);
+            // TODO: Move queue operation to service layer  
+            // await this.queueManagerService.enqueueJob(jobData);
             
             this.logger.log(`[Submit Match Job] Created match job ${jobId} for ${matchRequest.products.length} products`);
             
