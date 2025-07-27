@@ -22,7 +22,6 @@ import { InitialScanProcessor } from './processors/initial-scan.processor';
 import { InitialSyncProcessor } from './processors/initial-sync.processor';
 import { ProductsModule } from '../products/products.module';
 import { PlatformProductMappingsModule } from '../platform-product-mappings/platform-product-mappings.module';
-import { QueueModule } from '../queue.module';
 import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.module';
 import { UltraLowQueueService } from '../ultra-low-queue.service';
 import { BullMQQueueService } from '../bullmq-queue.service';
@@ -42,7 +41,6 @@ import {
     CommonModule,
     CanonicalDataModule,
     PlatformProductMappingsModule,
-    QueueModule,
     ProductsModule,
     PlatformAdaptersModule,
     BullModule.forRootAsync({

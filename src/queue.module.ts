@@ -6,6 +6,9 @@ import {
     INITIAL_SCAN_QUEUE,
     INITIAL_SYNC_QUEUE,
 } from './sync-engine/sync-engine.constants';
+import { BullMQQueueService } from './bullmq-queue.service';
+import { QueueManagerService } from './queue-manager.service';
+import { UltraLowQueueService } from './ultra-low-queue.service';
 
 @Global()
 @Module({
@@ -17,6 +20,7 @@ import {
       { name: INITIAL_SYNC_QUEUE }
     ),
   ],
-  exports: [BullModule],
+  providers: [BullMQQueueService, QueueManagerService, UltraLowQueueService],
+  exports: [BullModule, BullMQQueueService, QueueManagerService],
 })
 export class QueueModule {} 

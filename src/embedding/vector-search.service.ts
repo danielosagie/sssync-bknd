@@ -88,6 +88,8 @@ export class VectorSearchService {
    */
   async searchByImage(
     imageInput: { imageUrl?: string; imageBase64?: string },
+    imageEmbedding: number[],
+  
     options: {
       limit?: number;
       threshold?: number;
@@ -99,10 +101,13 @@ export class VectorSearchService {
       this.logger.log('Searching for products by image similarity');
 
       // Generate embedding for the image
+      
+      /*
       const imageEmbedding = await this.embeddingService.generateImageEmbedding(
         imageInput,
         options.userId
       );
+      */
 
       // Search for similar products
       const matches = await this.embeddingService.searchSimilarProducts({

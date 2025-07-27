@@ -3,6 +3,8 @@ import { SupabaseClient } from '@supabase/supabase-js';
 import { SupabaseService } from '../common/supabase.service';
 import { ImageRecognitionService, SerpApiLensResponse, VisualMatch } from './image-recognition/image-recognition.service';
 import { AiGenerationService, GeneratedDetails } from './ai-generation/ai-generation.service';
+import { EmbeddingService } from '../embedding/embedding.service';
+import { RerankerService } from '../embedding/reranker.service';
 import { ConfigService } from '@nestjs/config';
 import * as SerpApiClient from 'google-search-results-nodejs';
 import { PublishProductDto, PublishIntent } from './dto/publish-product.dto';
@@ -12,6 +14,7 @@ import { ActivityLogService } from '../common/activity-log.service';
 import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
 import { Product, ProductVariant, ProductImage } from '../common/types/supabase.types';
 import * as QueueManager from '../queue-manager';
+import { CompareResultsInput, CompareResultsOutput } from './types/match-job.types';
 
 // Export the types
 export type { SerpApiLensResponse, VisualMatch } from './image-recognition/image-recognition.service';
@@ -64,6 +67,8 @@ export class ProductsService {
     private readonly supabaseService: SupabaseService,
     private readonly imageRecognitionService: ImageRecognitionService,
     private readonly aiGenerationService: AiGenerationService,
+    private readonly embeddingService: EmbeddingService,
+    private readonly rerankerService: RerankerService,
     private readonly configService: ConfigService,
     private readonly adapterRegistry: PlatformAdapterRegistry,
     private readonly connectionsService: PlatformConnectionsService,
@@ -883,5 +888,382 @@ export class ProductsService {
     }
 
     return shopifyOptions;
+  }
+
+  /**
+   * 🎯 NEW: Compare target image with SerpAPI results using embeddings and reranking
+   * 
+   * This function:
+   * 1. Downloads images from SerpAPI results
+   * 2. Embeds all results (title + image) permanently
+   * 3. Embeds target image
+   * 4. Vector searches by target image for top 7
+   * 5. Reranks those top 7 results
+   * 6. Returns ranked results with confidence
+   */
+  async compareResults(input: CompareResultsInput): Promise<CompareResultsOutput> {
+    const startTime = Date.now();
+    const {
+      targetImage,
+      serpApiResults,
+      productId,
+      variantId,
+      userId,
+      options = {}
+    } = input;
+
+    const vectorSearchLimit = options.vectorSearchLimit || 7;
+    const storeEmbeddings = options.storeEmbeddings !== false; // Default: true
+    const useReranking = options.useReranking !== false; // Default: true
+
+    this.logger.log(`[compareResults] Starting comparison for ${serpApiResults.length} SerpAPI results, reranking: ${useReranking}`);
+
+    try {
+      let totalEmbeddingsStored = 0;
+      let targetImageEmbeddingId: string | undefined;
+      let vectorSearchResults = 0;
+      let rerankerInputCount = 0;
+      let embeddingTimeMs = 0;
+      let vectorSearchTimeMs = 0;
+      let rerankingTimeMs = 0;
+
+      // Step 1: Embed target image
+      this.logger.debug(`[compareResults] Embedding target image`);
+      const targetEmbedding = await this.embeddingService.createProductEmbedding({
+        images: [targetImage]
+      });
+
+      // Store target image embedding if needed
+      if (storeEmbeddings) {
+        const targetEmbeddingId = `target_${productId}_${Date.now()}`;
+        await this.embeddingService.storeProductEmbedding({
+          productId,
+          variantId,
+          combinedEmbedding: targetEmbedding,
+          imageUrl: targetImage,
+          productText: `Target image for product ${productId}`,
+          sourceType: 'target_image',
+          sourceUrl: targetImage
+        });
+        targetImageEmbeddingId = targetEmbeddingId;
+        totalEmbeddingsStored++;
+      }
+
+      // Step 2: Process all SerpAPI results (embed title + image)
+      this.logger.debug(`[compareResults] Processing ${serpApiResults.length} SerpAPI results`);
+      const embeddingStart = Date.now();
+      const serpEmbeddingData: Array<{
+        index: number;
+        embeddingId?: string;
+        embedding: number[];
+        title: string;
+        link: string;
+        imageUrl?: string;
+        snippet?: string;
+      }> = [];
+
+      for (let i = 0; i < serpApiResults.length; i++) {
+        const result = serpApiResults[i];
+        const title = result.title || result.snippet || 'Untitled';
+        const link = result.link || '';
+        const imageUrl = result.thumbnail || result.image || null;
+        const snippet = result.snippet || '';
+
+        try {
+          // Create embedding for this result (title + image if available)
+          const embeddingData: any = { title, description: snippet };
+          if (imageUrl) {
+            embeddingData.images = [imageUrl];
+          }
+
+          const resultEmbedding = await this.embeddingService.createProductEmbedding(embeddingData);
+
+          // Store the embedding permanently
+          if (storeEmbeddings) {
+            const embeddingId = `serp_${productId}_${i}_${Date.now()}`;
+            await this.embeddingService.storeProductEmbedding({
+              productId,
+              variantId,
+              combinedEmbedding: resultEmbedding,
+              imageUrl,
+              productText: `${title} ${snippet}`.trim(),
+              sourceType: 'serpapi_result',
+              sourceUrl: link,
+              searchKeywords: [title]
+            });
+            totalEmbeddingsStored++;
+
+            serpEmbeddingData.push({
+              index: i,
+              embeddingId,
+              embedding: resultEmbedding,
+              title,
+              link,
+              imageUrl,
+              snippet
+            });
+          } else {
+            serpEmbeddingData.push({
+              index: i,
+              embedding: resultEmbedding,
+              title,
+              link,
+              imageUrl,
+              snippet
+            });
+          }
+
+        } catch (error) {
+          this.logger.warn(`[compareResults] Failed to embed SerpAPI result ${i}: ${error.message}`);
+          // Continue with next result
+        }
+      }
+
+      embeddingTimeMs = Date.now() - embeddingStart;
+      this.logger.log(`[compareResults] Successfully embedded ${serpEmbeddingData.length}/${serpApiResults.length} SerpAPI results in ${embeddingTimeMs}ms`);
+
+      // Step 3: Vector search to find top matches
+      this.logger.debug(`[compareResults] Performing vector search for top ${vectorSearchLimit} matches`);
+      const vectorSearchStart = Date.now();
+      
+      // Calculate similarities manually (since we have embeddings in memory)
+      const similarities = serpEmbeddingData.map(item => ({
+        ...item,
+        similarity: this.embeddingService.calculateEmbeddingSimilarity(targetEmbedding, item.embedding)
+      }));
+
+      // Sort by similarity and take top N
+      const topMatches = similarities
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, vectorSearchLimit);
+
+      vectorSearchResults = topMatches.length;
+      vectorSearchTimeMs = Date.now() - vectorSearchStart;
+      this.logger.log(`[compareResults] Vector search found ${vectorSearchResults} matches in ${vectorSearchTimeMs}ms`);
+
+      // Step 4: Rerank the top matches (optional)
+      if (topMatches.length > 0) {
+        let rerankedResults: any[] = [];
+        let confidence: 'high' | 'medium' | 'low' = 'low';
+        
+        if (useReranking) {
+          this.logger.debug(`[compareResults] Reranking ${topMatches.length} top matches`);
+          const rerankingStart = Date.now();
+          
+          // Prepare candidates for reranker
+          const rerankerCandidates = topMatches.map(match => ({
+            id: match.index.toString(),
+            title: match.title,
+            description: match.snippet,
+            imageUrl: match.imageUrl,
+            metadata: {
+              link: match.link,
+              serpApiIndex: match.index,
+              embeddingId: match.embeddingId,
+              vectorSimilarity: match.similarity
+            }
+          }));
+
+          rerankerInputCount = rerankerCandidates.length;
+
+          // Use reranker to order them
+          const rerankerResponse = await this.rerankerService.rerankCandidates({
+            query: `Target image for comparison`, // Simple query since we're doing image-based matching
+            targetUrl: targetImage, // Use target image as context
+            candidates: rerankerCandidates,
+            userId,
+            maxCandidates: vectorSearchLimit
+          });
+
+          rerankingTimeMs = Date.now() - rerankingStart;
+
+          // Build final ranked results
+          rerankedResults = rerankerResponse.rankedCandidates.map((candidate, index) => ({
+            rank: index + 1,
+            score: candidate.score,
+            serpApiIndex: candidate.metadata.serpApiIndex,
+            title: candidate.title,
+            link: candidate.metadata.link,
+            imageUrl: candidate.imageUrl,
+            snippet: candidate.description,
+            embeddingId: candidate.metadata.embeddingId
+          }));
+
+          // Determine confidence based on top score
+          if (rerankerResponse.topScore >= 0.85) {
+            confidence = 'high';
+          } else if (rerankerResponse.topScore >= 0.65) {
+            confidence = 'medium';
+          }
+          
+        } else {
+          // Skip reranking - use vector search order with similarity scores
+          this.logger.debug(`[compareResults] Skipping reranking, using vector search order`);
+          
+          rerankedResults = topMatches.map((match, index) => ({
+            rank: index + 1,
+            score: match.similarity,
+            serpApiIndex: match.index,
+            title: match.title,
+            link: match.link,
+            imageUrl: match.imageUrl,
+            snippet: match.snippet,
+            embeddingId: match.embeddingId
+          }));
+
+          // Determine confidence based on top similarity
+          const topSimilarity = topMatches[0]?.similarity || 0;
+          if (topSimilarity >= 0.90) {
+            confidence = 'high';
+          } else if (topSimilarity >= 0.75) {
+            confidence = 'medium';
+          }
+        }
+
+        const processingTime = Date.now() - startTime;
+
+        this.logger.log(`[compareResults] Completed in ${processingTime}ms with ${confidence} confidence (reranking: ${useReranking})`);
+
+        return {
+          rerankedResults,
+          confidence,
+          vectorSearchFoundResults: true,
+          totalEmbeddingsStored,
+          processingTimeMs: processingTime,
+          metadata: {
+            targetImageEmbeddingId,
+            vectorSearchResults,
+            rerankerInputCount,
+            embeddingTimeMs,
+            vectorSearchTimeMs,
+            rerankingTimeMs
+          }
+        };
+
+      } else {
+        // No vector search results - return low confidence with empty results
+        this.logger.warn(`[compareResults] No vector search results found - returning low confidence`);
+        
+        const processingTime = Date.now() - startTime;
+
+        return {
+          rerankedResults: [],
+          confidence: 'low',
+          vectorSearchFoundResults: false,
+          totalEmbeddingsStored,
+          processingTimeMs: processingTime,
+          metadata: {
+            targetImageEmbeddingId,
+            vectorSearchResults: 0,
+            rerankerInputCount: 0,
+            embeddingTimeMs,
+            vectorSearchTimeMs,
+            rerankingTimeMs
+          }
+        };
+      }
+
+    } catch (error) {
+      this.logger.error(`[compareResults] Error during comparison: ${error.message}`, error.stack);
+      throw new Error(`Product comparison failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Performs a quick vector search against the database.
+   * This logic is now in the service to be shared by the controller and processors.
+   */
+  async quickProductScan(
+      scanData: {
+          imageUrl?: string;
+          imageBase64?: string;
+          textQuery?: string;
+          businessTemplate?: string;
+          threshold?: number;
+      },
+      userId: string,
+  ): Promise<{
+      matches: any[];
+      confidence: 'high' | 'medium' | 'low';
+      processingTimeMs: number;
+      recommendedAction: string;
+      embeddings: {
+          imageEmbedding?: number[];
+          textEmbedding?: number[];
+      };
+  }> {
+      const startTime = Date.now();
+      this.logger.log(`[ProductsService.quickProductScan] User: ${userId} - Quick scan initiated`);
+
+      try {
+          // Generate embeddings using EmbeddingService
+          const embeddings: any = {};
+
+          if (scanData.imageUrl || scanData.imageBase64) {
+              embeddings.imageEmbedding = await this.embeddingService.generateImageEmbedding({
+                  imageUrl: scanData.imageUrl,
+                  imageBase64: scanData.imageBase64,
+                  instruction: `Encode this ${scanData.businessTemplate || 'product'} image for similarity search focusing on key visual features.`
+              }, userId);
+          }
+
+          if (scanData.textQuery) {
+              embeddings.textEmbedding = await this.embeddingService.generateTextEmbedding({
+                  title: scanData.textQuery,
+                  businessTemplate: scanData.businessTemplate
+              }, userId);
+          }
+
+          // Quick vector search
+          const matches = await this.embeddingService.searchSimilarProducts({
+              imageEmbedding: embeddings.imageEmbedding,
+              textEmbedding: embeddings.textEmbedding,
+              businessTemplate: scanData.businessTemplate,
+              threshold: scanData.threshold || 0.7,
+              limit: 10
+          });
+
+          // Determine confidence based on top score
+          const topScore = matches.length > 0 ? Math.max(...matches.map(m => m.combinedScore)) : 0;
+          let confidence: 'high' | 'medium' | 'low';
+          let recommendedAction: string;
+
+          if (topScore >= 0.95) {
+              confidence = 'high';
+              recommendedAction = 'show_single_match';
+          } else if (topScore >= 0.70) {
+              confidence = 'medium';
+              recommendedAction = 'show_multiple_candidates';
+          } else {
+              confidence = 'low';
+              recommendedAction = 'proceed_to_reranker';
+          }
+
+          const processingTimeMs = Date.now() - startTime;
+
+          this.logger.log(`[ProductsService.quickProductScan] User: ${userId} - Completed in ${processingTimeMs}ms, confidence: ${confidence}, matches: ${matches.length}`);
+
+          return {
+              matches: matches.slice(0, 5), // Return top 5 for UI
+              confidence,
+              processingTimeMs,
+              recommendedAction,
+              embeddings: {
+                  imageEmbedding: embeddings.imageEmbedding,
+                  textEmbedding: embeddings.textEmbedding
+              }
+          };
+
+      } catch (error) {
+          this.logger.error(`[ProductsService.quickProductScan] User: ${userId} - Error: ${error.message}`, error.stack);
+          
+          if (error.message.includes('Local file URLs') || 
+              error.message.includes('Invalid image URL format') ||
+              error.message.includes('Either imageUrl or imageBase64 must be provided')) {
+              throw new BadRequestException(error.message);
+          }
+          
+          throw new InternalServerErrorException(`Quick scan failed: ${error.message}`);
+      }
   }
 }

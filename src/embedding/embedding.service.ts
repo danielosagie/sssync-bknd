@@ -329,6 +329,92 @@ export class EmbeddingService {
   }
 
   /**
+   * 🎯 NEW: Generate and store embeddings using the improved SigLIP approach
+   * This replaces the old method and handles all scenarios correctly
+   */
+  async generateAndStoreProductEmbedding(params: {
+    productId: string;
+    variantId: string;
+    images?: string[];           // Array of image URLs
+    title?: string;             
+    description?: string;
+    imageWeight?: number;        // Default: 0.7 (70% image influence)
+    textWeight?: number;         // Default: 0.3 (30% text influence)
+    sourceType: string;
+    sourceUrl?: string;
+    businessTemplate?: string;
+    scrapedData?: any;
+    searchKeywords?: string[];
+  }): Promise<void> {
+    try {
+      // Generate the comprehensive embedding using our new method
+      const finalEmbedding = await this.createProductEmbedding({
+        images: params.images,
+        title: params.title,
+        description: params.description,
+        imageWeight: params.imageWeight,
+        textWeight: params.textWeight,
+      });
+
+      // Generate individual components for backward compatibility
+      let imageEmbedding: number[] | undefined;
+      let textEmbedding: number[] | undefined;
+
+      // Generate image embedding if images provided
+      if (params.images && params.images.length > 0) {
+        const images = params.images; // Type narrowing
+        if (images.length === 1) {
+          imageEmbedding = await this.generateImageEmbedding({ imageUrl: images[0] }, 'system');
+        } else {
+          // For multiple images, use our new combining method
+          const imageEmbeddings: number[][] = [];
+          for (const imageUrl of images) {
+            try {
+              const embedding = await this.generateImageEmbedding({ imageUrl }, 'system');
+              imageEmbeddings.push(embedding);
+            } catch (error) {
+              this.logger.warn(`Failed to process image ${imageUrl}: ${error.message}`);
+            }
+          }
+          if (imageEmbeddings.length > 0) {
+            imageEmbedding = this.combineMultipleImages(imageEmbeddings);
+          }
+        }
+      }
+
+      // Generate text embedding if text provided
+      if (params.title || params.description) {
+        textEmbedding = await this.generateTextEmbedding({
+          title: params.title || '',
+          description: params.description || ''
+        }, 'system');
+      }
+
+      // Store using the existing method
+      await this.storeProductEmbedding({
+        productId: params.productId,
+        variantId: params.variantId,
+        imageEmbedding: imageEmbedding,
+        textEmbedding: textEmbedding,
+        combinedEmbedding: finalEmbedding,  // 🎯 This is the new, improved combined embedding
+        imageUrl: params.images?.[0],
+        productText: `${params.title || ''} ${params.description || ''}`.trim(),
+        sourceType: params.sourceType,
+        sourceUrl: params.sourceUrl,
+        businessTemplate: params.businessTemplate,
+        scrapedData: params.scrapedData,
+        searchKeywords: params.searchKeywords,
+      });
+
+      this.logger.log(`✅ Generated and stored improved embeddings for product ${params.productId}`);
+      
+    } catch (error) {
+      this.logger.error('Failed to generate and store product embedding:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Search similar products using multi-modal embeddings
    */
   async searchSimilarProducts(params: {
@@ -477,18 +563,153 @@ export class EmbeddingService {
     return `Encode this ecommerce product${templateContext}${brandContext} for similarity search. Focus on product features, use cases, target audience, and comparable alternatives.`;
   }
 
+  /**
+   * Normalize a vector to unit length for proper cosine similarity
+   */
+  private normalizeVector(vector: number[]): number[] {
+    const magnitude = Math.sqrt(vector.reduce((sum, val) => sum + val * val, 0));
+    if (magnitude === 0) {
+      this.logger.warn('Zero magnitude vector encountered during normalization');
+      return vector;
+    }
+    return vector.map(val => val / magnitude);
+  }
+
+  /**
+   * Combine multiple embeddings using weighted averaging in the shared SigLIP space.
+   * This preserves the model's learned cross-modal understanding.
+   */
   private combineEmbeddings(
     imageEmbedding: number[], 
     textEmbedding: number[], 
-    imageWeight: number, 
-    textWeight: number
+    imageWeight: number = 0.7, 
+    textWeight: number = 0.3
   ): number[] {
-    // Simple concatenation approach
-    // In production, you might want to use learned combination weights
-    const weightedImage = imageEmbedding.map(x => x * imageWeight);
-    const weightedText = textEmbedding.map(x => x * textWeight);
+    // Normalize both embeddings to unit vectors
+    const normalizedImage = this.normalizeVector(imageEmbedding);
+    const normalizedText = this.normalizeVector(textEmbedding);
     
-    return [...weightedImage, ...weightedText];
+    // Weighted average in the shared embedding space
+    const combined = normalizedImage.map((imgVal, i) => 
+      imgVal * imageWeight + normalizedText[i] * textWeight
+    );
+    
+    // Normalize the final combined vector for proper cosine similarity
+    return this.normalizeVector(combined);
+  }
+
+  /**
+   * Combine multiple image embeddings into a single representative embedding
+   * Useful for products with multiple photos
+   */
+  private combineMultipleImages(imageEmbeddings: number[][]): number[] {
+    if (imageEmbeddings.length === 0) {
+      throw new Error('Cannot combine empty array of embeddings');
+    }
+    
+    if (imageEmbeddings.length === 1) {
+      return this.normalizeVector(imageEmbeddings[0]);
+    }
+
+    // Normalize each image embedding first
+    const normalizedEmbeddings = imageEmbeddings.map(emb => this.normalizeVector(emb));
+    
+    // Average across all images (equal weight)
+    const averaged = normalizedEmbeddings[0].map((_, i) => 
+      normalizedEmbeddings.reduce((sum, emb) => sum + emb[i], 0) / normalizedEmbeddings.length
+    );
+    
+    // Normalize the final averaged vector
+    return this.normalizeVector(averaged);
+  }
+
+  /**
+   * 🎯 Create a comprehensive product embedding that handles ALL scenarios correctly:
+   * 
+   * SCENARIO 1: Single image only
+   *   createProductEmbedding({ images: ['url'] })
+   *   → Returns normalized SigLIP image embedding
+   * 
+   * SCENARIO 2: Multiple images only  
+   *   createProductEmbedding({ images: ['url1', 'url2', 'url3'] })
+   *   → Averages normalized embeddings from all images
+   * 
+   * SCENARIO 3: Text only
+   *   createProductEmbedding({ title: 'iPhone', description: 'Latest phone' })
+   *   → Returns normalized SigLIP text embedding
+   * 
+   * SCENARIO 4: Mixed images + text
+   *   createProductEmbedding({ images: ['url'], title: 'iPhone', imageWeight: 0.7 })
+   *   → Weighted average in shared SigLIP space (preserves cross-modal understanding)
+   * 
+   * 🔑 KEY BENEFITS:
+   * - All embeddings exist in the same SigLIP shared space
+   * - Image of "red car" will be close to text "red car" 
+   * - Multiple images get combined intelligently
+   * - Proper normalization for accurate cosine similarity
+   * - Weights control image vs text importance (default: 70% image, 30% text)
+   * 
+   * ⚠️  REPLACES the old concatenation approach that broke the shared space
+   */
+  async createProductEmbedding(productData: {
+    images?: string[]; // Array of image URLs
+    title?: string;
+    description?: string;
+    imageWeight?: number;
+    textWeight?: number;
+  }): Promise<number[]> {
+    const { images, title, description, imageWeight = 0.7, textWeight = 0.3 } = productData;
+    
+    let finalImageEmbedding: number[] | null = null;
+    let finalTextEmbedding: number[] | null = null;
+
+    // Process images if provided
+    if (images && images.length > 0) {
+      const imageEmbeddings: number[][] = [];
+      
+             for (const imageUrl of images) {
+         try {
+           const embedding = await this.generateImageEmbedding({ imageUrl }, 'system');
+           imageEmbeddings.push(embedding);
+         } catch (error) {
+           this.logger.warn(`Failed to process image ${imageUrl}: ${error.message}`);
+           // Continue with other images
+         }
+       }
+
+      if (imageEmbeddings.length > 0) {
+        finalImageEmbedding = this.combineMultipleImages(imageEmbeddings);
+      }
+    }
+
+    // Process text if provided
+    if (title || description) {
+      const textContent = {
+        title: title || '',
+        description: description || ''
+      };
+      finalTextEmbedding = await this.generateTextEmbedding(textContent, 'system');
+    }
+
+    // Determine final embedding based on available data
+    if (finalImageEmbedding && finalTextEmbedding) {
+      // Mixed: Both image(s) and text
+      this.logger.debug('Creating mixed image+text embedding');
+      return this.combineEmbeddings(finalImageEmbedding, finalTextEmbedding, imageWeight, textWeight);
+      
+    } else if (finalImageEmbedding) {
+      // Image(s) only
+      this.logger.debug(`Creating image-only embedding from ${images?.length} image(s)`);
+      return finalImageEmbedding;
+      
+    } else if (finalTextEmbedding) {
+      // Text only
+      this.logger.debug('Creating text-only embedding');
+      return this.normalizeVector(finalTextEmbedding);
+      
+    } else {
+      throw new Error('No valid images or text provided for embedding generation');
+    }
   }
 
   private async searchByImageEmbedding(embedding: number[], params: any): Promise<ProductMatch[]> {

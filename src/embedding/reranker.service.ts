@@ -17,6 +17,7 @@ export interface RerankerCandidate {
 }
 
 export interface RerankerRequest {
+  targetUrl?: string;
   query: string; // User query or extracted product description
   candidates: RerankerCandidate[];
   userId?: string;
@@ -77,6 +78,8 @@ export class RerankerService {
    */
   async rerankCandidates(request: RerankerRequest): Promise<RerankerResponse> {
     const startTime = Date.now();
+
+    const rerankerRequest = ("of these products" + request.candidates + "which one is the best match for " + request.targetUrl + "?")
     
     try {
       // Prepare candidates for reranking
@@ -96,7 +99,7 @@ export class RerankerService {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          query: request.query,
+          query: rerankerRequest,
           candidates: candidatesForReranker,
           top_k: request.maxCandidates || 10
         }),

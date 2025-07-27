@@ -16,6 +16,8 @@ import { ProductRecognitionService } from './product-recognition.service';
 import { ProductOrchestratorService } from './product-orchestrator.service';
 import { EmbeddingModule } from '../embedding/embedding.module';
 import { RerankerService } from '../embedding/reranker.service';
+import { ProductAnalysisProcessor } from './processors/product-analysis.processor';
+import { MatchJobProcessor } from './processors/match-job.processor';
 
 @Module({
   imports: [
@@ -25,7 +27,7 @@ import { RerankerService } from '../embedding/reranker.service';
     PlatformProductMappingsModule,
     forwardRef(() => PlatformConnectionsModule),
     forwardRef(() => PlatformAdaptersModule),
-    EmbeddingModule,
+    forwardRef(() => EmbeddingModule),
   ],
   controllers: [ProductsController],
   providers: [
@@ -38,6 +40,8 @@ import { RerankerService } from '../embedding/reranker.service';
     ProductRecognitionService,
     ProductOrchestratorService,
     RerankerService,
+    ProductAnalysisProcessor,
+    MatchJobProcessor,
   ],
   exports: [
     ProductsService, 
@@ -47,6 +51,8 @@ import { RerankerService } from '../embedding/reranker.service';
     ActivityLogService,
     ProductRecognitionService,
     ProductOrchestratorService,
+    ProductAnalysisProcessor,
+    MatchJobProcessor,
   ],
 })
 export class ProductsModule {}

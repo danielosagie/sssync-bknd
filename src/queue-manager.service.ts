@@ -95,7 +95,7 @@ export class QueueManagerService {
     this.logger.debug(`Enqueueing job with type ${jobData.type} via ${this.currentQueue.constructor.name}`);
     
     // Generate a unique job ID
-    const jobId = `${jobData.type}-${jobData.connectionId}-${Date.now()}`;
+    const jobId = `${jobData.type}-${(jobData as any).connectionId || 'no-connection'}-${Date.now()}`;
     
     // Add the job ID to the job data
     const jobDataWithId = { ...jobData, jobId };

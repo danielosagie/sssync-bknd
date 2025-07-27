@@ -20,6 +20,8 @@ import { PlatformAdapterRegistry } from '../platform-adapters/adapter.registry';
 import * as QueueManager from '../queue-manager';
 import { ActivityLogService } from '../common/activity-log.service';
 import { QueueManagerService } from '../queue-manager.service';
+import { ProductAnalysisJobData } from '../products/types/product-analysis-job.types';
+import { MatchJobData } from '../products/types/match-job.types';
 
 // Define interfaces for return types
 export interface InitialScanResult {
@@ -31,7 +33,9 @@ export interface InitialScanResult {
 export interface SyncPreview {
   actions: Array<{ type: string; description: string }> /* ... */;
 }
-export interface JobData {
+
+// Base sync job data
+export interface SyncJobData {
   type?: string;
   connectionId: string;
   userId: string;
@@ -45,6 +49,9 @@ export interface ReconciliationJobData {
   platformType: string;
   // Potentially add options like 'full' or 'delta' in the future
 }
+
+// Union type for all job data types
+export type JobData = SyncJobData | ProductAnalysisJobData | MatchJobData;
 
 console.log(
   '[InitialSyncService] Imported INITIAL_SCAN_QUEUE:',

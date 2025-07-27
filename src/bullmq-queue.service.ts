@@ -6,8 +6,11 @@ import { SimpleQueue } from './queue.interface';
 import { JobData } from './sync-engine/initial-sync.service';
 import { InitialScanProcessor } from './sync-engine/processors/initial-scan.processor';
 import { InitialSyncProcessor } from './sync-engine/processors/initial-sync.processor';
-// Placeholder for InitialSyncProcessor - THIS NEEDS TO BE CREATED AND PROVIDED
-// import { InitialSyncProcessor } from './sync-engine/processors/initial-sync.processor';
+import { ProductAnalysisProcessor } from './products/processors/product-analysis.processor';
+import { ProductAnalysisJobData } from './products/types/product-analysis-job.types';
+import { MatchJobProcessor } from './products/processors/match-job.processor';
+import { MatchJobData } from './products/types/match-job.types';
+import { ModuleRef } from '@nestjs/core';
 
 const BULLMQ_HIGH_QUEUE_NAME = 'bullmq-high-queue';
 
@@ -17,14 +20,14 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
   private connection: IORedis;
   private queue: Queue;
   private worker: Worker | null = null;
+  private initialScanProcessor: InitialScanProcessor;
+  private initialSyncProcessor: InitialSyncProcessor;
+  private productAnalysisProcessor: ProductAnalysisProcessor;
+  private matchJobProcessor: MatchJobProcessor;
 
   constructor(
     private readonly configService: ConfigService,
-    private readonly initialScanProcessor: InitialScanProcessor, 
-    @Inject(forwardRef(() => InitialSyncProcessor)) // Using forwardRef for safety, though likely not strictly needed here as SyncEngineModule is imported by QueueModule
-    private readonly initialSyncProcessor: InitialSyncProcessor, // Uncommented injection
-    // @Inject(forwardRef(() => InitialSyncProcessor)) // Placeholder for DI
-    // private readonly initialSyncProcessor: InitialSyncProcessor, // Placeholder for DI
+    private readonly moduleRef: ModuleRef,
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
@@ -47,8 +50,8 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
   }
 
   private initializeWorker(): void {
-    if (!this.initialScanProcessor || !this.initialSyncProcessor) { // Added check for initialSyncProcessor
-        this.logger.error('Required processors (InitialScanProcessor or InitialSyncProcessor) not available. Worker cannot be initialized.');
+    if (!this.initialScanProcessor || !this.initialSyncProcessor || !this.productAnalysisProcessor || !this.matchJobProcessor) {
+        this.logger.error('Required processors not available. Worker cannot be initialized.');
         return; 
     }
     this.worker = new Worker(
@@ -69,6 +72,22 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
           } catch (error) {
             this.logger.error(`[BullMQWorker] Error processing 'initial-sync' job ${job.id}: ${error.message}`, error.stack);
             throw error; 
+          }
+        } else if (job.data.type === 'product-analysis') { // NEW: Handle product analysis jobs
+          try {
+            this.logger.log(`[BullMQWorker] Delegating 'product-analysis' job ${job.id} to ProductAnalysisProcessor.`);
+            await this.productAnalysisProcessor.process(job as Job<ProductAnalysisJobData>);
+          } catch (error) {
+            this.logger.error(`[BullMQWorker] Error processing 'product-analysis' job ${job.id}: ${error.message}`, error.stack);
+            throw error;
+          }
+        } else if (job.data.type === 'match-job') { // NEW: Handle match jobs
+          try {
+            this.logger.log(`[BullMQWorker] Delegating 'match-job' job ${job.id} to MatchJobProcessor.`);
+            await this.matchJobProcessor.process(job as Job<MatchJobData>);
+          } catch (error) {
+            this.logger.error(`[BullMQWorker] Error processing 'match-job' job ${job.id}: ${error.message}`, error.stack);
+            throw error;
           }
         } else {
           this.logger.warn(`[BullMQWorker] Unknown job type: ${job.data.type}. Job ${job.id} will be marked as failed.`);
@@ -92,6 +111,10 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
 
   async onModuleInit() {
     this.logger.log('BullMQQueueService initializing worker...');
+    this.initialScanProcessor = await this.moduleRef.resolve(InitialScanProcessor);
+    this.initialSyncProcessor = await this.moduleRef.resolve(InitialSyncProcessor);
+    this.productAnalysisProcessor = await this.moduleRef.resolve(ProductAnalysisProcessor);
+    this.matchJobProcessor = await this.moduleRef.resolve(MatchJobProcessor);
     this.initializeWorker(); // Initialize worker now that dependencies should be resolved
   }
 
@@ -109,7 +132,7 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
 
   async enqueueJob(jobData: JobData): Promise<void> {
     // Use a unique job ID to prevent duplicates if needed, or let BullMQ generate one.
-    const jobId = jobData.type ? `${jobData.type}-${jobData.connectionId}-${Date.now()}` : undefined;
+    const jobId = jobData.type ? `${jobData.type}-${(jobData as any).connectionId || (jobData as any).jobId}-${Date.now()}` : undefined;
     await this.queue.add(jobData.type || 'default-job', jobData, { jobId });
     this.logger.debug(`[BullMQQueue] Enqueued job type ${jobData.type} with ID ${jobId}: ${JSON.stringify(jobData)}`);
   }
@@ -122,6 +145,7 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
     if (jobs.length > 0) {
       const jobToProcess = jobs[0];
       this.logger.log(`[BullMQQueue] Manually attempting to process job ${jobToProcess.id}`);
+      
       if (this.initialScanProcessor && jobToProcess.data.type === 'initial-scan') {
         try {
             await this.initialScanProcessor.process(jobToProcess as any);
@@ -129,6 +153,26 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
             return jobToProcess.data;
         } catch (err) {
             this.logger.error('Manual processNextJob failed:', err);
+            await jobToProcess.moveToFailed(err, 'token', false);
+            return null;
+        }
+      } else if (this.productAnalysisProcessor && jobToProcess.data.type === 'product-analysis') { // NEW: Handle product analysis in manual processing
+        try {
+            await this.productAnalysisProcessor.process(jobToProcess as Job<ProductAnalysisJobData>);
+            await jobToProcess.moveToCompleted('processed manually', 'token', false);
+            return jobToProcess.data;
+        } catch (err) {
+            this.logger.error('Manual processNextJob failed for product-analysis:', err);
+            await jobToProcess.moveToFailed(err, 'token', false);
+            return null;
+        }
+      } else if (this.matchJobProcessor && jobToProcess.data.type === 'match-job') { // NEW: Handle match jobs in manual processing
+        try {
+            await this.matchJobProcessor.process(jobToProcess as Job<MatchJobData>);
+            await jobToProcess.moveToCompleted('processed manually', 'token', false);
+            return jobToProcess.data;
+        } catch (err) {
+            this.logger.error('Manual processNextJob failed for match-job:', err);
             await jobToProcess.moveToFailed(err, 'token', false);
             return null;
         }

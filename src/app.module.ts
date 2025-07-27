@@ -30,7 +30,7 @@ import { PlatformAdaptersModule } from './platform-adapters/platform-adapters.mo
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([
       {
-        ttl: 60,    // 1 minute
+            ttl: 60,    // 1 minute
         limit: 60,  // 60 requests per minute (in-memory storage)
       }
     ]),

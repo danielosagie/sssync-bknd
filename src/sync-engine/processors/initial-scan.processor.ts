@@ -34,7 +34,7 @@ export class InitialScanProcessor extends WorkerHost {
     }
 
     async process(job: Job<JobData, any, string>): Promise<any> {
-        const { connectionId, userId, platformType } = job.data;
+        const { connectionId, userId, platformType } = job.data as any;
         this.lastActiveJobTimestamp = Date.now();
         this.isIdle = false;
         
@@ -252,17 +252,17 @@ export class InitialScanProcessor extends WorkerHost {
 
     // Replace the event handling methods with the correct ones from WorkerHost
     async handleCompleted(job: Job<JobData, any, string>): Promise<void> {
-        this.logger.log(`[JOB COMPLETED] Job ${job.id} completed for connection ${job.data.connectionId}`);
+        this.logger.log(`[JOB COMPLETED] Job ${job.id} completed for connection ${(job.data as any).connectionId || 'no-connection'}`);
         await this.checkIdleState();
     }
 
     async handleFailed(job: Job<JobData, any, string>, error: Error): Promise<void> {
-        this.logger.error(`[JOB FAILED] Job ${job.id} failed for connection ${job.data.connectionId}: ${error.message}`);
+        this.logger.error(`[JOB FAILED] Job ${job.id} failed for connection ${(job.data as any).connectionId || 'no-connection'}: ${error.message}`);
         await this.checkIdleState();
     }
 
     async handleStalled(job: Job<JobData, any, string>): Promise<void> {
-        this.logger.warn(`[JOB STALLED] Job ${job.id} stalled for connection ${job.data.connectionId}`);
+        this.logger.warn(`[JOB STALLED] Job ${job.id} stalled for connection ${(job.data as any).connectionId || 'no-connection'}`);
         await this.checkIdleState();
     }
 
