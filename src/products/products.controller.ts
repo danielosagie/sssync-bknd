@@ -32,7 +32,7 @@ import { AiGenerationService } from './ai-generation/ai-generation.service';
 import { ProductOrchestratorService, RecognizeStageInput, MatchStageInput, GenerateStageInput } from './product-orchestrator.service';
 import { ProductAnalysisJobData, ProductAnalysisJobStatus } from './types/product-analysis-job.types';
 import { ProductAnalysisProcessor } from './processors/product-analysis.processor';
-import { MatchJobData, MatchJobStatus } from './types/match-job.types';
+import { MatchJobData, MatchJobStatus, MatchJobResult } from './types/match-job.types';
 import { MatchJobProcessor } from './processors/match-job.processor';
 
 interface LocationProduct {
@@ -2381,7 +2381,7 @@ Return JSON format:
         const logs: string[] = [];
 
         this.logger.log(`[POST /orchestrate/generate-flexible] User: ${userId} - Flow: ${userFlow}, Sources: ${generateInput.sources.length}, Target Sites: ${generateInput.targetSites.join(', ')}`);
-        logs.push(`🚀 Starting ${userFlow} generation for ${generateInput.sources.length} sources`);
+        logs.push(`Starting ${userFlow} generation for ${generateInput.sources.length} sources`);
 
         try {
             const generatedProducts: Array<{
@@ -2445,16 +2445,16 @@ Return JSON format:
                          );
                         
                         productData.platforms[platform.name] = platformData;
-                        logs.push(`✅ ${platform.name} listing generated successfully`);
+                        logs.push(`${platform.name} listing generated successfully`);
                         
                     } catch (error) {
-                        logs.push(`❌ ${platform.name} generation failed: ${error.message}`);
+                        logs.push(`${platform.name} generation failed: ${error.message}`);
                         this.logger.warn(`Platform generation failed for ${platform.name}: ${error.message}`);
                     }
                 }
 
                 // Step 3: Store the generated product
-                logs.push(`💾 Storing generated product data`);
+                logs.push(`Storing generated product data`);
                 const storageResult = await this.storeFlexibleProduct(
                     userId, 
                     productData, 
@@ -2465,7 +2465,7 @@ Return JSON format:
                 totalVariantsCreated += storageResult.variantsCreated;
                 totalEmbeddingsStored += storageResult.embeddingsStored;
 
-                logs.push(`✅ Product stored: ${storageResult.productsCreated} products, ${storageResult.embeddingsStored} embeddings`);
+                logs.push(`Product stored: ${storageResult.productsCreated} products, ${storageResult.embeddingsStored} embeddings`);
                 generatedProducts.push(productData);
             }
 
@@ -2488,7 +2488,7 @@ Return JSON format:
                 userId
             );
 
-            logs.push(`🎉 Generation complete! Created ${totalProductsCreated} products with ${totalEmbeddingsStored} embeddings`);
+            logs.push(`Generation complete! Created ${totalProductsCreated} products with ${totalEmbeddingsStored} embeddings`);
 
             return {
                 generatedProducts,
@@ -2501,7 +2501,7 @@ Return JSON format:
             };
 
         } catch (error) {
-            logs.push(`💥 Generation failed: ${error.message}`);
+            logs.push(`Generation failed: ${error.message}`);
             this.logger.error(`[POST /orchestrate/generate-flexible] User: ${userId} - Error: ${error.message}`, error.stack);
             
             await this.activityLogService.logUserAction(
@@ -2585,7 +2585,7 @@ Return JSON format:
         }
 
         // Scrape each URL
-        logs.push(`🔍 Scraping ${urlsToScrape.size} URLs for data`);
+        logs.push(`Scraping ${urlsToScrape.size} URLs for data`);
         
         for (const url of urlsToScrape) {
             try {
@@ -2612,10 +2612,10 @@ Return JSON format:
                     usedForFields: usedForFields.join(',')
                 });
 
-                logs.push(`✅ Scraped ${url} successfully`);
+                logs.push(`Scraped ${url} successfully`);
 
             } catch (error) {
-                logs.push(`❌ Failed to scrape ${url}: ${error.message}`);
+                logs.push(`Failed to scrape ${url}: ${error.message}`);
                 this.logger.warn(`Scraping failed for ${url}: ${error.message}`);
             }
         }
@@ -2654,7 +2654,7 @@ Return JSON format:
         userFlow?: string,
         logs?: string[]
     ): Promise<any> {
-        logs?.push(`🤖 Using AI Generation Service for ${platform.name} listing`);
+        logs?.push(`Using AI Generation Service for ${platform.name} listing`);
 
         try {
             // Prepare data for AI generation service
@@ -2707,7 +2707,7 @@ Return JSON format:
             // Use AI Generation Service if we have scraped data
             let aiGeneratedDetails: any = null;
             if (scrapedData.length > 0) {
-                logs?.push(`🔥 Calling AI Generation Service with scraped data for ${platform.name}`);
+                logs?.push(`Calling AI Generation Service with scraped data for ${platform.name}`);
                 
                 // Use generateProductDetailsFromScrapedData for scraped content
                 const fullDetails = await this.aiGenerationService.generateProductDetailsFromScrapedData(
@@ -2733,7 +2733,7 @@ Return JSON format:
                     aiGeneratedDetails = Object.values(fullDetails)[0] || fullDetails;
                 }
             } else if (coverImageUrl) {
-                logs?.push(`🖼️ Calling AI Generation Service with image for ${platform.name}`);
+                logs?.push(`Calling AI Generation Service with image for ${platform.name}`);
                 
                 // Use generateProductDetails for image-based generation
                 const fullDetails = await this.aiGenerationService.generateProductDetails(
@@ -2751,7 +2751,7 @@ Return JSON format:
 
             // Build result from AI generation or fallback
             if (aiGeneratedDetails) {
-                logs?.push(`✨ AI generated high-quality ${platform.name} listing`);
+                logs?.push(`AI generated high-quality ${platform.name} listing`);
 
             return {
                     title: aiGeneratedDetails.title || 'AI Generated Product',
@@ -2768,7 +2768,7 @@ Return JSON format:
                 };
             } else {
                 // Fallback when AI generation fails
-                logs?.push(`⚠️ AI generation failed, using fallback for ${platform.name}`);
+                logs?.push(`AI generation failed, using fallback for ${platform.name}`);
                 
                 const fallbackTitle = source.selectedMatch?.title || 
                                      source.data?.selectedResult?.title || 
@@ -2792,7 +2792,7 @@ Return JSON format:
             }
 
         } catch (error) {
-            logs?.push(`💥 AI generation error for ${platform.name}: ${error.message}`);
+            logs?.push(`AI generation error for ${platform.name}: ${error.message}`);
             this.logger.error(`AI generation failed for ${platform.name}: ${error.message}`, error.stack);
             
             // Simple fallback
@@ -2856,99 +2856,369 @@ Return JSON format:
     @Post('orchestrate/match')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 15, ttl: 60000 }}) // 15 requests per minute
+    @Throttle({ default: { limit: 5, ttl: 60000 }}) // 5 match jobs per minute
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
-    @HttpCode(HttpStatus.OK)
-    async orchestrateMatch(
-        @Body() matchInput: {
-            sessionId: string;
-            imageIndexes?: number[];
-            aiEnhancedMatching?: boolean;
-            sourceIndexes?: number[];
-            userSelections?: Array<{
-                imageIndex: number;
-                selectedCandidateIndex?: number;
-                rejected?: boolean;
+    @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
+    async submitMatchJob(
+        @Body() matchRequest: {
+            products: Array<{
+                productIndex: number;
+                productId?: string;
+                images: Array<{
+                    url?: string;
+                    base64?: string;
+                    metadata?: any;
+                }>;
+                textQuery?: string;
             }>;
+            options?: {
+                useReranking?: boolean; // Default: true
+                vectorSearchLimit?: number; // Default: 7
+            };
         },
         @Req() req: AuthenticatedRequest,
     ): Promise<{
-        sessionId: string;
-        matches: Array<{
-            imageIndex: number;
-            rankedCandidates: any[];
-            confidence: 'high' | 'medium' | 'low';
-            aiSuggestion?: {
-                recommendedIndex: number;
-                confidence: number;
-                reasoning: string;
-            };
-        }>;
-        overallConfidence: 'high' | 'medium' | 'low';
-        recommendedAction: 'proceed_to_generate' | 'manual_review' | 'external_search';
+        jobId: string;
+        status: 'queued';
+        estimatedTimeMinutes: number;
+        totalProducts: number;
+        message: string;
     }> {
         const userId = req.user?.id;
         if (!userId) {
             throw new BadRequestException('User ID not found after authentication.');
         }
 
-        this.logger.log(`[POST /orchestrate/match] User: ${userId} - Session: ${matchInput.sessionId}`);
+        // Validate request
+        if (!matchRequest.products || matchRequest.products.length === 0) {
+            throw new BadRequestException('At least one product is required');
+        }
+        if (matchRequest.products.length > 100) {
+            throw new BadRequestException('Maximum 100 products per match job. Please split into smaller batches.');
+        }
 
+        // Generate unique job ID
+        const jobId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const estimatedTimeMinutes = Math.ceil(matchRequest.products.length * 15 / 60); // 15 seconds per product (includes embedding)
+
+        // Create job data
+        const jobData: MatchJobData = {
+            type: 'match-job',
+            jobId,
+                userId,
+            products: matchRequest.products,
+            options: matchRequest.options,
+            metadata: {
+                totalProducts: matchRequest.products.length,
+                estimatedTimeMinutes,
+                createdAt: new Date().toISOString(),
+            },
+        };
+
+        // Submit to queue
         try {
-            const input: MatchStageInput = {
-                sessionId: matchInput.sessionId,
-                sourceIndexes: matchInput.sourceIndexes || matchInput.imageIndexes, // Handle both names
-                useAiRanking: matchInput.aiEnhancedMatching,
-                userSelections: matchInput.userSelections?.map(selection => ({
-                    sourceIndex: selection.imageIndex, // Transform imageIndex to sourceIndex
-                    selectedCandidateIndex: selection.selectedCandidateIndex,
-                    rejected: selection.rejected
-                }))
-            };
-
-            const result = await this.productOrchestratorService.match(userId, input);
-
+            // ✅ FIXED: Submit job using static QueueManager like other places in this controller
+            await QueueManager.enqueueJob(jobData);
+            
+            this.logger.log(`[Submit Match Job] Created match job ${jobId} for ${matchRequest.products.length} products`);
+            
             // Log activity
             await this.activityLogService.logUserAction(
-                'ORCHESTRATOR_MATCH',
+                'MATCH_JOB_SUBMITTED',
                 'Success',
-                `Completed matching stage for session ${matchInput.sessionId}`,
+                `Match job submitted for ${matchRequest.products.length} products`,
                 {
-                    action: 'orchestrate_match',
+                    action: 'match_job_submitted',
                     inputData: {
-                        sessionId: matchInput.sessionId,
-                        overallConfidence: result.overallConfidence,
-                        recommendedAction: result.recommendedAction,
-                        matchCount: result.matches.length
-                    }
+                        jobId,
+                        productCount: matchRequest.products.length,
+                        options: matchRequest.options,
+                    },
                 },
                 userId
             );
 
-            // Transform response: sourceIndex → imageIndex for backward compatibility
             return {
-                sessionId: result.sessionId,
-                matches: result.matches.map(match => ({
-                    imageIndex: match.sourceIndex, // Transform back to imageIndex
-                    rankedCandidates: match.rankedCandidates,
-                    confidence: match.confidence,
-                    aiSuggestion: match.aiSuggestion
-                })),
-                overallConfidence: result.overallConfidence,
-                recommendedAction: result.recommendedAction
+                jobId,
+                status: 'queued',
+                estimatedTimeMinutes,
+                totalProducts: matchRequest.products.length,
+                message: `Match job submitted successfully. Processing ${matchRequest.products.length} products with SerpAPI analysis, embedding, and reranking. Estimated completion: ${estimatedTimeMinutes} minutes.`,
             };
 
         } catch (error) {
-            this.logger.error(`[POST /orchestrate/match] User: ${userId} - Error: ${error.message}`, error.stack);
-            throw new InternalServerErrorException(`Matching stage failed: ${error.message}`);
+            this.logger.error(`[Submit Match Job] Failed to submit job: ${error.message}`);
+            
+            // Log failed submission
+            await this.activityLogService.logUserAction(
+                'MATCH_JOB_SUBMISSION_FAILED',
+                'Failed',
+                `Failed to submit match job: ${error.message}`,
+                {
+                    action: 'match_job_submission_failed',
+                    inputData: {
+                        jobId,
+                        productCount: matchRequest.products.length,
+                        error: error.message,
+                    },
+                },
+                userId
+            );
+            
+            throw new InternalServerErrorException('Failed to submit match job for processing');
+        }
+    }
+
+    @Get('match/jobs/:jobId/status')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async getMatchJobStatus(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<MatchJobStatus> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        try {
+            // Try to get from memory first (faster)
+            let jobStatus = this.matchJobProcessor.getJobStatus(jobId);
+            
+            // If not in memory, try database
+            if (!jobStatus) {
+                jobStatus = await this.matchJobProcessor.getJobStatusFromDatabase(jobId);
+            }
+
+            if (!jobStatus) {
+                throw new NotFoundException(`Match job ${jobId} not found`);
+            }
+
+            // Verify job belongs to this user (security check)
+            if (jobStatus.userId !== userId) {
+                throw new NotFoundException(`Match job ${jobId} not found`);
+            }
+
+            this.logger.debug(`[Get Match Job Status] Retrieved status for job ${jobId}: ${jobStatus.status} - ${jobStatus.currentStage}`);
+
+            return jobStatus;
+
+        } catch (error) {
+            if (error instanceof NotFoundException) {
+                throw error;
+            }
+            this.logger.error(`[Get Match Job Status] Error retrieving job ${jobId}: ${error.message}`);
+            throw new InternalServerErrorException('Failed to retrieve match job status');
+        }
+    }
+
+    @Get('match/jobs/:jobId/results')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async getMatchJobResults(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        jobId: string;
+        status: string;
+        results: MatchJobResult[];
+        summary?: any;
+        completedAt?: string;
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        try {
+            // Get job status which includes results
+            let jobStatus = this.matchJobProcessor.getJobStatus(jobId);
+            
+            // If not in memory, try database
+            if (!jobStatus) {
+                jobStatus = await this.matchJobProcessor.getJobStatusFromDatabase(jobId);
+            }
+
+            if (!jobStatus) {
+                throw new NotFoundException(`Match job ${jobId} not found`);
+            }
+
+            // Verify job belongs to this user (security check)
+            if (jobStatus.userId !== userId) {
+                throw new NotFoundException(`Match job ${jobId} not found`);
+            }
+
+            // Only return results if job is completed
+            if (jobStatus.status !== 'completed') {
+                throw new BadRequestException(`Job ${jobId} is not completed yet. Current status: ${jobStatus.status}`);
+            }
+
+            this.logger.log(`[Get Match Job Results] Retrieved ${jobStatus.results.length} results for job ${jobId}`);
+
+            return {
+                jobId: jobStatus.jobId,
+                status: jobStatus.status,
+                results: jobStatus.results,
+                summary: jobStatus.summary,
+                completedAt: jobStatus.completedAt,
+            };
+
+        } catch (error) {
+            if (error instanceof NotFoundException || error instanceof BadRequestException) {
+                throw error;
+            }
+            this.logger.error(`[Get Match Job Results] Error retrieving results for job ${jobId}: ${error.message}`);
+            throw new InternalServerErrorException('Failed to retrieve match job results');
+        }
+    }
+
+    @Delete('match/jobs/:jobId')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async cancelMatchJob(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        jobId: string;
+        status: string;
+        message: string;
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        try {
+            const cancelled = this.matchJobProcessor.cancelJob(jobId);
+            
+            if (cancelled) {
+                this.logger.log(`[Cancel Match Job] Successfully cancelled job ${jobId}`);
+                
+                // Log activity
+                await this.activityLogService.logUserAction(
+                    'MATCH_JOB_CANCELLED',
+                    'Success',
+                    `Match job ${jobId} cancelled by user`,
+                    {
+                        action: 'match_job_cancelled',
+                        inputData: { jobId },
+                    },
+                    userId
+                );
+
+                return {
+                    jobId,
+                    status: 'cancelled',
+                    message: 'Match job has been successfully cancelled',
+                };
+            } else {
+                return {
+                    jobId,
+                    status: 'not_cancellable',
+                    message: 'Match job cannot be cancelled (may be completed, failed, or not found)',
+                };
+            }
+
+        } catch (error) {
+            this.logger.error(`[Cancel Match Job] Error cancelling job ${jobId}: ${error.message}`);
+            throw new InternalServerErrorException('Failed to cancel match job');
+        }
+    }
+
+    @Get('match/jobs')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async getUserMatchJobs(
+        @Req() req: AuthenticatedRequest,
+        @Query('status') status?: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled',
+        @Query('limit') limit?: string,
+        @Query('offset') offset?: string,
+    ): Promise<{
+        jobs: Array<{
+            jobId: string;
+            status: string;
+            currentStage: string;
+            totalProducts: number;
+            completedProducts: number;
+            failedProducts: number;
+            stagePercentage: number;
+            createdAt: string;
+            completedAt?: string;
+            estimatedCompletionAt?: string;
+        }>;
+        pagination: {
+            total: number;
+            limit: number;
+            offset: number;
+        };
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        try {
+            const supabase = this.supabaseService.getServiceClient();
+            
+            let query = supabase
+                .from('match_jobs')
+                .select('job_id, status, current_stage, progress, started_at, completed_at, estimated_completion_at', { count: 'exact' })
+                .eq('user_id', userId);
+
+            // Add status filter if provided
+            if (status) {
+                query = query.eq('status', status);
+            }
+
+            // Add pagination
+            const limitNum = parseInt(limit || '20') || 20;
+            const offsetNum = parseInt(offset || '0') || 0;
+            query = query.range(offsetNum, offsetNum + limitNum - 1);
+
+            // Order by creation date (newest first)
+            query = query.order('started_at', { ascending: false });
+
+            const { data, error, count } = await query;
+
+            if (error) {
+                throw new Error(`Database query failed: ${error.message}`);
+            }
+
+            const jobs = (data || []).map(job => ({
+                jobId: job.job_id,
+                status: job.status,
+                currentStage: job.current_stage,
+                totalProducts: job.progress?.totalProducts || 0,
+                completedProducts: job.progress?.completedProducts || 0,
+                failedProducts: job.progress?.failedProducts || 0,
+                stagePercentage: job.progress?.stagePercentage || 0,
+                createdAt: job.started_at,
+                completedAt: job.completed_at,
+                estimatedCompletionAt: job.estimated_completion_at,
+            }));
+
+            return {
+                jobs,
+                pagination: {
+                    total: count || 0,
+                    limit: limitNum,
+                    offset: offsetNum,
+                },
+            };
+
+        } catch (error) {
+            this.logger.error(`[Get User Match Jobs] Error retrieving jobs: ${error.message}`);
+            throw new InternalServerErrorException('Failed to retrieve user match jobs');
         }
     }
 
     /**
      * STAGE 3: GENERATE
-     * 🚀 THE MAGIC HAPPENS HERE! 
      * Uses Firecrawl and AI to generate platform-specific product data
-     * This is where your prompt injection happens for specific sites like previewsworld.com
      */
     @Post('orchestrate/generate')
     @Feature('aiScans')
@@ -3459,8 +3729,8 @@ Return JSON format:
 
         // Submit to queue
         try {
-            // TODO: Move queue operation to service layer
-            // await this.queueManagerService.enqueueJob(jobData);
+            // FIXED: Submit analysis job using static QueueManager
+            await QueueManager.enqueueJob(jobData);
             
             this.logger.log(`[Submit Job] Created job ${jobId} for ${jobRequest.products.length} products`);
             
@@ -3674,294 +3944,5 @@ Return JSON format:
         }
     }
 
-    // ===== END NEW ASYNC JOB ENDPOINTS =====
-
-    // ===== NEW MATCH JOB ENDPOINTS =====
-
-    @Post('orchestrate/match')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 5, ttl: 60000 }}) // 5 match jobs per minute
-    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
-    @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
-    async submitMatchJob(
-        @Body() matchRequest: {
-            products: Array<{
-                productIndex: number;
-                productId?: string;
-                images: Array<{
-                    url?: string;
-                    base64?: string;
-                    metadata?: any;
-                }>;
-                textQuery?: string;
-            }>;
-            options?: {
-                useReranking?: boolean; // Default: true
-                vectorSearchLimit?: number; // Default: 7
-            };
-        },
-        @Req() req: AuthenticatedRequest,
-    ): Promise<{
-        jobId: string;
-        status: 'queued';
-        estimatedTimeMinutes: number;
-        totalProducts: number;
-        message: string;
-    }> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found after authentication.');
-        }
-
-        // Validate request
-        if (!matchRequest.products || matchRequest.products.length === 0) {
-            throw new BadRequestException('At least one product is required');
-        }
-        if (matchRequest.products.length > 100) {
-            throw new BadRequestException('Maximum 100 products per match job. Please split into smaller batches.');
-        }
-
-        // Generate unique job ID
-        const jobId = `match_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        const estimatedTimeMinutes = Math.ceil(matchRequest.products.length * 15 / 60); // 15 seconds per product (includes embedding)
-
-        // Create job data
-        const jobData: MatchJobData = {
-            type: 'match-job',
-            jobId,
-                userId,
-            products: matchRequest.products,
-            options: matchRequest.options,
-            metadata: {
-                totalProducts: matchRequest.products.length,
-                estimatedTimeMinutes,
-                createdAt: new Date().toISOString(),
-            },
-        };
-
-        // Submit to queue
-        try {
-            // TODO: Move queue operation to service layer  
-            // await this.queueManagerService.enqueueJob(jobData);
-            
-            this.logger.log(`[Submit Match Job] Created match job ${jobId} for ${matchRequest.products.length} products`);
-            
-            // Log activity
-            await this.activityLogService.logUserAction(
-                'MATCH_JOB_SUBMITTED',
-                'Success',
-                `Match job submitted for ${matchRequest.products.length} products`,
-                {
-                    action: 'match_job_submitted',
-                    inputData: {
-                        jobId,
-                        productCount: matchRequest.products.length,
-                        options: matchRequest.options,
-                    },
-                },
-                userId
-            );
-
-            return {
-                jobId,
-                status: 'queued',
-                estimatedTimeMinutes,
-                totalProducts: matchRequest.products.length,
-                message: `Match job submitted successfully. Processing ${matchRequest.products.length} products with SerpAPI analysis, embedding, and reranking. Estimated completion: ${estimatedTimeMinutes} minutes.`,
-            };
-
-        } catch (error) {
-            this.logger.error(`[Submit Match Job] Failed to submit job: ${error.message}`);
-            throw new InternalServerErrorException('Failed to submit match job for processing');
-        }
-    }
-
-    @Get('match/jobs/:jobId/status')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @HttpCode(HttpStatus.OK)
-    async getMatchJobStatus(
-        @Param('jobId') jobId: string,
-        @Req() req: AuthenticatedRequest,
-    ): Promise<MatchJobStatus> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found after authentication.');
-        }
-
-        try {
-            // Try to get from memory first (faster)
-            let jobStatus = this.matchJobProcessor.getJobStatus(jobId);
-            
-            // If not in memory, try database
-            if (!jobStatus) {
-                jobStatus = await this.matchJobProcessor.getJobStatusFromDatabase(jobId);
-            }
-
-            if (!jobStatus) {
-                throw new NotFoundException(`Match job ${jobId} not found`);
-            }
-
-            // Verify job belongs to this user (security check)
-            if (jobStatus.userId !== userId) {
-                throw new NotFoundException(`Match job ${jobId} not found`);
-            }
-
-            this.logger.debug(`[Get Match Job Status] Retrieved status for job ${jobId}: ${jobStatus.status} - ${jobStatus.currentStage}`);
-
-            return jobStatus;
-
-        } catch (error) {
-            if (error instanceof NotFoundException) {
-                throw error;
-            }
-            this.logger.error(`[Get Match Job Status] Error retrieving job ${jobId}: ${error.message}`);
-            throw new InternalServerErrorException('Failed to retrieve match job status');
-        }
-    }
-
-    @Delete('match/jobs/:jobId')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @HttpCode(HttpStatus.OK)
-    async cancelMatchJob(
-        @Param('jobId') jobId: string,
-        @Req() req: AuthenticatedRequest,
-    ): Promise<{
-        jobId: string;
-        status: string;
-        message: string;
-    }> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found after authentication.');
-        }
-
-        try {
-            const cancelled = this.matchJobProcessor.cancelJob(jobId);
-            
-            if (cancelled) {
-                this.logger.log(`[Cancel Match Job] Successfully cancelled job ${jobId}`);
-                
-                // Log activity
-                await this.activityLogService.logUserAction(
-                    'MATCH_JOB_CANCELLED',
-                    'Success',
-                    `Match job ${jobId} cancelled by user`,
-                    {
-                        action: 'match_job_cancelled',
-                        inputData: { jobId },
-                    },
-                    userId
-                );
-
-                return {
-                    jobId,
-                    status: 'cancelled',
-                    message: 'Match job has been successfully cancelled',
-                };
-            } else {
-                return {
-                    jobId,
-                    status: 'not_cancellable',
-                    message: 'Match job cannot be cancelled (may be completed, failed, or not found)',
-                };
-            }
-
-        } catch (error) {
-            this.logger.error(`[Cancel Match Job] Error cancelling job ${jobId}: ${error.message}`);
-            throw new InternalServerErrorException('Failed to cancel match job');
-        }
-    }
-
-    @Get('match/jobs')
-    @Feature('aiScans')
-    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @HttpCode(HttpStatus.OK)
-    async getUserMatchJobs(
-        @Req() req: AuthenticatedRequest,
-        @Query('status') status?: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled',
-        @Query('limit') limit?: string,
-        @Query('offset') offset?: string,
-    ): Promise<{
-        jobs: Array<{
-            jobId: string;
-            status: string;
-            currentStage: string;
-            totalProducts: number;
-            completedProducts: number;
-            failedProducts: number;
-            stagePercentage: number;
-            createdAt: string;
-            completedAt?: string;
-            estimatedCompletionAt?: string;
-        }>;
-        pagination: {
-            total: number;
-            limit: number;
-            offset: number;
-        };
-    }> {
-        const userId = req.user?.id;
-        if (!userId) {
-            throw new BadRequestException('User ID not found after authentication.');
-        }
-
-        try {
-            const supabase = this.supabaseService.getServiceClient();
-            
-            let query = supabase
-                .from('match_jobs')
-                .select('job_id, status, current_stage, progress, started_at, completed_at, estimated_completion_at', { count: 'exact' })
-                .eq('user_id', userId);
-
-            // Add status filter if provided
-            if (status) {
-                query = query.eq('status', status);
-            }
-
-            // Add pagination
-            const limitNum = parseInt(limit || '20') || 20;
-            const offsetNum = parseInt(offset || '0') || 0;
-            query = query.range(offsetNum, offsetNum + limitNum - 1);
-
-            // Order by creation date (newest first)
-            query = query.order('started_at', { ascending: false });
-
-            const { data, error, count } = await query;
-
-            if (error) {
-                throw new Error(`Database query failed: ${error.message}`);
-            }
-
-            const jobs = (data || []).map(job => ({
-                jobId: job.job_id,
-                status: job.status,
-                currentStage: job.current_stage,
-                totalProducts: job.progress?.totalProducts || 0,
-                completedProducts: job.progress?.completedProducts || 0,
-                failedProducts: job.progress?.failedProducts || 0,
-                stagePercentage: job.progress?.stagePercentage || 0,
-                createdAt: job.started_at,
-                completedAt: job.completed_at,
-                estimatedCompletionAt: job.estimated_completion_at,
-            }));
-
-            return {
-                jobs,
-                pagination: {
-                    total: count || 0,
-                    limit: limitNum,
-                    offset: offsetNum,
-                },
-            };
-
-        } catch (error) {
-            this.logger.error(`[Get User Match Jobs] Error retrieving jobs: ${error.message}`);
-            throw new InternalServerErrorException('Failed to retrieve user match jobs');
-        }
-    }
-
-    // ===== END MATCH JOB ENDPOINTS =====
+    
 }
