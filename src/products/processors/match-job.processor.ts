@@ -115,6 +115,9 @@ export class MatchJobProcessor {
           if (analysisResult.analysis?.GeneratedText) {
             const serpData = JSON.parse(analysisResult.analysis.GeneratedText);
             serpApiResults = serpData.visual_matches || [];
+            this.logger.log(`[MatchJobProcessor] Found ${serpApiResults.length} SerpAPI results for product ${i + 1}`);
+          } else {
+            this.logger.warn(`[MatchJobProcessor] No GeneratedText found in analysis result for product ${i + 1}`);
           }
 
           if (serpApiResults.length === 0) {
@@ -168,20 +171,25 @@ export class MatchJobProcessor {
           } catch (embeddingError) {
             // 🎯 FALLBACK: If embedding/reranking fails, continue with SerpAPI data
             this.logger.warn(`Embedding failed for product ${i + 1}, using SerpAPI data only: ${embeddingError.message}`);
+            this.logger.log(`[MatchJobProcessor] Available SerpAPI results for fallback: ${serpApiResults.length}`);
             
             timing.embeddingMs = Date.now() - embeddingStart;
             timing.vectorSearchMs = 0;
             timing.rerankingMs = 0;
             
             // Create fallback result with SerpAPI data
+            const fallbackResults = serpApiResults.slice(0, 5).map((item: any, index: number) => ({
+              ...item,
+              rank: index + 1,
+              score: Math.max(0.4, 0.8 - (index * 0.1)), // Decreasing scores 0.8, 0.7, 0.6, 0.5, 0.4
+              source: 'serpapi_fallback'
+            }));
+            
+            this.logger.log(`[MatchJobProcessor] Created ${fallbackResults.length} fallback results`);
+            
             compareResult = {
-              rerankedResults: serpApiResults.slice(0, 5).map((item: any, index: number) => ({
-                ...item,
-                rank: index + 1,
-                score: Math.max(0.4, 0.8 - (index * 0.1)), // Decreasing scores 0.8, 0.7, 0.6, 0.5, 0.4
-                source: 'serpapi_fallback'
-              })),
-              confidence: 'medium', // SerpAPI found results, so medium confidence
+              rerankedResults: fallbackResults,
+              confidence: serpApiResults.length > 0 ? 'medium' : 'low', // Conditional confidence
               vectorSearchFoundResults: false,
               metadata: {
                 embeddingTimeMs: timing.embeddingMs,

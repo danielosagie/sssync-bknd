@@ -973,10 +973,13 @@ export class ProductsService {
           // Create embedding for this result (title + image if available)
           const embeddingData: any = { title, description: snippet };
           if (imageUrl) {
+            console.log('[COMPARE RESULTS] Image URL:', imageUrl);
             embeddingData.images = [imageUrl];
           }
+          
 
           const resultEmbedding = await this.embeddingService.createProductEmbedding(embeddingData);
+          console.log('[COMPARE RESULTS] Result embedding:', resultEmbedding);
 
           // Store the embedding permanently
           if (storeEmbeddings) {
