@@ -147,21 +147,50 @@ export class MatchJobProcessor {
           await this.updateStage(jobId, 'Pulling images', i, products.length);
 
           const embeddingStart = Date.now();
-          const compareResult = await this.productsService.compareResults({
-            targetImage: primaryImageUrl,
-            serpApiResults,
-            productId: analysisResult.product.Id,
-            variantId: analysisResult.variant.Id,
-            userId,
-            options: {
-              vectorSearchLimit: options.vectorSearchLimit || 7,
-              storeEmbeddings: true,
-              useReranking: options.useReranking !== false // Default: true
-            }
-          });
-          timing.embeddingMs = compareResult.metadata.embeddingTimeMs || 0;
-          timing.vectorSearchMs = compareResult.metadata.vectorSearchTimeMs || 0;
-          timing.rerankingMs = compareResult.metadata.rerankingTimeMs || 0;
+          let compareResult: any;
+          
+          try {
+            compareResult = await this.productsService.compareResults({
+              targetImage: primaryImageUrl,
+              serpApiResults,
+              productId: analysisResult.product.Id,
+              variantId: analysisResult.variant.Id,
+              userId,
+              options: {
+                vectorSearchLimit: options.vectorSearchLimit || 7,
+                storeEmbeddings: true,
+                useReranking: options.useReranking !== false // Default: true
+              }
+            });
+            timing.embeddingMs = compareResult.metadata.embeddingTimeMs || 0;
+            timing.vectorSearchMs = compareResult.metadata.vectorSearchTimeMs || 0;
+            timing.rerankingMs = compareResult.metadata.rerankingTimeMs || 0;
+          } catch (embeddingError) {
+            // 🎯 FALLBACK: If embedding/reranking fails, continue with SerpAPI data
+            this.logger.warn(`Embedding failed for product ${i + 1}, using SerpAPI data only: ${embeddingError.message}`);
+            
+            timing.embeddingMs = Date.now() - embeddingStart;
+            timing.vectorSearchMs = 0;
+            timing.rerankingMs = 0;
+            
+            // Create fallback result with SerpAPI data
+            compareResult = {
+              rerankedResults: serpApiResults.slice(0, 5).map((item: any, index: number) => ({
+                ...item,
+                rank: index + 1,
+                score: Math.max(0.4, 0.8 - (index * 0.1)), // Decreasing scores 0.8, 0.7, 0.6, 0.5, 0.4
+                source: 'serpapi_fallback'
+              })),
+              confidence: 'medium', // SerpAPI found results, so medium confidence
+              vectorSearchFoundResults: false,
+              metadata: {
+                embeddingTimeMs: timing.embeddingMs,
+                vectorSearchTimeMs: 0,
+                rerankingTimeMs: 0,
+                fallbackReason: embeddingError.message
+              }
+            };
+          }
 
           // Stage 5: Creating grid
           await this.updateStage(jobId, 'Creating grid', i, products.length);
@@ -338,6 +367,7 @@ export class MatchJobProcessor {
     try {
       const supabase = this.supabaseService.getServiceClient();
       
+      // Use upsert to handle duplicate keys gracefully
       const { error } = await supabase
         .from('match_jobs')
         .upsert({
@@ -353,6 +383,8 @@ export class MatchJobProcessor {
           completed_at: status.completedAt,
           estimated_completion_at: status.estimatedCompletionAt,
           updated_at: status.updatedAt
+        }, {
+          onConflict: 'job_id'
         });
 
       if (error) {
