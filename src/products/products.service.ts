@@ -1170,8 +1170,7 @@ export class ProductsService {
   }
 
   /**
-   * Performs a quick vector search against the database.
-   * This logic is now in the service to be shared by the controller and processors.
+   * 🎯 MODERNIZED QUICK SCAN - Uses new unified architecture
    */
   async quickProductScan(
       scanData: {
@@ -1192,65 +1191,35 @@ export class ProductsService {
           textEmbedding?: number[];
       };
   }> {
-      const startTime = Date.now();
-      this.logger.log(`[ProductsService.quickProductScan] User: ${userId} - Quick scan initiated`);
+      this.logger.log(`[ProductsService.quickProductScan] User: ${userId} - Enhanced quick scan initiated`);
 
       try {
-          // Generate embeddings using EmbeddingService
-          const embeddings: any = {};
-
-          if (scanData.imageUrl || scanData.imageBase64) {
-              embeddings.imageEmbedding = await this.embeddingService.generateImageEmbedding({
-                  imageUrl: scanData.imageUrl,
-                  imageBase64: scanData.imageBase64,
-                  instruction: `Encode this ${scanData.businessTemplate || 'product'} image for similarity search focusing on key visual features.`
-              }, userId);
+          // Prepare images array for the new unified approach
+          const images: string[] = [];
+          if (scanData.imageUrl) {
+              images.push(scanData.imageUrl);
           }
 
-          if (scanData.textQuery) {
-              embeddings.textEmbedding = await this.embeddingService.generateTextEmbedding({
-                  title: scanData.textQuery,
-                  businessTemplate: scanData.businessTemplate
-              }, userId);
-          }
-
-          // Quick vector search
-          const matches = await this.embeddingService.searchSimilarProducts({
-              imageEmbedding: embeddings.imageEmbedding,
-              textEmbedding: embeddings.textEmbedding,
+          // Use the new enhanced quick scan from EmbeddingService
+          const result = await this.embeddingService.performEnhancedQuickScan({
+              images: images.length > 0 ? images : undefined,
+              textQuery: scanData.textQuery,
               businessTemplate: scanData.businessTemplate,
-              threshold: scanData.threshold || 0.7,
-              limit: 10
+              threshold: scanData.threshold,
+              userId: userId,
           });
 
-          // Determine confidence based on top score
-          const topScore = matches.length > 0 ? Math.max(...matches.map(m => m.combinedScore)) : 0;
-          let confidence: 'high' | 'medium' | 'low';
-          let recommendedAction: string;
-
-          if (topScore >= 0.95) {
-              confidence = 'high';
-              recommendedAction = 'show_single_match';
-          } else if (topScore >= 0.70) {
-              confidence = 'medium';
-              recommendedAction = 'show_multiple_candidates';
-          } else {
-              confidence = 'low';
-              recommendedAction = 'proceed_to_reranker';
-          }
-
-          const processingTimeMs = Date.now() - startTime;
-
-          this.logger.log(`[ProductsService.quickProductScan] User: ${userId} - Completed in ${processingTimeMs}ms, confidence: ${confidence}, matches: ${matches.length}`);
+          this.logger.log(`[ProductsService.quickProductScan] User: ${userId} - Completed with ${result.matches.length} matches, confidence: ${result.confidence}`);
 
           return {
-              matches: matches.slice(0, 5), // Return top 5 for UI
-              confidence,
-              processingTimeMs,
-              recommendedAction,
+              matches: result.matches,
+              confidence: result.confidence,
+              processingTimeMs: result.processingTimeMs,
+              recommendedAction: result.recommendedAction,
               embeddings: {
-                  imageEmbedding: embeddings.imageEmbedding,
-                  textEmbedding: embeddings.textEmbedding
+                  // For backward compatibility, return the search embedding as both
+                  imageEmbedding: result.searchEmbedding,
+                  textEmbedding: result.searchEmbedding,
               }
           };
 

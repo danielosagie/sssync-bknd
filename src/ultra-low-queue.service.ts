@@ -5,6 +5,8 @@ import { SimpleQueue } from './queue.interface';
 import { JobData } from './sync-engine/initial-sync.service'; // Assuming JobData is defined here or move to a common types file
 import { InitialScanProcessor } from './sync-engine/processors/initial-scan.processor';
 import { InitialSyncProcessor } from './sync-engine/processors/initial-sync.processor';
+import { MatchJobProcessor } from './products/processors/match-job.processor';
+import { MatchJobData } from './products/types/match-job.types';
 
 const QUEUE_KEY = 'ultra-low-queue';
 
@@ -18,6 +20,7 @@ export class UltraLowQueueService implements SimpleQueue {
     private readonly initialScanProcessor: InitialScanProcessor, // Proper injection
     @Inject(forwardRef(() => InitialSyncProcessor))
     private readonly initialSyncProcessor: InitialSyncProcessor, // Uncommented injection
+    private readonly matchJobProcessor: MatchJobProcessor, // NEW: Match job processor
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
@@ -65,6 +68,15 @@ export class UltraLowQueueService implements SimpleQueue {
           return job.data;
         } catch (error) {
           this.logger.error(`[UltraLowQueue] Error processing 'initial-sync' job ${job.id || 'N/A'}: ${error.message}`, error.stack);
+          return null;
+        }
+      } else if (job.data.type === 'match-job') {
+        this.logger.log(`[UltraLowQueue] Delegating to MatchJobProcessor for job ID: ${job.id || 'N/A'}`);
+        try {
+          await this.matchJobProcessor.process(mockBullMqJob as any);
+          return job.data;
+        } catch (error) {
+          this.logger.error(`[UltraLowQueue] Error processing 'match-job' job ${job.id || 'N/A'}: ${error.message}`, error.stack);
           return null;
         }
       } else {

@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { InitialSyncService } from '../sync-engine/initial-sync.service'; // For queueReconciliationJob
+import { QueueManagerService } from '../queue-manager.service';
 
 @Injectable()
 export class TasksService {
@@ -10,6 +11,7 @@ export class TasksService {
     constructor(
         private readonly platformConnectionsService: PlatformConnectionsService,
         private readonly initialSyncService: InitialSyncService,
+        private readonly queueManagerService: QueueManagerService,
     ) {}
 
     // Example: Run once a day at 3 AM server time
@@ -39,6 +41,17 @@ export class TasksService {
             this.logger.log('[CRON - dailyReconciliation] Finished queueing all reconciliation jobs.');
         } catch (error) {
             this.logger.error(`[CRON - dailyReconciliation] Error during daily reconciliation task: ${error.message}`, error.stack);
+        }
+    }
+
+    // 🎯 NEW: Process queued jobs every 10 seconds
+    @Cron('*/10 * * * * *', { name: 'processQueuedJobs' })
+    async processQueuedJobs() {
+        try {
+            // Process all jobs in the queue
+            await this.queueManagerService.processAllJobs();
+        } catch (error) {
+            this.logger.error(`[CRON - processQueuedJobs] Error processing queued jobs: ${error.message}`, error.stack);
         }
     }
 

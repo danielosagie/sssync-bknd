@@ -2102,8 +2102,9 @@ Return JSON format:
      */
 
     /**
-     * 🎯 QUICK SCAN ENDPOINT - Flexible link/image/text recognition
-     * NEW: Supports direct link submission for instant vector search + reranking
+     * 🎯 QUICK SCAN ENDPOINT - RECOGNIZE STAGE
+     * Pure image recognition against existing database products
+     * Input: 1 image → Output: matching products from our database OR "no matches"
      */
     @Post('orchestrate/quick-scan')
     @Feature('aiScans')
@@ -2113,21 +2114,19 @@ Return JSON format:
     @HttpCode(HttpStatus.OK)
     async quickScan(
         @Body() scanInput: {
-            images?: Array<{
+            images: Array<{
                 url?: string;
                 base64?: string;
                 metadata?: any;
             }>;
-            links?: string[]; // NEW: Direct links for scraping + recognition
-            textQuery?: string;
-            targetSites?: string[]; // NEW: Flexible site targeting instead of rigid templates
+            targetSites?: string[]; // For backward compatibility, will be ignored
             useReranker?: boolean; // Use AI reranker for better results
         },
         @Req() req: AuthenticatedRequest,
     ): Promise<{
         results: Array<{
             sourceIndex: number;
-            sourceType: 'image' | 'link' | 'text';
+            sourceType: 'image';
             matches: any[];
             confidence: 'high' | 'medium' | 'low';
             processingTimeMs: number;
@@ -2141,93 +2140,52 @@ Return JSON format:
             throw new BadRequestException('User ID not found after authentication.');
         }
 
-        const totalSources = (scanInput.images?.length || 0) + (scanInput.links?.length || 0) + (scanInput.textQuery ? 1 : 0);
-        this.logger.log(`[POST /orchestrate/quick-scan] User: ${userId} - Sources: ${totalSources}, Target Sites: ${scanInput.targetSites?.join(', ') || 'any'}`);
+        if (!scanInput.images || scanInput.images.length === 0) {
+            throw new BadRequestException('At least one image is required for quick scan');
+        }
+
+        this.logger.log(`[POST /orchestrate/quick-scan] User: ${userId} - Processing ${scanInput.images.length} image(s) for recognition`);
 
         try {
             const startTime = Date.now();
             const results: Array<{
                 sourceIndex: number;
-                sourceType: 'image' | 'link' | 'text';
+                sourceType: 'image';
                 matches: any[];
                 confidence: 'high' | 'medium' | 'low';
                 processingTimeMs: number;
             }> = [];
-            let sourceIndex = 0;
 
-            // Process images if provided
-            if (scanInput.images && scanInput.images.length > 0) {
-                for (const image of scanInput.images) {
+            // Process each image against our database
+            for (let i = 0; i < scanInput.images.length; i++) {
+                const image = scanInput.images[i];
+                
+                try {
                     const imageResult = await this.quickProductScan({
                         imageUrl: image.url,
                         imageBase64: image.base64,
-                        textQuery: scanInput.textQuery,
-                        businessTemplate: scanInput.targetSites?.join(',') || 'general',
+                        businessTemplate: 'general', // Always general for recognition
                         threshold: 0.6
                     }, req);
 
                     results.push({
-                        sourceIndex,
+                        sourceIndex: i,
                         sourceType: 'image',
                         matches: imageResult.matches,
                         confidence: imageResult.confidence,
                         processingTimeMs: imageResult.processingTimeMs
                     });
-                    sourceIndex++;
+
+                } catch (error) {
+                    this.logger.warn(`Failed to process image ${i}: ${error.message}`);
+                    results.push({
+                        sourceIndex: i,
+                        sourceType: 'image',
+                        matches: [],
+                        confidence: 'low',
+                        processingTimeMs: 0
+                    });
                 }
-            }
-
-            // Process links if provided - scrape then search
-            if (scanInput.links && scanInput.links.length > 0) {
-                for (const link of scanInput.links) {
-                    try {
-                        // Use Firecrawl to scrape the link
-                        const scrapedData = await this.firecrawlService.scrape(link);
-                        const textToSearch = scrapedData?.content || `Product from ${link}`;
-
-                        // Use quick scan with scraped text
-                        const linkResult = await this.quickProductScan({
-                            textQuery: textToSearch,
-                            businessTemplate: scanInput.targetSites?.join(',') || 'general',
-                            threshold: 0.6
-                        }, req);
-
-                        results.push({
-                            sourceIndex,
-                            sourceType: 'link',
-                            matches: linkResult.matches,
-                            confidence: linkResult.confidence,
-                            processingTimeMs: linkResult.processingTimeMs
-                        });
-        } catch (error) {
-                        this.logger.warn(`Failed to process link ${link}: ${error.message}`);
-                        results.push({
-                            sourceIndex,
-                            sourceType: 'link',
-                            matches: [],
-                            confidence: 'low',
-                            processingTimeMs: 0
-                        });
-                    }
-                    sourceIndex++;
-                }
-            }
-
-            // Process text-only if no images or links
-            if (!scanInput.images?.length && !scanInput.links?.length && scanInput.textQuery) {
-                const textResult = await this.quickProductScan({
-                    textQuery: scanInput.textQuery,
-                    businessTemplate: scanInput.targetSites?.join(',') || 'general',
-                    threshold: 0.6
-                }, req);
-
-                results.push({
-                    sourceIndex,
-                    sourceType: 'text',
-                    matches: textResult.matches,
-                    confidence: textResult.confidence,
-                    processingTimeMs: textResult.processingTimeMs
-                });
             }
 
             // Use reranker if requested and we have results
@@ -2235,7 +2193,6 @@ Return JSON format:
                 for (const result of results) {
                     if (result.matches.length > 1) {
                         try {
-                            // Direct reranker call without duplicate endpoint
                             const rerankerCandidates = result.matches.map((match: any) => ({
                                 id: match.variantId,
                                 title: match.title,
@@ -2251,7 +2208,7 @@ Return JSON format:
                             }));
 
                             const rerankerResponse = await this.rerankerService.rerankCandidates({
-                                query: scanInput.textQuery || 'Product search',
+                                query: 'Product recognition',
                                 candidates: rerankerCandidates,
                                 userId: req.user?.id,
                                 businessTemplate: 'general'
@@ -2260,7 +2217,7 @@ Return JSON format:
                             result.matches = rerankerResponse.rankedCandidates;
                             result.confidence = rerankerResponse.confidenceTier;
                         } catch (error) {
-                            this.logger.warn(`Reranker failed for source ${result.sourceIndex}: ${error.message}`);
+                            this.logger.warn(`Reranker failed for image ${result.sourceIndex}: ${error.message}`);
                         }
                     }
                 }
@@ -2276,25 +2233,24 @@ Return JSON format:
 
             if (highCount === totalCount && totalCount > 0) {
                 overallConfidence = 'high';
-                recommendedAction = 'use_top_matches';
+                recommendedAction = 'show_single_match';
             } else if ((highCount + mediumCount) >= totalCount * 0.7) {
                 overallConfidence = 'medium';
-                recommendedAction = 'review_and_select';
+                recommendedAction = 'show_multiple_candidates';
             } else {
                 overallConfidence = 'low';
-                recommendedAction = 'try_external_search';
+                recommendedAction = 'fallback_to_manual';
             }
 
             // Log activity
             await this.activityLogService.logUserAction(
                 'QUICK_SCAN_COMPLETED',
                 'Success',
-                `Completed quick scan for ${totalSources} source(s)`,
+                `Completed recognition scan for ${scanInput.images.length} image(s)`,
                 {
-                    action: 'quick_scan',
+                    action: 'quick_scan_recognition',
                     inputData: {
-                        sourceCount: totalSources,
-                        targetSites: scanInput.targetSites,
+                        imageCount: scanInput.images.length,
                         overallConfidence,
                         useReranker: scanInput.useReranker
                     }
@@ -2917,7 +2873,6 @@ Return JSON format:
 
         // Submit to queue
         try {
-            // ✅ FIXED: Submit job using static QueueManager like other places in this controller
             await QueueManager.enqueueJob(jobData);
             
             this.logger.log(`[Submit Match Job] Created match job ${jobId} for ${matchRequest.products.length} products`);
@@ -3138,7 +3093,7 @@ Return JSON format:
         @Query('limit') limit?: string,
         @Query('offset') offset?: string,
     ): Promise<{
-        jobs: Array<{
+        jobs?: Array<{
             jobId: string;
             status: string;
             currentStage: string;
