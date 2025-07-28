@@ -44,8 +44,27 @@ export class UltraLowQueueService implements SimpleQueue {
   async processNextJob(): Promise<any> {
     const jobStr = await this.redis.rpop(QUEUE_KEY);
     if (jobStr) {
-      const job = JSON.parse(jobStr) as { id?:string, data: JobData };
+      const parsedJob = JSON.parse(jobStr);
       this.logger.log(`[UltraLowQueue] Processing job: ${jobStr}`);
+      
+      // Handle both job formats:
+      // 1. Legacy format: { id?, data: JobData }
+      // 2. Direct format: JobData (for match-job, etc.)
+      let job: { id?: string, data: JobData };
+      
+      if (parsedJob.data && parsedJob.data.type) {
+        // Legacy format
+        job = parsedJob as { id?: string, data: JobData };
+      } else if (parsedJob.type) {
+        // Direct format - wrap it
+        job = {
+          id: parsedJob.jobId || `ultra-low-${Date.now()}`,
+          data: parsedJob as JobData
+        };
+      } else {
+        this.logger.error(`[UltraLowQueue] Invalid job format: ${jobStr}`);
+        return null;
+      }
       
       const mockBullMqJob = {
         id: job.id || `ultra-low-${Date.now()}`,
@@ -72,8 +91,11 @@ export class UltraLowQueueService implements SimpleQueue {
         }
       } else if (job.data.type === 'match-job') {
         this.logger.log(`[UltraLowQueue] Delegating to MatchJobProcessor for job ID: ${job.id || 'N/A'}`);
+        this.logger.log(`[UltraLowQueue] Match job data: ${JSON.stringify(job.data, null, 2)}`);
         try {
+          this.logger.log(`[UltraLowQueue] Starting MatchJobProcessor.process()...`);
           await this.matchJobProcessor.process(mockBullMqJob as any);
+          this.logger.log(`[UltraLowQueue] MatchJobProcessor.process() completed successfully`);
           return job.data;
         } catch (error) {
           this.logger.error(`[UltraLowQueue] Error processing 'match-job' job ${job.id || 'N/A'}: ${error.message}`, error.stack);
