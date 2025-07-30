@@ -169,7 +169,6 @@ export class MatchJobProcessor {
             timing.vectorSearchMs = compareResult.metadata.vectorSearchTimeMs || 0;
             timing.rerankingMs = compareResult.metadata.rerankingTimeMs || 0;
           } catch (embeddingError) {
-            // 🎯 FALLBACK: If embedding/reranking fails, continue with SerpAPI data
             this.logger.warn(`Embedding failed for product ${i + 1}, using SerpAPI data only: ${embeddingError.message}`);
             this.logger.log(`[MatchJobProcessor] Available SerpAPI results for fallback: ${serpApiResults.length}`);
             
@@ -177,19 +176,12 @@ export class MatchJobProcessor {
             timing.vectorSearchMs = 0;
             timing.rerankingMs = 0;
             
-            // Create fallback result with SerpAPI data
-            const fallbackResults = serpApiResults.slice(0, 5).map((item: any, index: number) => ({
-              ...item,
-              rank: index + 1,
-              score: Math.max(0.4, 0.8 - (index * 0.1)), // Decreasing scores 0.8, 0.7, 0.6, 0.5, 0.4
-              source: 'serpapi_fallback'
-            }));
-            
-            this.logger.log(`[MatchJobProcessor] Created ${fallbackResults.length} fallback results`);
+            // Return an empty array for rerankedResults as requested
+            this.logger.log(`[MatchJobProcessor] Embedding/reranking failed. Returning empty rerankedResults.`);
             
             compareResult = {
-              rerankedResults: fallbackResults,
-              confidence: serpApiResults.length > 0 ? 'medium' : 'low', // Conditional confidence
+              rerankedResults: [], // Set to empty array on failure
+              confidence: 'low', // Confidence is low because the primary matching failed
               vectorSearchFoundResults: false,
               metadata: {
                 embeddingTimeMs: timing.embeddingMs,
