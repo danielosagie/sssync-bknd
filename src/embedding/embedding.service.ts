@@ -581,6 +581,39 @@ export class EmbeddingService {
         userId: params.userId,
       });
 
+      // 🎯 Store the generated embedding for future searches
+      // This creates a "scanned product" entry that can be found in future searches
+      if (searchResult.searchEmbedding && (params.images?.length || params.textQuery)) {
+        try {
+          const productData = {
+            title: params.textQuery || 'Scanned Product',
+            description: `Product scanned by user on ${new Date().toISOString()}`,
+            imageUrl: params.images?.[0],
+            businessTemplate: params.businessTemplate || 'General Products',
+          };
+          
+          // Generate a unique SKU for this scanned product
+          const scanSku = `SCAN_${params.userId.slice(0,8)}_${Date.now()}`;
+          
+          // Store as a temporary "scanned product" so it can be found later
+          await this.storeProductEmbedding({
+            productVariantId: `temp_${Date.now()}`, // Temporary ID
+            imageEmbedding: params.images?.length ? searchResult.searchEmbedding : undefined,
+            textEmbedding: params.textQuery ? searchResult.searchEmbedding : undefined,
+            combinedEmbedding: searchResult.searchEmbedding,
+            imageUrl: params.images?.[0],
+            productText: params.textQuery,
+            sourceType: 'quick_scan',
+            businessTemplate: params.businessTemplate || 'General Products',
+          });
+          
+          this.logger.log(`[EnhancedQuickScan] Stored embedding for future searches`);
+        } catch (error) {
+          this.logger.warn(`[EnhancedQuickScan] Failed to store embedding:`, error.message);
+          // Don't fail the whole scan if storage fails
+        }
+      }
+
       // Track usage
       await this.aiUsageTracker.trackUsage({
         userId: params.userId,
