@@ -43,7 +43,7 @@ export interface EmbeddingResponse {
 
 export interface ProductMatch {
   productId: string;
-  variantId: string;
+  productVariantId: string;
   title: string;
   description?: string;
   imageUrl?: string;
@@ -859,7 +859,7 @@ export class EmbeddingService {
     let query = supabase
       .from('ProductEmbeddings')
       .select(`
-        ProductId, VariantId, ImageUrl, BusinessTemplate,
+        ProductId, ProductVariantId, ImageUrl, BusinessTemplate,
         ProductVariants!inner(Title, Description)
       `)
       .not('ImageEmbedding', 'is', null)
@@ -875,7 +875,7 @@ export class EmbeddingService {
     // Calculate similarities manually (simplified)
     return data.map(item => ({
       productId: item.ProductId,
-      variantId: item.VariantId,
+      productVariantId: item.ProductVariantId,
       title: (item as any).ProductVariants?.Title || 'Unknown Product',
       description: (item as any).ProductVariants?.Description || '',
       imageUrl: item.ImageUrl,
@@ -893,7 +893,7 @@ export class EmbeddingService {
     let query = supabase
       .from('ProductEmbeddings')
       .select(`
-        ProductId, VariantId, ImageUrl, BusinessTemplate,
+        ProductId, ProductVariantId, ImageUrl, BusinessTemplate,
         ProductVariants!inner(Title, Description)
       `)
       .not('TextEmbedding', 'is', null)
@@ -908,7 +908,7 @@ export class EmbeddingService {
 
     return data.map(item => ({
       productId: item.ProductId,
-      variantId: item.VariantId,
+      productVariantId: item.ProductVariantId,
       title: (item as any).ProductVariants?.Title || 'Unknown Product',
       description: (item as any).ProductVariants?.Description || '',
       imageUrl: item.ImageUrl,
@@ -922,7 +922,7 @@ export class EmbeddingService {
   private formatProductMatches(rawData: any[]): ProductMatch[] {
     return rawData.map(item => ({
       productId: item.product_id,
-      variantId: item.variant_id,
+      productVariantId: item.variant_id,
       title: item.title,
       description: item.description,
       imageUrl: item.image_url,
@@ -1001,7 +1001,7 @@ export class EmbeddingService {
         
         return {
           productId: (item as any).ProductVariants?.Id || '',
-          variantId: item.ProductVariantId,
+          productVariantId: item.ProductVariantId,
           title: (item as any).ProductVariants?.Title || 'Unknown Product',
           description: (item as any).ProductVariants?.Description || '',
           imageUrl: item.ImageUrl,
