@@ -19,9 +19,14 @@ export class ManualTasksService {
     
     // Get products that don't have embeddings
     const { data: products, error } = await this.supabaseService.getClient()
-      .from('products')
-      .select('id, title, description, image_url, variant_id')
-      .is('embeddings_generated', false)
+      .from('ProductVariants')
+      .select(`
+        Id, ProductId, Title, Description, UserId,
+        ProductImages!inner(ImageUrl)
+      `)
+      .not('Id', 'in', 
+        `(SELECT "ProductVariantId" FROM "ProductEmbeddings" WHERE "ProductVariantId" IS NOT NULL)`
+      )
       .limit(batchSize);
 
     if (error) {
@@ -38,71 +43,77 @@ export class ManualTasksService {
 
     for (const product of products) {
       try {
-        // Check if embeddings already exist (safety check)
-        const { data: existingEmbedding, error: checkError } = await this.supabaseService.getClient()
-          .from('product_embeddings')
-          .select('id')
-          .eq('product_id', product.id)
-          .single();
-
-        if (existingEmbedding) {
-          this.logger.log(`Embeddings already exist for product ${product.id}, skipping`);
-          continue;
-        }
-
         // Generate embeddings
-        this.logger.log(`Generating embeddings for product: ${product.title}`);
+        this.logger.log(`Generating embeddings for product: ${product.Title}`);
         
         let imageEmbedding: number[] | null = null;
         let textEmbedding: number[] | null = null;
+        let combinedEmbedding: number[] | null = null;
+
+        const imageUrl = product.ProductImages?.[0]?.ImageUrl;
 
         // Generate image embedding if image URL exists
-        if (product.image_url) {
+        if (imageUrl) {
           try {
             imageEmbedding = await this.embeddingService.generateImageEmbedding({
-              imageUrl: product.image_url
+              imageUrl: imageUrl
             });
           } catch (error) {
-            this.logger.warn(`Failed to generate image embedding for product ${product.id}:`, error.message);
+            this.logger.warn(`Failed to generate image embedding for product ${product.Id}:`, error.message);
           }
         }
 
         // Generate text embedding
-        const textContent = [product.title, product.description].filter(Boolean).join(' ');
+        const textContent = [product.Title, product.Description].filter(Boolean).join(' ');
         if (textContent) {
           try {
             textEmbedding = await this.embeddingService.generateTextEmbedding({
-              title: product.title,
-              description: product.description
+              title: product.Title,
+              description: product.Description
             });
           } catch (error) {
-            this.logger.warn(`Failed to generate text embedding for product ${product.id}:`, error.message);
+            this.logger.warn(`Failed to generate text embedding for product ${product.Id}:`, error.message);
+          }
+        }
+
+        // Generate combined embedding if both exist
+        if (imageEmbedding && textEmbedding) {
+          try {
+            // Use the existing embeddings to create a combined one
+            // This is more efficient than regenerating from scratch
+            const combined = imageEmbedding.map((imgVal, i) => 
+              imgVal * 0.7 + textEmbedding[i] * 0.3
+            );
+            combinedEmbedding = combined;
+          } catch (error) {
+            this.logger.warn(`Failed to generate combined embedding for product ${product.Id}:`, error.message);
           }
         }
 
         // Store embeddings if at least one was generated
-        if (imageEmbedding || textEmbedding) {
+        if (imageEmbedding || textEmbedding || combinedEmbedding) {
           await this.embeddingService.storeProductEmbedding({
-            productId: product.id,
-            productVariantId: product.variant_id,
-            imageEmbedding: imageEmbedding || undefined, // Convert null to undefined
-            textEmbedding: textEmbedding || undefined,   // Convert null to undefined
-            imageUrl: product.image_url,
+            productId: product.ProductId,
+            productVariantId: product.Id,
+            imageEmbedding: imageEmbedding || undefined,
+            textEmbedding: textEmbedding || undefined,
+            combinedEmbedding: combinedEmbedding || undefined,
+            imageUrl: imageUrl,
             productText: textContent,
             sourceType: 'backfill',
-            businessTemplate: 'electronics'
+            businessTemplate: 'General Products' // Use default template
           });
 
-          this.logger.log(`✅ Embeddings stored for product: ${product.title}`);
+          this.logger.log(`✅ Embeddings stored for product: ${product.Title}`);
         } else {
-          this.logger.warn(`⚠️ No embeddings generated for product: ${product.title}`);
+          this.logger.warn(`⚠️ No embeddings generated for product: ${product.Title}`);
         }
 
         // Small delay to avoid overwhelming the AI server
         await new Promise(resolve => setTimeout(resolve, 100));
 
       } catch (error) {
-        this.logger.error(`Failed to process product ${product.id}:`, error);
+        this.logger.error(`Failed to process product ${product.Id}:`, error);
         // Continue with next product instead of failing the entire batch
       }
     }

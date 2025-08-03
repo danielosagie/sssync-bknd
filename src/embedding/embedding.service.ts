@@ -971,6 +971,7 @@ export class EmbeddingService {
           ProductText,
           SourceType,
           BusinessTemplate,
+          CombinedEmbedding,
           ProductVariants!inner(
             Id,
             Title,
@@ -979,7 +980,7 @@ export class EmbeddingService {
             Sku
           )
         `)
-        .not('embedding', 'is', null);
+        .not('CombinedEmbedding', 'is', null);
 
       // Filter by business template if provided
       if (params.businessTemplate && params.businessTemplate !== 'general') {
@@ -994,10 +995,19 @@ export class EmbeddingService {
         throw error;
       }
 
-      // Calculate similarities manually (for now - later optimize with vector extension)
+      // Calculate similarities using actual cosine similarity
       const matches: ProductMatch[] = (data || []).map(item => {
-        // Placeholder similarity calculation
-        const similarity = Math.random() * 0.3 + 0.6; // 0.6-0.9 range
+        // Calculate actual cosine similarity with the stored combined embedding
+        const storedEmbedding = item.CombinedEmbedding;
+        let similarity = 0.5; // Default fallback
+        
+        if (storedEmbedding && Array.isArray(storedEmbedding) && params.embedding) {
+          try {
+            similarity = this.calculateEmbeddingSimilarity(params.embedding, storedEmbedding);
+          } catch (error) {
+            this.logger.warn('Failed to calculate similarity, using fallback:', error.message);
+          }
+        }
         
         return {
           productId: (item as any).ProductVariants?.Id || '',
