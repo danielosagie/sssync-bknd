@@ -833,7 +833,7 @@ Return JSON with: title, description, price, specifications, images
 
               await this.embeddingService.storeProductEmbedding({
                 productId: product.Id,
-                variantId: variant.Id,
+                productVariantId: variant.Id,
                 textEmbedding: titleEmbedding,
                 productText: platformData.title,
                 sourceType: 'ai_generated',
@@ -851,7 +851,7 @@ Return JSON with: title, description, price, specifications, images
 
               await this.embeddingService.storeProductEmbedding({
                 productId: product.Id,
-                variantId: variant.Id,
+                productVariantId: variant.Id,
                 textEmbedding: descEmbedding,
                 productText: platformData.description,
                 sourceType: 'ai_generated',

@@ -281,7 +281,7 @@ export class EmbeddingService {
    */
   async storeProductEmbedding(params: {
     productId: string;
-    variantId: string;
+    productVariantId: string;
     imageEmbedding?: number[];
     textEmbedding?: number[];
     combinedEmbedding?: number[];
@@ -301,7 +301,7 @@ export class EmbeddingService {
         .from('ProductEmbeddings')
         .upsert({
           ProductId: params.productId,
-          VariantId: params.variantId,
+          productVariantId: params.productVariantId,
           ImageEmbedding: params.imageEmbedding,
           TextEmbedding: params.textEmbedding,
           CombinedEmbedding: params.combinedEmbedding,
@@ -321,7 +321,7 @@ export class EmbeddingService {
         throw error;
       }
 
-      this.logger.log(`Stored embeddings for product ${params.productId}, variant ${params.variantId}`);
+      this.logger.log(`Stored embeddings for product ${params.productId}, variant ${params.productVariantId}`);
     } catch (error) {
       this.logger.error('Failed to store product embedding:', error);
       throw error;
@@ -334,7 +334,7 @@ export class EmbeddingService {
    */
   async generateAndStoreProductEmbedding(params: {
     productId?: string;
-    variantId?: string;
+    productVariantId?: string;
     images?: string[];           // Array of image URLs
     title?: string;             
     description?: string;
@@ -393,7 +393,7 @@ export class EmbeddingService {
       // Store using the existing method
       await this.storeProductEmbedding({
         productId: params.productId || 'unknown',
-        variantId: params.variantId || 'unknown',
+        productVariantId: params.productVariantId || 'unknown',
         imageEmbedding: imageEmbedding,
         textEmbedding: textEmbedding,
         combinedEmbedding: finalEmbedding,  // 🎯 This is the new, improved combined embedding

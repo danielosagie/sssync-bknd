@@ -157,7 +157,7 @@ export class MatchJobProcessor {
               targetImage: primaryImageUrl,
               serpApiResults,
               productId: analysisResult.product.Id,
-              variantId: analysisResult.variant.Id,
+              productVariantId: analysisResult.variant.Id,
               userId,
               options: {
                 vectorSearchLimit: options.vectorSearchLimit || 7,
