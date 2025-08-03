@@ -302,7 +302,7 @@ export class ProductRecognitionService {
       
       // We map the raw matches to the final ProductCandidate structure here
       result.rankedCandidates = matches.map(m => ({
-        id: m.variantId,
+        id: m.productVariantId,
         title: m.title,
         description: m.description,
         imageUrl: m.imageUrl,
@@ -349,7 +349,7 @@ export class ProductRecognitionService {
 
       // Convert matches to reranker candidates
       const candidates: RerankerCandidate[] = matches.map((match, index) => ({
-        id: match.variantId,
+        id: match.productVariantId,
         title: match.title,
         description: match.description,
         businessTemplate: match.businessTemplate,
