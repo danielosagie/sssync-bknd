@@ -596,13 +596,15 @@ export class EmbeddingService {
           const scanSku = `SCAN_${params.userId.slice(0,8)}_${Date.now()}`;
           
           // Store as a temporary "scanned product" so it can be found later
+          const tempId = `temp_${Date.now()}`;
           await this.storeProductEmbedding({
-            productVariantId: `temp_${Date.now()}`, // Temporary ID
+            productId: tempId, // Required field
+            productVariantId: tempId, // Temporary ID
             imageEmbedding: params.images?.length ? searchResult.searchEmbedding : undefined,
             textEmbedding: params.textQuery ? searchResult.searchEmbedding : undefined,
             combinedEmbedding: searchResult.searchEmbedding,
             imageUrl: params.images?.[0],
-            productText: params.textQuery,
+            productText: params.textQuery || 'Scanned Product', // Fix: handle undefined
             sourceType: 'quick_scan',
             businessTemplate: params.businessTemplate || 'General Products',
           });
