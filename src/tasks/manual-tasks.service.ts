@@ -94,7 +94,7 @@ export class ManualTasksService {
         if (imageEmbedding || textEmbedding || combinedEmbedding) {
           await this.embeddingService.storeProductEmbedding({
             productId: product.ProductId,
-            productVariantId: product.Id,
+            ProductVariantId: product.Id,
             imageEmbedding: imageEmbedding || undefined,
             textEmbedding: textEmbedding || undefined,
             combinedEmbedding: combinedEmbedding || undefined,

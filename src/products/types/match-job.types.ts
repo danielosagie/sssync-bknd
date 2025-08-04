@@ -85,7 +85,7 @@ export interface CompareResultsInput {
   targetImage: string; // URL or base64 of original product image
   serpApiResults: any[]; // SerpAPI search results
   productId: string;
-  productVariantId: string;
+  ProductVariantId: string;
   userId: string;
   options?: {
     vectorSearchLimit?: number; // Default: 7

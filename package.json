@@ -19,7 +19,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "seed:tiers": "ts-node scripts/seed-tiers.ts",
-    "backfill:embeddings": "node scripts/backfill-embeddings.js"
+    "backfill:embeddings": "node scripts/backfill-embeddings.js",
+    "test:ai-endpoints": "node scripts/test-ai-endpoints.js"
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

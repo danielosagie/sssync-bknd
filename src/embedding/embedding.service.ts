@@ -43,7 +43,7 @@ export interface EmbeddingResponse {
 
 export interface ProductMatch {
   productId: string;
-  productVariantId: string;
+  ProductVariantId: string;
   title: string;
   description?: string;
   imageUrl?: string;
@@ -281,7 +281,7 @@ export class EmbeddingService {
    */
   async storeProductEmbedding(params: {
     productId: string;
-    productVariantId: string;
+    ProductVariantId: string;
     imageEmbedding?: number[];
     textEmbedding?: number[];
     combinedEmbedding?: number[];
@@ -301,7 +301,7 @@ export class EmbeddingService {
         .from('ProductEmbeddings')
         .upsert({
           ProductId: params.productId,
-          productVariantId: params.productVariantId,
+          ProductVariantId: params.ProductVariantId,
           ImageEmbedding: params.imageEmbedding,
           TextEmbedding: params.textEmbedding,
           CombinedEmbedding: params.combinedEmbedding,
@@ -321,7 +321,7 @@ export class EmbeddingService {
         throw error;
       }
 
-      this.logger.log(`Stored embeddings for product ${params.productId}, variant ${params.productVariantId}`);
+      this.logger.log(`Stored embeddings for product ${params.productId}, variant ${params.ProductVariantId}`);
     } catch (error) {
       this.logger.error('Failed to store product embedding:', error);
       throw error;
@@ -334,7 +334,7 @@ export class EmbeddingService {
    */
   async generateAndStoreProductEmbedding(params: {
     productId?: string;
-    productVariantId?: string;
+    ProductVariantId?: string;
     images?: string[];           // Array of image URLs
     title?: string;             
     description?: string;
@@ -393,7 +393,7 @@ export class EmbeddingService {
       // Store using the existing method
       await this.storeProductEmbedding({
         productId: params.productId || 'unknown',
-        productVariantId: params.productVariantId || 'unknown',
+        ProductVariantId: params.ProductVariantId || 'unknown',
         imageEmbedding: imageEmbedding,
         textEmbedding: textEmbedding,
         combinedEmbedding: finalEmbedding,  // 🎯 This is the new, improved combined embedding
@@ -599,7 +599,7 @@ export class EmbeddingService {
           const tempId = `temp_${Date.now()}`;
           await this.storeProductEmbedding({
             productId: tempId, // Required field
-            productVariantId: tempId, // Temporary ID
+            ProductVariantId: tempId, // Temporary ID
             imageEmbedding: params.images?.length ? searchResult.searchEmbedding : undefined,
             textEmbedding: params.textQuery ? searchResult.searchEmbedding : undefined,
             combinedEmbedding: searchResult.searchEmbedding,
@@ -910,7 +910,7 @@ export class EmbeddingService {
     // Calculate similarities manually (simplified)
     return data.map(item => ({
       productId: item.ProductId,
-      productVariantId: item.ProductVariantId,
+      ProductVariantId: item.ProductVariantId,
       title: (item as any).ProductVariants?.Title || 'Unknown Product',
       description: (item as any).ProductVariants?.Description || '',
       imageUrl: item.ImageUrl,
@@ -943,7 +943,7 @@ export class EmbeddingService {
 
     return data.map(item => ({
       productId: item.ProductId,
-      productVariantId: item.ProductVariantId,
+      ProductVariantId: item.ProductVariantId,
       title: (item as any).ProductVariants?.Title || 'Unknown Product',
       description: (item as any).ProductVariants?.Description || '',
       imageUrl: item.ImageUrl,
@@ -957,7 +957,7 @@ export class EmbeddingService {
   private formatProductMatches(rawData: any[]): ProductMatch[] {
     return rawData.map(item => ({
       productId: item.product_id,
-      productVariantId: item.variant_id,
+      ProductVariantId: item.variant_id,
       title: item.title,
       description: item.description,
       imageUrl: item.image_url,
@@ -1046,7 +1046,7 @@ export class EmbeddingService {
         
         return {
           productId: (item as any).ProductVariants?.Id || '',
-          productVariantId: item.ProductVariantId,
+          ProductVariantId: item.ProductVariantId,
           title: (item as any).ProductVariants?.Title || 'Unknown Product',
           description: (item as any).ProductVariants?.Description || '',
           imageUrl: item.ImageUrl,

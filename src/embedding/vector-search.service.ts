@@ -18,7 +18,7 @@ export interface VectorSearchOptions {
 // Define the interface locally since it's specific to this service
 export interface SimilaritySearchResult {
   productId: string;
-  productVariantId: string;
+  ProductVariantId: string;
   title: string;
   description?: string;
   similarity: number;
@@ -66,7 +66,7 @@ export class VectorSearchService {
       // Convert to SimilaritySearchResult format
       return matches.map(match => ({
         productId: match.productId,
-        productVariantId: match.productVariantId,
+        ProductVariantId: match.ProductVariantId,
         title: match.title,
         description: match.description,
         similarity: match.combinedScore,
@@ -120,7 +120,7 @@ export class VectorSearchService {
       // Convert to SimilaritySearchResult format
       return matches.map(match => ({
         productId: match.productId,
-        productVariantId: match.productVariantId,
+        ProductVariantId: match.ProductVariantId,
         title: match.title,
         description: match.description,
         similarity: match.combinedScore,
@@ -178,7 +178,7 @@ export class VectorSearchService {
       // Convert to SimilaritySearchResult format
       return matches.map(match => ({
         productId: match.productId,
-        productVariantId: match.productVariantId,
+        ProductVariantId: match.ProductVariantId,
         title: match.title,
         description: match.description,
         similarity: match.combinedScore,

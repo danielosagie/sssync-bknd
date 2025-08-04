@@ -907,7 +907,7 @@ export class ProductsService {
       targetImage,
       serpApiResults,
       productId,
-      productVariantId,
+      ProductVariantId,
       userId,
       options = {}
     } = input;
@@ -938,7 +938,7 @@ export class ProductsService {
         const targetEmbeddingId = `target_${productId}_${Date.now()}`;
         await this.embeddingService.storeProductEmbedding({
           productId,
-          productVariantId,
+          ProductVariantId,
           combinedEmbedding: targetEmbedding,
           imageUrl: targetImage,
           productText: `Target image for product ${productId}`,
@@ -986,7 +986,7 @@ export class ProductsService {
             const embeddingId = `serp_${productId}_${i}_${Date.now()}`;
             await this.embeddingService.storeProductEmbedding({
               productId,
-              productVariantId,
+              ProductVariantId,
               combinedEmbedding: resultEmbedding,
               imageUrl,
               productText: `${title} ${snippet}`.trim(),
