@@ -44,7 +44,7 @@ export interface EmbeddingResponse {
 
 export interface ProductMatch {
   productId: string;
-  ProductVariantId: string;
+  ProductVariantId: string | null;
   title: string;
   description?: string;
   imageUrl?: string;
@@ -281,8 +281,8 @@ export class EmbeddingService {
    * Store product embeddings in database
    */
   async storeProductEmbedding(params: {
-    productId: string;
-    ProductVariantId: string;
+    productId: string | null;
+    ProductVariantId: string | null;
     imageEmbedding?: number[];
     textEmbedding?: number[];
     combinedEmbedding?: number[];
@@ -294,6 +294,7 @@ export class EmbeddingService {
     businessTemplate?: string;
     scrapedData?: any;
     searchKeywords?: string[];
+    userId?: string; // Add userId for RLS
   }): Promise<void> {
     try {
       const supabase = this.supabaseService.getClient();
@@ -303,6 +304,7 @@ export class EmbeddingService {
         .upsert({
           ProductId: params.productId,
           ProductVariantId: params.ProductVariantId,
+          UserId: params.userId, // Add UserId for RLS
           ImageEmbedding: params.imageEmbedding,
           TextEmbedding: params.textEmbedding,
           CombinedEmbedding: params.combinedEmbedding,
@@ -334,8 +336,8 @@ export class EmbeddingService {
    * This replaces the old method and handles all scenarios correctly
    */
   async generateAndStoreProductEmbedding(params: {
-    productId?: string;
-    ProductVariantId?: string;
+    productId?: string | null;
+    ProductVariantId?: string | null;
     images?: string[];           // Array of image URLs
     title?: string;             
     description?: string;
@@ -346,6 +348,7 @@ export class EmbeddingService {
     businessTemplate?: string;
     scrapedData?: any;
     searchKeywords?: string[];
+    userId?: string;             // Add userId for RLS
   }): Promise<void> {
     try {
       // Generate the comprehensive embedding using our new method
@@ -393,8 +396,8 @@ export class EmbeddingService {
 
       // Store using the existing method
       await this.storeProductEmbedding({
-        productId: params.productId || randomUUID(),
-        ProductVariantId: params.ProductVariantId || randomUUID(),
+        productId: params.productId || null,
+        ProductVariantId: params.ProductVariantId || null,
         imageEmbedding: imageEmbedding,
         textEmbedding: textEmbedding,
         combinedEmbedding: finalEmbedding,  // 🎯 This is the new, improved combined embedding
@@ -405,6 +408,7 @@ export class EmbeddingService {
         businessTemplate: params.businessTemplate,
         scrapedData: params.scrapedData,
         searchKeywords: params.searchKeywords,
+        userId: params.userId, // Add userId for RLS
       });
 
       this.logger.log(`✅ Generated and stored improved embeddings for product ${params.productId}`);
@@ -596,11 +600,10 @@ export class EmbeddingService {
           // Generate a unique SKU for this scanned product
           const scanSku = `SCAN_${params.userId.slice(0,8)}_${Date.now()}`;
           
-          // Store as a temporary "scanned product" so it can be found later
-          const tempId = randomUUID(); // Generate proper UUID
-          await this.storeProductEmbedding({
-            productId: tempId, // Required field
-            ProductVariantId: tempId, // Temporary ID
+                     // Store as a "scanned product" embedding (no real Product record needed)
+           await this.storeProductEmbedding({
+             productId: null, // No real product - this is a scan embedding
+             ProductVariantId: null, // No real variant - this is a scan embedding
             imageEmbedding: params.images?.length ? searchResult.searchEmbedding : undefined,
             textEmbedding: params.textQuery ? searchResult.searchEmbedding : undefined,
             combinedEmbedding: searchResult.searchEmbedding,
@@ -608,6 +611,7 @@ export class EmbeddingService {
             productText: params.textQuery || 'Scanned Product', // Fix: handle undefined
             sourceType: 'quick_scan',
             businessTemplate: params.businessTemplate || 'General Products',
+            userId: params.userId, // Add userId for RLS
           });
           
           this.logger.log(`[EnhancedQuickScan] Stored embedding for future searches`);
@@ -895,8 +899,8 @@ export class EmbeddingService {
     let query = supabase
       .from('ProductEmbeddings')
       .select(`
-        ProductId, ProductVariantId, ImageUrl, BusinessTemplate,
-        ProductVariants!inner(Title, Description)
+        ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType,
+        ProductVariants(Title, Description)
       `)
       .not('ImageEmbedding', 'is', null)
       .limit(params.limit || 20);
@@ -910,10 +914,10 @@ export class EmbeddingService {
 
     // Calculate similarities manually (simplified)
     return data.map(item => ({
-      productId: item.ProductId,
+      productId: item.ProductId || '',
       ProductVariantId: item.ProductVariantId,
-      title: (item as any).ProductVariants?.Title || 'Unknown Product',
-      description: (item as any).ProductVariants?.Description || '',
+      title: (item as any).ProductVariants?.Title || item.ProductText || 'Scanned Product',
+      description: (item as any).ProductVariants?.Description || `Scanned product (${item.SourceType})`,
       imageUrl: item.ImageUrl,
       businessTemplate: item.BusinessTemplate,
       imageSimilarity: 0.8, // Placeholder - would calculate actual cosine similarity
@@ -929,8 +933,8 @@ export class EmbeddingService {
     let query = supabase
       .from('ProductEmbeddings')
       .select(`
-        ProductId, ProductVariantId, ImageUrl, BusinessTemplate,
-        ProductVariants!inner(Title, Description)
+        ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType,
+        ProductVariants(Title, Description)
       `)
       .not('TextEmbedding', 'is', null)
       .limit(params.limit || 20);
@@ -943,10 +947,10 @@ export class EmbeddingService {
     if (error) throw error;
 
     return data.map(item => ({
-      productId: item.ProductId,
+      productId: item.ProductId || '',
       ProductVariantId: item.ProductVariantId,
-      title: (item as any).ProductVariants?.Title || 'Unknown Product',
-      description: (item as any).ProductVariants?.Description || '',
+      title: (item as any).ProductVariants?.Title || item.ProductText || 'Scanned Product',
+      description: (item as any).ProductVariants?.Description || `Scanned product (${item.SourceType})`,
       imageUrl: item.ImageUrl,
       businessTemplate: item.BusinessTemplate,
       imageSimilarity: 0,
@@ -957,7 +961,7 @@ export class EmbeddingService {
 
   private formatProductMatches(rawData: any[]): ProductMatch[] {
     return rawData.map(item => ({
-      productId: item.product_id,
+      productId: item.product_id || '',
       ProductVariantId: item.variant_id,
       title: item.title,
       description: item.description,
@@ -1002,13 +1006,14 @@ export class EmbeddingService {
       let query = supabase
         .from('ProductEmbeddings')
         .select(`
+          ProductId,
           ProductVariantId,
           ImageUrl,
           ProductText,
           SourceType,
           BusinessTemplate,
           CombinedEmbedding,
-          ProductVariants!inner(
+          ProductVariants(
             Id,
             Title,
             Description,
@@ -1046,14 +1051,16 @@ export class EmbeddingService {
         }
         
         return {
-          productId: (item as any).ProductVariants?.Id || '',
-          ProductVariantId: item.ProductVariantId,
-          title: (item as any).ProductVariants?.Title || 'Unknown Product',
-          description: (item as any).ProductVariants?.Description || '',
+          productId: (item as any).ProductVariants?.Id || item.ProductId || '',
+          ProductVariantId: item.ProductVariantId || 'scan',
+          title: (item as any).ProductVariants?.Title || item.ProductText || 'Scanned Product',
+          description: (item as any).ProductVariants?.Description || `Scanned product (${item.SourceType})`,
           imageUrl: item.ImageUrl,
           businessTemplate: item.BusinessTemplate,
           price: (item as any).ProductVariants?.Price || 0,
-          productUrl: `https://sssync.app/products/${(item as any).ProductVariants?.Id}`,
+          productUrl: (item as any).ProductVariants?.Id 
+            ? `https://sssync.app/products/${(item as any).ProductVariants.Id}`
+            : item.ImageUrl || '#',
           imageSimilarity: similarity,
           textSimilarity: similarity * 0.9,
           combinedScore: similarity,

@@ -18,7 +18,7 @@ export interface VectorSearchOptions {
 // Define the interface locally since it's specific to this service
 export interface SimilaritySearchResult {
   productId: string;
-  ProductVariantId: string;
+  ProductVariantId: string | null;
   title: string;
   description?: string;
   similarity: number;
