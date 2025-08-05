@@ -2165,7 +2165,7 @@ Return JSON format:
                         imageUrl: image.url,
                         imageBase64: image.base64,
                         businessTemplate: 'general', // Always general for recognition
-                        threshold: 0.6
+                        threshold: 0.0 // Show ALL results for debugging - will filter later
                     }, req);
 
                     results.push({
@@ -2188,38 +2188,65 @@ Return JSON format:
                 }
             }
 
-            // Use reranker if requested and we have results
-            if (scanInput.useReranker && results.length > 0) {
-                for (const result of results) {
-                    if (result.matches.length > 1) {
-                        try {
-                            const rerankerCandidates = result.matches.map((match: any) => ({
-                                id: match.variantId,
-                                title: match.title,
-                                description: match.description,
-                                businessTemplate: match.businessTemplate,
-                                imageUrl: match.imageUrl,
-                                metadata: {
-                                    productId: match.productId,
-                                    imageSimilarity: match.imageSimilarity,
-                                    textSimilarity: match.textSimilarity,
-                                    combinedScore: match.combinedScore
-                                }
-                            }));
+            // 🎯 Force reranker to run even with low scores for debugging
+            this.logger.log(`[POST /orchestrate/quick-scan] Processing results with reranker (useReranker: ${scanInput.useReranker})`);
+            
+            for (const result of results) {
+                this.logger.log(`[RerankerDebug] Image ${result.sourceIndex}: Found ${result.matches.length} vector matches, confidence: ${result.confidence}`);
+                
+                // Show all matches regardless of threshold/confidence for debugging
+                if (result.matches.length > 0) {
+                    try {
+                        // Log top 15 raw vector results as requested
+                        this.logger.log(`[VectorResults] Top ${Math.min(15, result.matches.length)} raw vector search results:`);
+                        result.matches.slice(0, 15).forEach((match: any, index: number) => {
+                            this.logger.log(`  ${index + 1}. "${match.title?.substring(0, 50) || 'No title'}..." - Score: ${match.combinedScore?.toFixed(4) || 'N/A'}`);
+                        });
 
-                            const rerankerResponse = await this.rerankerService.rerankCandidates({
-                                query: 'Product recognition',
-                                candidates: rerankerCandidates,
-                                userId: req.user?.id,
-                                businessTemplate: 'general'
-                            });
+                        // Always run reranker if we have matches (not just when useReranker=true)
+                        const rerankerCandidates = result.matches.slice(0, 15).map((match: any) => ({
+                            id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}`,
+                            title: match.title || 'Unknown Product',
+                            description: match.description || 'No description',
+                            businessTemplate: match.businessTemplate || 'general',
+                            imageUrl: match.imageUrl,
+                            price: match.price,
+                            metadata: {
+                                productId: match.productId,
+                                imageSimilarity: match.imageSimilarity,
+                                textSimilarity: match.textSimilarity,
+                                combinedScore: match.combinedScore
+                            }
+                        }));
 
-                            result.matches = rerankerResponse.rankedCandidates;
-                            result.confidence = rerankerResponse.confidenceTier;
-                        } catch (error) {
-                            this.logger.warn(`Reranker failed for image ${result.sourceIndex}: ${error.message}`);
-                        }
+                        this.logger.log(`[RerankerInput] Sending ${rerankerCandidates.length} candidates to reranker`);
+
+                        const rerankerResponse = await this.rerankerService.rerankCandidates({
+                            query: 'Find the best matching product for this image',
+                            candidates: rerankerCandidates,
+                            userId: req.user?.id,
+                            businessTemplate: 'general',
+                            maxCandidates: 3 // Return top 3 as requested
+                        });
+
+                        this.logger.log(`[RerankerResults] Top 3 reranked results:`);
+                        rerankerResponse.rankedCandidates.forEach((candidate: any, index: number) => {
+                            this.logger.log(`  ${index + 1}. "${candidate.title?.substring(0, 50)}..." - Reranker Score: ${candidate.score?.toFixed(4)} (Rank: ${candidate.rank})`);
+                        });
+
+                        // Replace matches with reranked results (top 3)
+                        result.matches = rerankerResponse.rankedCandidates;
+                        result.confidence = rerankerResponse.confidenceTier;
+                        
+                        this.logger.log(`[RerankerFinal] Updated confidence from vector search to reranker: ${rerankerResponse.confidenceTier}`);
+
+                    } catch (error) {
+                        this.logger.error(`Reranker failed for image ${result.sourceIndex}: ${error.message}`);
+                        // Keep original matches if reranker fails
+                        result.matches = result.matches.slice(0, 3); // At least show top 3 vector results
                     }
+                } else {
+                    this.logger.log(`[RerankerDebug] No matches to rerank for image ${result.sourceIndex}`);
                 }
             }
 

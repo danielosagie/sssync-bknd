@@ -512,14 +512,14 @@ export class EmbeddingService {
       }
 
       // 🎯 Step 2: Perform vector similarity search in database
-      const threshold = params.threshold || 0.6;
-      this.logger.log(`[UnifiedVectorSearch] Searching with threshold: ${threshold}`);
+      const threshold = 0.0; // Show ALL results for debugging
+      this.logger.log(`[UnifiedVectorSearch] Searching with threshold: ${threshold} (showing all results for debugging)`);
       
       const vectorMatches = await this.searchByEmbedding({
         embedding: searchEmbedding,
         businessTemplate: params.businessTemplate,
         threshold: threshold,
-        limit: params.limit || 20,
+        limit: 15, // Show top 15 as requested
       });
 
       // 🎯 Step 3: Calculate confidence and determine action
@@ -1013,7 +1013,72 @@ export class EmbeddingService {
     try {
       const supabase = this.supabaseService.getClient();
 
-      // Use Supabase vector similarity search
+      this.logger.log(`[PgVectorSearch] Using PostgreSQL vector similarity search`);
+      this.logger.log(`[PgVectorSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
+
+      // 🎯 Use PostgreSQL's vector similarity search with pgvector
+      const { data, error } = await supabase.rpc('search_products_by_vector', {
+        query_embedding: params.embedding,
+        match_threshold: params.threshold,
+        match_count: params.limit,
+        p_business_template: params.businessTemplate
+      });
+
+      if (error) {
+        this.logger.warn(`[PgVectorSearch] PostgreSQL function failed, falling back to manual search:`, error.message);
+        return this.manualVectorSearch(params);
+      }
+
+      if (!data || data.length === 0) {
+        this.logger.log(`[PgVectorSearch] No results from PostgreSQL function, trying manual search`);
+        return this.manualVectorSearch(params);
+      }
+
+      this.logger.log(`[PgVectorSearch] Found ${data.length} matches using PostgreSQL vector search`);
+
+      // Log all results
+      data.forEach((item: any, index: number) => {
+        this.logger.log(`[PgVectorResult ${index + 1}] "${item.title?.substring(0, 50) || 'No title'}..." - Similarity: ${item.similarity?.toFixed(4) || 'N/A'}`);
+      });
+
+      // Convert PostgreSQL results to ProductMatch format
+      return data.map((item: any) => ({
+        productId: item.product_id || '',
+        ProductVariantId: item.variant_id || 'scan',
+        title: item.title || 'Unknown Product',
+        description: item.description || 'No description',
+        imageUrl: item.image_url,
+        businessTemplate: item.business_template,
+        price: item.price || 0,
+        productUrl: item.product_id 
+          ? `https://sssync.app/products/${item.product_id}`
+          : item.image_url || '#',
+        imageSimilarity: item.similarity || 0,
+        textSimilarity: item.similarity || 0,
+        combinedScore: item.similarity || 0,
+      }));
+
+    } catch (error) {
+      this.logger.error('Failed PostgreSQL vector search, falling back to manual:', error);
+      return this.manualVectorSearch(params);
+    }
+  }
+
+  /**
+   * Fallback manual vector search when PostgreSQL function is not available
+   */
+  private async manualVectorSearch(params: {
+    embedding: number[];
+    businessTemplate?: string;
+    threshold: number;
+    limit: number;
+  }): Promise<ProductMatch[]> {
+    try {
+      const supabase = this.supabaseService.getClient();
+
+      this.logger.log(`[ManualVectorSearch] Using manual similarity calculation`);
+
+      // Get all embeddings from database
       let query = supabase
         .from('ProductEmbeddings')
         .select(`
@@ -1039,32 +1104,40 @@ export class EmbeddingService {
         query = query.eq('BusinessTemplate', params.businessTemplate);
       }
 
-      const { data, error } = await query
-        .limit(params.limit);
+      const { data, error } = await query.limit(100); // Get more for manual calculation
 
       if (error) {
         this.logger.error('Database search error:', error);
         throw error;
       }
 
-      this.logger.log(`[EmbeddingSearch] Found ${data?.length || 0} total embeddings in database`);
-      this.logger.log(`[EmbeddingSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
+      this.logger.log(`[ManualVectorSearch] Found ${data?.length || 0} total embeddings in database`);
 
       // Calculate similarities using actual cosine similarity
       const allResults: (ProductMatch & { rawSimilarity: number })[] = (data || []).map((item, index) => {
-        // Calculate actual cosine similarity with the stored combined embedding
         const storedEmbedding = item.CombinedEmbedding;
-        let similarity = 0.5; // Default fallback
-        let calculationStatus = 'fallback';
+        let similarity = 0.0; // Start with 0 instead of 0.5
+        let calculationStatus = 'no_calculation';
         
-        if (storedEmbedding && Array.isArray(storedEmbedding) && params.embedding) {
+        if (storedEmbedding && params.embedding) {
           try {
-            similarity = this.calculateEmbeddingSimilarity(params.embedding, storedEmbedding);
-            calculationStatus = 'calculated';
+            // Log embedding details for debugging
+            this.logger.debug(`[EmbeddingDebug ${index + 1}] Stored type: ${typeof storedEmbedding}, Is array: ${Array.isArray(storedEmbedding)}, Length: ${Array.isArray(storedEmbedding) ? storedEmbedding.length : 'N/A'}`);
+            
+            if (Array.isArray(storedEmbedding) && storedEmbedding.length === params.embedding.length) {
+              similarity = this.calculateEmbeddingSimilarity(params.embedding, storedEmbedding);
+              calculationStatus = 'calculated';
+            } else {
+              this.logger.warn(`[EmbeddingDebug ${index + 1}] Dimension mismatch - Query: ${params.embedding.length}, Stored: ${Array.isArray(storedEmbedding) ? storedEmbedding.length : 'not array'}`);
+              calculationStatus = 'dimension_mismatch';
+            }
           } catch (error) {
-            this.logger.warn('Failed to calculate similarity, using fallback:', error.message);
+            this.logger.warn(`[EmbeddingDebug ${index + 1}] Failed to calculate similarity:`, error.message);
             calculationStatus = 'error';
           }
+        } else {
+          this.logger.debug(`[EmbeddingDebug ${index + 1}] Missing embeddings - stored: ${!!storedEmbedding}, query: ${!!params.embedding}`);
+          calculationStatus = 'missing_data';
         }
         
         const title = (item as any).ProductVariants?.Title || item.ProductText || 'Scanned Product';
@@ -1086,28 +1159,28 @@ export class EmbeddingService {
           imageSimilarity: similarity,
           textSimilarity: similarity * 0.9,
           combinedScore: similarity,
-          rawSimilarity: similarity, // Keep raw score for logging
+          rawSimilarity: similarity,
         };
       });
 
       // Sort by similarity score
       allResults.sort((a, b) => b.combinedScore - a.combinedScore);
       
-      // Log top 5 scores regardless of threshold
-      this.logger.log(`[EmbeddingSearch] Top 5 similarity scores:`);
-      allResults.slice(0, 5).forEach((result, index) => {
-        this.logger.log(`  ${index + 1}. "${result.title.substring(0, 40)}..." - Score: ${result.combinedScore.toFixed(4)}`);
+      // Log top 15 scores as requested
+      this.logger.log(`[ManualVectorSearch] Top 15 similarity scores:`);
+      allResults.slice(0, 15).forEach((result, index) => {
+        this.logger.log(`  ${index + 1}. "${result.title.substring(0, 50)}..." - Score: ${result.combinedScore.toFixed(4)}`);
       });
       
       // Log threshold filtering
       const filteredMatches = allResults.filter(m => m.combinedScore >= params.threshold);
-      this.logger.log(`[EmbeddingSearch] Threshold: ${params.threshold}, Before filtering: ${allResults.length}, After filtering: ${filteredMatches.length}`);
+      this.logger.log(`[ManualVectorSearch] Threshold: ${params.threshold}, Before filtering: ${allResults.length}, After filtering: ${filteredMatches.length}`);
       
-      // Convert back to ProductMatch[] (remove rawSimilarity) and return
-      return filteredMatches.map(({ rawSimilarity, ...match }) => match);
+      // Return top results (remove rawSimilarity)
+      return filteredMatches.slice(0, params.limit).map(({ rawSimilarity, ...match }) => match);
 
     } catch (error) {
-      this.logger.error('Failed to search by embedding:', error);
+      this.logger.error('Failed manual vector search:', error);
       throw error;
     }
   }
