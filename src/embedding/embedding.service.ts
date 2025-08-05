@@ -512,10 +512,13 @@ export class EmbeddingService {
       }
 
       // 🎯 Step 2: Perform vector similarity search in database
+      const threshold = params.threshold || 0.6;
+      this.logger.log(`[UnifiedVectorSearch] Searching with threshold: ${threshold}`);
+      
       const vectorMatches = await this.searchByEmbedding({
         embedding: searchEmbedding,
         businessTemplate: params.businessTemplate,
-        threshold: params.threshold || 0.6,
+        threshold: threshold,
         limit: params.limit || 20,
       });
 
@@ -581,8 +584,8 @@ export class EmbeddingService {
         textQuery: params.textQuery,
         businessTemplate: params.businessTemplate,
         useHybridEmbedding: false, // Standard quick scan
-        threshold: params.threshold || 0.7,
-        limit: 10,
+        threshold: params.threshold || 0.1, // Lower threshold to see more results
+        limit: 20, // More results for debugging
         userId: params.userId,
       });
 
@@ -979,6 +982,7 @@ export class EmbeddingService {
    */
   calculateEmbeddingSimilarity(vecA: number[], vecB: number[]): number {
     if (!vecA || !vecB || vecA.length !== vecB.length) {
+      this.logger.debug(`[CosineSimilarity] Dimension mismatch or null vectors: A=${vecA?.length || 0}, B=${vecB?.length || 0}`);
       return 0;
     }
 
@@ -986,6 +990,13 @@ export class EmbeddingService {
     for (let i = 0; i < vecA.length; i++) {
       dotProduct += vecA[i] * vecB[i];
     }
+    
+    // Log some debug info about the vectors
+    const magnitudeA = Math.sqrt(vecA.reduce((sum, val) => sum + val * val, 0));
+    const magnitudeB = Math.sqrt(vecB.reduce((sum, val) => sum + val * val, 0));
+    
+    this.logger.debug(`[CosineSimilarity] Dot product: ${dotProduct.toFixed(4)}, |A|: ${magnitudeA.toFixed(4)}, |B|: ${magnitudeB.toFixed(4)}`);
+    
     // For normalized vectors, the dot product is the cosine similarity.
     return dotProduct;
   }
@@ -1036,24 +1047,35 @@ export class EmbeddingService {
         throw error;
       }
 
+      this.logger.log(`[EmbeddingSearch] Found ${data?.length || 0} total embeddings in database`);
+      this.logger.log(`[EmbeddingSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
+
       // Calculate similarities using actual cosine similarity
-      const matches: ProductMatch[] = (data || []).map(item => {
+      const allResults: (ProductMatch & { rawSimilarity: number })[] = (data || []).map((item, index) => {
         // Calculate actual cosine similarity with the stored combined embedding
         const storedEmbedding = item.CombinedEmbedding;
         let similarity = 0.5; // Default fallback
+        let calculationStatus = 'fallback';
         
         if (storedEmbedding && Array.isArray(storedEmbedding) && params.embedding) {
           try {
             similarity = this.calculateEmbeddingSimilarity(params.embedding, storedEmbedding);
+            calculationStatus = 'calculated';
           } catch (error) {
             this.logger.warn('Failed to calculate similarity, using fallback:', error.message);
+            calculationStatus = 'error';
           }
         }
+        
+        const title = (item as any).ProductVariants?.Title || item.ProductText || 'Scanned Product';
+        
+        // Log every calculation for debugging
+        this.logger.debug(`[Similarity ${index + 1}/${data.length}] "${title.substring(0, 50)}..." - Score: ${similarity.toFixed(4)} (${calculationStatus})`);
         
         return {
           productId: (item as any).ProductVariants?.Id || item.ProductId || '',
           ProductVariantId: item.ProductVariantId || 'scan',
-          title: (item as any).ProductVariants?.Title || item.ProductText || 'Scanned Product',
+          title,
           description: (item as any).ProductVariants?.Description || `Scanned product (${item.SourceType})`,
           imageUrl: item.ImageUrl,
           businessTemplate: item.BusinessTemplate,
@@ -1064,13 +1086,25 @@ export class EmbeddingService {
           imageSimilarity: similarity,
           textSimilarity: similarity * 0.9,
           combinedScore: similarity,
+          rawSimilarity: similarity, // Keep raw score for logging
         };
       });
 
       // Sort by similarity score
-      return matches
-        .filter(m => m.combinedScore >= params.threshold)
-        .sort((a, b) => b.combinedScore - a.combinedScore);
+      allResults.sort((a, b) => b.combinedScore - a.combinedScore);
+      
+      // Log top 5 scores regardless of threshold
+      this.logger.log(`[EmbeddingSearch] Top 5 similarity scores:`);
+      allResults.slice(0, 5).forEach((result, index) => {
+        this.logger.log(`  ${index + 1}. "${result.title.substring(0, 40)}..." - Score: ${result.combinedScore.toFixed(4)}`);
+      });
+      
+      // Log threshold filtering
+      const filteredMatches = allResults.filter(m => m.combinedScore >= params.threshold);
+      this.logger.log(`[EmbeddingSearch] Threshold: ${params.threshold}, Before filtering: ${allResults.length}, After filtering: ${filteredMatches.length}`);
+      
+      // Convert back to ProductMatch[] (remove rawSimilarity) and return
+      return filteredMatches.map(({ rawSimilarity, ...match }) => match);
 
     } catch (error) {
       this.logger.error('Failed to search by embedding:', error);
