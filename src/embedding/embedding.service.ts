@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../common/supabase.service';
 import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
 import sharp from 'sharp';
+import { randomUUID } from 'crypto';
 
 export interface ImageEmbeddingInput {
   imageUrl?: string;
@@ -392,8 +393,8 @@ export class EmbeddingService {
 
       // Store using the existing method
       await this.storeProductEmbedding({
-        productId: params.productId || 'unknown',
-        ProductVariantId: params.ProductVariantId || 'unknown',
+        productId: params.productId || randomUUID(),
+        ProductVariantId: params.ProductVariantId || randomUUID(),
         imageEmbedding: imageEmbedding,
         textEmbedding: textEmbedding,
         combinedEmbedding: finalEmbedding,  // 🎯 This is the new, improved combined embedding
@@ -596,7 +597,7 @@ export class EmbeddingService {
           const scanSku = `SCAN_${params.userId.slice(0,8)}_${Date.now()}`;
           
           // Store as a temporary "scanned product" so it can be found later
-          const tempId = `temp_${Date.now()}`;
+          const tempId = randomUUID(); // Generate proper UUID
           await this.storeProductEmbedding({
             productId: tempId, // Required field
             ProductVariantId: tempId, // Temporary ID
