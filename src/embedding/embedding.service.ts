@@ -1078,7 +1078,7 @@ export class EmbeddingService {
 
       this.logger.log(`[ManualVectorSearch] Using manual similarity calculation`);
 
-      // Get all embeddings from database - prioritize actual products over scans
+      // Get all embeddings from database for similarity calculation
       let query = supabase
         .from('ProductEmbeddings')
         .select(`
@@ -1097,15 +1097,15 @@ export class EmbeddingService {
             Sku
           )
         `)
-        .not('CombinedEmbedding', 'is', null)
-        .order('CreatedAt', { ascending: false }); // Get most recent first
+        .not('CombinedEmbedding', 'is', null);
+        // NO ORDERING - we'll sort by similarity after calculation!
 
       // Filter by business template if provided
       if (params.businessTemplate && params.businessTemplate !== 'general') {
         query = query.eq('BusinessTemplate', params.businessTemplate);
       }
 
-      const { data, error } = await query.limit(100); // Get more for manual calculation
+      const { data, error } = await query.limit(200); // Get ALL embeddings for proper similarity search
 
       if (error) {
         this.logger.error('Database search error:', error);
@@ -1166,21 +1166,31 @@ export class EmbeddingService {
         };
       });
 
-      // Sort by similarity score
+      // Sort by similarity score (HIGHEST FIRST - this is the core fix!)
       allResults.sort((a, b) => b.combinedScore - a.combinedScore);
       
       // Log top 15 scores as requested
-      this.logger.log(`[ManualVectorSearch] Top 15 similarity scores:`);
+      this.logger.log(`[ManualVectorSearch] Top 15 similarity scores (SORTED BY ACTUAL SIMILARITY):`);
       allResults.slice(0, 15).forEach((result, index) => {
-        this.logger.log(`  ${index + 1}. "${result.title.substring(0, 50)}..." - Score: ${result.combinedScore.toFixed(4)}`);
+        const isActualProduct = result.ProductVariantId !== 'scan';
+        this.logger.log(`  ${index + 1}. "${result.title.substring(0, 50)}..." - Score: ${result.combinedScore.toFixed(4)} ${isActualProduct ? '[PRODUCT]' : '[SCAN]'}`);
       });
       
       // Log threshold filtering
       const filteredMatches = allResults.filter(m => m.combinedScore >= params.threshold);
       this.logger.log(`[ManualVectorSearch] Threshold: ${params.threshold}, Before filtering: ${allResults.length}, After filtering: ${filteredMatches.length}`);
       
-      // Return top results (remove rawSimilarity)
-      return filteredMatches.slice(0, params.limit).map(({ rawSimilarity, ...match }) => match);
+      // Return top results prioritizing actual products
+      const actualProducts = filteredMatches.filter(m => m.ProductVariantId !== 'scan');
+      const scanProducts = filteredMatches.filter(m => m.ProductVariantId === 'scan');
+      
+      // Combine: actual products first, then scans, up to the limit
+      const finalResults = [...actualProducts, ...scanProducts].slice(0, params.limit);
+      
+      this.logger.log(`[ManualVectorSearch] Final results: ${actualProducts.length} products + ${finalResults.length - actualProducts.length} scans = ${finalResults.length} total`);
+      
+      // Return results (remove rawSimilarity)
+      return finalResults.map(({ rawSimilarity, ...match }) => match);
 
     } catch (error) {
       this.logger.error('Failed manual vector search:', error);
