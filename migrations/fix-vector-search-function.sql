@@ -40,7 +40,10 @@ BEGIN
         pe."CombinedEmbedding" IS NOT NULL
         AND (p_business_template IS NULL OR pe."BusinessTemplate" = p_business_template)
         AND (1 - (pe."CombinedEmbedding" <=> query_embedding)) >= match_threshold
-    ORDER BY pe."CombinedEmbedding" <=> query_embedding ASC
+    ORDER BY 
+        -- Prioritize actual products over scans
+        CASE WHEN pv."Id" IS NOT NULL THEN 0 ELSE 1 END,
+        pe."CombinedEmbedding" <=> query_embedding ASC
     LIMIT match_count;
 END;
 $$;

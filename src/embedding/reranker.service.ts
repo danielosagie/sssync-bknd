@@ -87,16 +87,16 @@ export class RerankerService {
     this.logger.log(`[RerankerDebug] Using search query: "${searchQuery}"`);
     
     try {
-      // Prepare candidates for reranking
+      // Prepare candidates for reranking - fix metadata format issue
       const candidatesForReranker = request.candidates.map(candidate => ({
         id: candidate.id,
         title: candidate.title,
         description: candidate.description || '',
-        price: candidate.price,
-        brand: candidate.brand,
-        category: candidate.category,
-        business_template: candidate.businessTemplate,
-        metadata: candidate.metadata
+        price: candidate.price || 0,
+        brand: candidate.brand || '',
+        category: candidate.category || '',
+        business_template: candidate.businessTemplate || ''
+        // Remove metadata entirely to avoid validation errors
       }));
 
       this.logger.log(`[RerankerDebug] Sending ${candidatesForReranker.length} candidates to AI server`);
