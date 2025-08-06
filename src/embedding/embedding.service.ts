@@ -1078,7 +1078,7 @@ export class EmbeddingService {
 
       this.logger.log(`[ManualVectorSearch] Using manual similarity calculation`);
 
-      // Get all embeddings from database
+      // Get all embeddings from database - prioritize actual products over scans
       let query = supabase
         .from('ProductEmbeddings')
         .select(`
@@ -1097,7 +1097,8 @@ export class EmbeddingService {
             Sku
           )
         `)
-        .not('CombinedEmbedding', 'is', null);
+        .not('CombinedEmbedding', 'is', null)
+        .order('CreatedAt', { ascending: false }); // Get most recent first
 
       // Filter by business template if provided
       if (params.businessTemplate && params.businessTemplate !== 'general') {
@@ -1141,9 +1142,11 @@ export class EmbeddingService {
         }
         
         const title = (item as any).ProductVariants?.Title || item.ProductText || 'Scanned Product';
+        const description = (item as any).ProductVariants?.Description || `Scanned product (${item.SourceType})`;
+        const isActualProduct = !!(item as any).ProductVariants?.Title;
         
         // Log every calculation for debugging
-        this.logger.debug(`[Similarity ${index + 1}/${data.length}] "${title.substring(0, 50)}..." - Score: ${similarity.toFixed(4)} (${calculationStatus})`);
+        this.logger.debug(`[Similarity ${index + 1}/${data.length}] "${title.substring(0, 50)}..." - Score: ${similarity.toFixed(4)} (${calculationStatus}) ${isActualProduct ? '[PRODUCT]' : '[SCAN]'}`);
         
         return {
           productId: (item as any).ProductVariants?.Id || item.ProductId || '',

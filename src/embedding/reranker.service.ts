@@ -79,7 +79,12 @@ export class RerankerService {
   async rerankCandidates(request: RerankerRequest): Promise<RerankerResponse> {
     const startTime = Date.now();
 
-    const rerankerRequest = ("of these products" + request.candidates + "which one is the best match for " + request.targetUrl + "?")
+    // Create a proper search query from the target URL or use a generic query
+    const searchQuery = request.targetUrl 
+      ? `product shown in image: ${request.targetUrl}`
+      : request.query || 'product recognition and matching';
+    
+    this.logger.log(`[RerankerDebug] Using search query: "${searchQuery}"`);
     
     try {
       // Prepare candidates for reranking
@@ -94,22 +99,29 @@ export class RerankerService {
         metadata: candidate.metadata
       }));
 
+      this.logger.log(`[RerankerDebug] Sending ${candidatesForReranker.length} candidates to AI server`);
+
       // Call the AI server reranker endpoint
       const response = await fetch(`${this.aiServerUrl}/rerank`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          query: rerankerRequest,
+          query: searchQuery,
           candidates: candidatesForReranker,
           top_k: request.maxCandidates || 10
         }),
       });
 
       if (!response.ok) {
-        throw new Error(`Reranker API error: ${response.statusText}`);
+        // Get detailed error information
+        const errorText = await response.text();
+        this.logger.error(`[RerankerDebug] AI Server Error: ${response.status} ${response.statusText}`);
+        this.logger.error(`[RerankerDebug] Error details: ${errorText}`);
+        throw new Error(`Reranker API error: ${response.statusText} - ${errorText}`);
       }
 
       const data = await response.json();
+      this.logger.log(`[RerankerDebug] AI Server response received successfully`);
       const processingTime = Date.now() - startTime;
 
       // Build ranked candidates with original data
