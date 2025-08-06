@@ -1020,7 +1020,7 @@ export class EmbeddingService {
       const { data, error } = await supabase.rpc('search_products_by_vector', {
         query_embedding: params.embedding,
         match_threshold: params.threshold,
-        match_count: params.limit,
+        match_count: 50, // Increased from 15 to get more results
         p_business_template: params.businessTemplate
       });
 
@@ -1036,15 +1036,16 @@ export class EmbeddingService {
 
       this.logger.log(`[PgVectorSearch] Found ${data.length} matches using PostgreSQL vector search`);
 
-      // Log all results
+      // Log all results with [PRODUCT] vs [SCAN] markers
       data.forEach((item: any, index: number) => {
-        this.logger.log(`[PgVectorResult ${index + 1}] "${item.title?.substring(0, 50) || 'No title'}..." - Similarity: ${item.similarity?.toFixed(4) || 'N/A'}`);
+        const isProduct = !!item.variant_id && item.variant_id !== 'scan';
+        this.logger.log(`[PgVectorResult ${index + 1}] "${item.title?.substring(0, 50) || 'No title'}..." - Similarity: ${item.similarity?.toFixed(4) || 'N/A'} ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
       });
 
       // Convert PostgreSQL results to ProductMatch format
       return data.map((item: any) => ({
         productId: item.product_id || '',
-        ProductVariantId: item.variant_id || 'scan',
+        ProductVariantId: item.variant_id || null,
         title: item.title || 'Unknown Product',
         description: item.description || 'No description',
         imageUrl: item.image_url,
@@ -1105,7 +1106,7 @@ export class EmbeddingService {
         query = query.eq('BusinessTemplate', params.businessTemplate);
       }
 
-      const { data, error } = await query.limit(200); // Get ALL embeddings for proper similarity search
+      const { data, error } = await query.limit(2000); // Get ALL embeddings for proper similarity search
 
       if (error) {
         this.logger.error('Database search error:', error);

@@ -2204,8 +2204,13 @@ Return JSON format:
                         });
 
                         // Always run reranker if we have matches (not just when useReranker=true)
-                        const rerankerCandidates = result.matches.slice(0, 15).map((match: any) => ({
-                            id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}`,
+                        this.logger.log(`[RerankerDebug] Raw matches before mapping:`);
+                        result.matches.slice(0, 5).forEach((match: any, index: number) => {
+                            this.logger.log(`  Raw Match ${index + 1}: "${match.title}" - URL: ${match.imageUrl} - ID: ${match.ProductVariantId || match.variantId}`);
+                        });
+
+                        const rerankerCandidates = result.matches.slice(0, 15).map((match: any, index: number) => ({
+                            id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}_${index}`,
                             title: match.title || 'Unknown Product',
                             description: match.description || 'No description',
                             businessTemplate: match.businessTemplate || 'general',
@@ -2218,6 +2223,11 @@ Return JSON format:
                                 combinedScore: match.combinedScore
                             }
                         }));
+
+                        this.logger.log(`[RerankerDebug] Mapped candidates for reranker:`);
+                        rerankerCandidates.slice(0, 5).forEach((candidate, index) => {
+                            this.logger.log(`  Candidate ${index + 1}: "${candidate.title}" - URL: ${candidate.imageUrl} - ID: ${candidate.id}`);
+                        });
 
                         this.logger.log(`[RerankerInput] Sending ${rerankerCandidates.length} candidates to reranker`);
 
