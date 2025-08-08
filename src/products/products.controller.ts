@@ -2224,6 +2224,9 @@ Return JSON format:
                             }
                         }));
 
+                        const best = result.matches[0];
+                        const rerankQuery = (best?.title || '') + ' ' + (best?.description || '');
+
                         this.logger.log(`[RerankerDebug] Mapped candidates for reranker:`);
                         rerankerCandidates.slice(0, 5).forEach((candidate, index) => {
                             this.logger.log(`  Candidate ${index + 1}: "${candidate.title}" - URL: ${candidate.imageUrl} - ID: ${candidate.id}`);
@@ -2232,7 +2235,7 @@ Return JSON format:
                         this.logger.log(`[RerankerInput] Sending ${rerankerCandidates.length} candidates to reranker`);
 
                         const rerankerResponse = await this.rerankerService.rerankCandidates({
-                            query: 'Find the best matching product for this image',
+                            query: rerankQuery,
                             candidates: rerankerCandidates,
                             userId: req.user?.id,
                             businessTemplate: 'general',
