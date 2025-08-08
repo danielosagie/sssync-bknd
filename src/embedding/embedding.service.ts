@@ -1099,6 +1099,8 @@ export class EmbeddingService {
           )
         `)
         .not('CombinedEmbedding', 'is', null);
+        .neq('SourceType', 'quick_scan');
+        
         // NO ORDERING - we'll sort by similarity after calculation!
 
       // Filter by business template if provided
