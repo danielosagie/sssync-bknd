@@ -81,6 +81,25 @@ export class EmbeddingService {
     }
   }
 
+  private parseVectorMaybeString(value: any): number[] | null {
+    if (Array.isArray(value)) return value as number[];
+    if (typeof value === 'string') {
+      try {
+        // PostgREST often returns vectors like "[0.1,0.2,...]"
+        const trimmed = value.trim();
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+          return JSON.parse(trimmed) as number[];
+        }
+        // Fallback: strip non-numeric chars and split
+        const parts = trimmed.replace(/[^\d\.\-eE,]/g, '').split(',').filter(Boolean);
+        return parts.map(Number);
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  }
+
   /**
    * Generate image embeddings using SigLIP 2
    */
@@ -1117,9 +1136,12 @@ export class EmbeddingService {
 
       this.logger.log(`[ManualVectorSearch] Found ${data?.length || 0} total embeddings in database`);
 
+
+
       // Calculate similarities using actual cosine similarity
       const allResults: (ProductMatch & { rawSimilarity: number })[] = (data || []).map((item, index) => {
-        const storedEmbedding = item.CombinedEmbedding;
+        const raw = item.CombinedEmbedding;
+        const storedEmbedding = this.parseVectorMaybeString(raw);
         let similarity = 0.0; // Start with 0 instead of 0.5
         let calculationStatus = 'no_calculation';
         
@@ -1128,7 +1150,7 @@ export class EmbeddingService {
             // Log embedding details for debugging
             this.logger.debug(`[EmbeddingDebug ${index + 1}] Stored type: ${typeof storedEmbedding}, Is array: ${Array.isArray(storedEmbedding)}, Length: ${Array.isArray(storedEmbedding) ? storedEmbedding.length : 'N/A'}`);
             
-            if (Array.isArray(storedEmbedding) && storedEmbedding.length === params.embedding.length) {
+            if (storedEmbedding && storedEmbedding.length === params.embedding.length) {
               similarity = this.calculateEmbeddingSimilarity(params.embedding, storedEmbedding);
               calculationStatus = 'calculated';
             } else {
