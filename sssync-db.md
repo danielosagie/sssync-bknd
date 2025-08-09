@@ -121,21 +121,63 @@ CREATE INDEX idx_productimages_productvariantid ON "ProductImages"("ProductVaria
 CREATE INDEX idx_productimages_platformmappingid ON "ProductImages"("PlatformMappingId");
 
 
--- Create the ProductEmbeddings table
-CREATE TABLE "ProductEmbeddings" (
-    "Id" uuid PRIMARY KEY DEFAULT gen_random_uuid(), -- Unique identifier for the embedding
-    "ProductVariantId" uuid REFERENCES "ProductVariants"("Id") ON DELETE CASCADE, -- Link to ProductVariants
-    "AiGeneratedContentId" uuid REFERENCES "AiGeneratedContent"("Id") ON DELETE SET NULL, -- Optional link to AI-generated content
-    "SourceType" text NOT NULL, -- Source type of the embedding (e.g., 'canonical_title', 'canonical_description')
-    "ContentText" text NOT NULL, -- The text that was embedded
-    embedding vector(384) NOT NULL, -- Embedding vector for the product
-    "ModelName" text NOT NULL, -- Name of the model used for embedding (e.g., 'all-MiniLM-L6-v2')
-    "CreatedAt" timestamptz NOT NULL DEFAULT now() -- Timestamp for when the record was created
+-- Core product embeddings table with multi-modal support
+CREATE TABLE IF NOT EXISTS "ProductEmbeddings" (
+    "Id" UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    "ProductId" UUID REFERENCES "Products"("Id") ON DELETE CASCADE,
+    "VariantId" UUID REFERENCES "ProductVariants"("Id") ON DELETE CASCADE,
+    
+    -- Multi-modal embeddings
+    "ImageEmbedding" vector(1664), -- SigLIP-large-patch16-384 dimension
+    "TextEmbedding" vector(1024), -- Qwen3-Embedding-0.6B dimension
+    "CombinedEmbedding" vector(2688), -- Concatenated or weighted combination
+    
+    -- Source data
+    "ImageUrl" TEXT,
+    "ImageHash" TEXT, -- For deduplication
+    "ProductText" TEXT NOT NULL, -- Title + description for text embedding
+    "SourceType" TEXT NOT NULL, -- 'user_upload', 'web_scrape', 'manual_entry'
+    "SourceUrl" TEXT,
+    
+    -- Template and metadata
+    "BusinessTemplate" TEXT, -- 'comic-book', 'electronics', 'fashion', etc.
+    "ScrapedData" JSONB,
+    "SearchKeywords" TEXT[],
+    "ModelVersions" JSONB DEFAULT '{"siglip": "google/siglip-large-patch16-384", "qwen3": "Qwen/Qwen3-Embedding-0.6B"}',
+    
+    "CreatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    "UpdatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- Create indexes for ProductEmbeddings
-CREATE INDEX idx_productembeddings_variant_id ON "ProductEmbeddings"("ProductVariantId");
-CREATE INDEX idx_productembeddings_embedding ON "ProductEmbeddings" USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100); -- Example HNSW or IVFFlat index
+-- Create optimized indexes
+CREATE INDEX IF NOT EXISTS "idx_product_embeddings_product_id" ON "ProductEmbeddings"("ProductId");
+CREATE INDEX IF NOT EXISTS "idx_product_embeddings_variant_id" ON "ProductEmbeddings"("VariantId");
+CREATE INDEX IF NOT EXISTS "idx_product_embeddings_template" ON "ProductEmbeddings"("BusinessTemplate");
+CREATE INDEX IF NOT EXISTS "idx_product_embeddings_image_hash" ON "ProductEmbeddings"("ImageHash");
+
+-- Vector similarity search indexes (multi-modal)
+CREATE INDEX IF NOT EXISTS "idx_product_embeddings_image_vector" 
+ON "ProductEmbeddings" USING ivfflat ("ImageEmbedding" vector_cosine_ops) WITH (lists = 100);
+
+CREATE INDEX IF NOT EXISTS "idx_product_embeddings_text_vector" 
+ON "ProductEmbeddings" USING ivfflat ("TextEmbedding" vector_cosine_ops) WITH (lists = 100);
+
+
+-- Update timestamp trigger
+CREATE OR REPLACE FUNCTION update_product_embeddings_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW."UpdatedAt" = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_product_embeddings_updated_at
+    BEFORE UPDATE ON "ProductEmbeddings"
+    FOR EACH ROW
+    EXECUTE FUNCTION update_product_embeddings_updated_at();
+
+GRANT ALL ON "ProductEmbeddings" TO authenticated;
 
 -- Mappings and Levels (Depend on Products/Variants and Connections)
 CREATE TABLE "PlatformProductMappings" (
@@ -503,6 +545,33 @@ CREATE INDEX IF NOT EXISTS idx_match_jobs_job_id ON public.match_jobs(job_id);
 CREATE INDEX IF NOT EXISTS idx_match_jobs_user_id ON public.match_jobs(user_id);
 CREATE INDEX IF NOT EXISTS idx_match_jobs_status ON public.match_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_match_jobs_created_at ON public.match_jobs(created_at DESC);
+
+
+-- Create generate_jobs table
+CREATE TABLE IF NOT EXISTS public.generate_jobs (
+    id UUID DEFAULT gen_random_uuid(),
+    job_id TEXT UNIQUE NOT NULL,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('queued', 'processing', 'completed', 'failed', 'cancelled')),
+    current_stage TEXT,
+    progress JSONB DEFAULT '{}',
+    results JSONB DEFAULT '[]',
+    summary JSONB DEFAULT '{}',
+    error TEXT, 
+    started_at TIMESTAMPTZ DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    estimated_completion_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_generate_jobs_job_id ON public.generate_jobs(job_id);
+CREATE INDEX IF NOT EXISTS idx_generate_jobs_user_id ON public.generate_jobs(user_id)
+CREATE INDEX IF NOT EXISTS idx_generate_jobs_status ON public.generate_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_generate_jobs_current_stage ON public.generate_jobs(current_stage);
+CREATE INDEX IF NOT EXISTS idx_generate_jobs_created_at ON public.generate_jobs(created_at);
+
 
 -- Enable RLS (Row Level Security)
 ALTER TABLE public.match_jobs ENABLE ROW LEVEL SECURITY;

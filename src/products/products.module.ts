@@ -18,6 +18,7 @@ import { EmbeddingModule } from '../embedding/embedding.module';
 import { RerankerService } from '../embedding/reranker.service';
 import { ProductAnalysisProcessor } from './processors/product-analysis.processor';
 import { MatchJobProcessor } from './processors/match-job.processor';
+import { GenerateJobProcessor } from './processors/generate-job.processor';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { MatchJobProcessor } from './processors/match-job.processor';
     RerankerService,
     ProductAnalysisProcessor,
     MatchJobProcessor,
+    GenerateJobProcessor,
   ],
   exports: [
     ProductsService, 
@@ -53,6 +55,7 @@ import { MatchJobProcessor } from './processors/match-job.processor';
     ProductOrchestratorService,
     ProductAnalysisProcessor,
     MatchJobProcessor,
+    GenerateJobProcessor,
   ],
 })
 export class ProductsModule {}

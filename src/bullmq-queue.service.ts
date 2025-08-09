@@ -10,6 +10,8 @@ import { ProductAnalysisProcessor } from './products/processors/product-analysis
 import { ProductAnalysisJobData } from './products/types/product-analysis-job.types';
 import { MatchJobProcessor } from './products/processors/match-job.processor';
 import { MatchJobData } from './products/types/match-job.types';
+import { GenerateJobProcessor } from './products/processors/generate-job.processor';
+import { GenerateJobData } from './products/types/generate-job.types';
 
 const BULLMQ_HIGH_QUEUE_NAME = 'bullmq-high-queue';
 
@@ -30,6 +32,8 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
     private readonly productAnalysisProcessor: ProductAnalysisProcessor,
     @Inject(forwardRef(() => MatchJobProcessor))
     private readonly matchJobProcessor: MatchJobProcessor,
+    @Inject(forwardRef(() => GenerateJobProcessor))
+    private readonly generateJobProcessor: GenerateJobProcessor,
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
@@ -52,7 +56,7 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
   }
 
   private initializeWorker(): void {
-    if (!this.initialScanProcessor || !this.initialSyncProcessor || !this.productAnalysisProcessor || !this.matchJobProcessor) {
+    if (!this.initialScanProcessor || !this.initialSyncProcessor || !this.productAnalysisProcessor || !this.matchJobProcessor || !this.generateJobProcessor) {
         this.logger.error('Required processors not available. Worker cannot be initialized.');
         return; 
     }
@@ -89,6 +93,14 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
             await this.matchJobProcessor.process(job as Job<MatchJobData>);
           } catch (error) {
             this.logger.error(`[BullMQWorker] Error processing 'match-job' job ${job.id}: ${error.message}`, error.stack);
+            throw error;
+          }
+        } else if ((job.data as any).type === 'generate-job') { // NEW: Handle generate jobs
+          try {
+            this.logger.log(`[BullMQWorker] Delegating 'generate-job' job ${job.id} to GenerateJobProcessor.`);
+            await this.generateJobProcessor.process(job as unknown as Job<GenerateJobData>);
+          } catch (error) {
+            this.logger.error(`[BullMQWorker] Error processing 'generate-job' job ${job.id}: ${error.message}`, error.stack);
             throw error;
           }
         } else {
@@ -171,6 +183,16 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
             return jobToProcess.data;
         } catch (err) {
             this.logger.error('Manual processNextJob failed for match-job:', err);
+            await jobToProcess.moveToFailed(err, 'token', false);
+            return null;
+        }
+      } else if (this.generateJobProcessor && (jobToProcess.data as any).type === 'generate-job') { // NEW: Handle generate jobs in manual processing
+        try {
+            await this.generateJobProcessor.process(jobToProcess as unknown as Job<GenerateJobData>);
+            await jobToProcess.moveToCompleted('processed manually', 'token', false);
+            return jobToProcess.data;
+        } catch (err) {
+            this.logger.error('Manual processNextJob failed for generate-job:', err);
             await jobToProcess.moveToFailed(err, 'token', false);
             return null;
         }

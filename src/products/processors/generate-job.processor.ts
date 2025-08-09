@@ -1,0 +1,326 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { Job } from 'bullmq';
+import { SupabaseService } from '../../common/supabase.service';
+import { ProductsService } from '../products.service';
+import { ActivityLogService } from '../../common/activity-log.service';
+import { AiGenerationService } from '../ai-generation/ai-generation.service';
+import { FirecrawlService } from '../firecrawl.service';
+import { GenerateJobData, GenerateJobStatus, GenerateJobResult } from '../types/generate-job.types';
+
+@Injectable()
+export class GenerateJobProcessor {
+  private readonly logger = new Logger(GenerateJobProcessor.name);
+  private jobStatuses = new Map<string, GenerateJobStatus>();
+
+  private readonly stages = [
+    'Preparing',
+    'Fetching sources',
+    'Scraping sources',
+    'Generating details',
+    'Saving drafts',
+    'Ready',
+  ] as const;
+
+  constructor(
+    private readonly supabaseService: SupabaseService,
+    private readonly productsService: ProductsService,
+    private readonly activityLogService: ActivityLogService,
+    private readonly aiGenerationService: AiGenerationService,
+    private readonly firecrawlService: FirecrawlService,
+  ) {}
+
+  async process(job: Job<GenerateJobData>): Promise<void> {
+    const { jobId, userId, products, selectedPlatforms, options, platformRequests, templateSources } = job.data;
+
+    const jobStatus: GenerateJobStatus = {
+      jobId,
+      userId,
+      status: 'processing',
+      currentStage: 'Preparing',
+      progress: {
+        totalProducts: products.length,
+        completedProducts: 0,
+        currentProductIndex: 0,
+        failedProducts: 0,
+        stagePercentage: 0,
+      },
+      results: [],
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.jobStatuses.set(jobId, jobStatus);
+    await this.persistJobStatus(jobStatus);
+
+    try {
+      const results: GenerateJobResult[] = [];
+      let totalProcessingTime = 0;
+
+      for (let i = 0; i < products.length; i++) {
+        const p = products[i];
+        const productStart = Date.now();
+        jobStatus.progress.currentProductIndex = i;
+        await this.updateStage(jobId, 'Fetching sources', i, products.length);
+
+        const coverUrl = p.imageUrls[p.coverImageIndex];
+
+        // Optionally scrape sources using user-selected URLs and template search
+        let scrapedDataArray: any[] | null = null;
+        if (options?.useScraping) {
+          await this.updateStage(jobId, 'Scraping sources', i, products.length);
+          try {
+            const selectedLinks: string[] = Array.from(new Set([
+              ...((p.selectedMatches || []).map((m: any) => m.link).filter((u: any) => typeof u === 'string' && u.length > 0)),
+              ...((templateSources || []).filter((u: any) => typeof u === 'string' && u.length > 0)),
+            ]));
+
+            const templateName: string | undefined = (job as any).data.template || undefined;
+
+            // If a template is provided, perform a Firecrawl search to find additional sources
+            let templateSearchUrls: string[] = [];
+            if (templateName) {
+              try {
+                const titleForQuery = (p.selectedMatches && p.selectedMatches[0]?.title) ? p.selectedMatches[0].title : 'product';
+                const prompt = `Find the product data for this product: (${titleForQuery})` +
+                  (selectedLinks.length ? ` at this link(s): (${selectedLinks.map(u => new URL(u).origin).join(', ')})` : '');
+                const searchResult = await this.firecrawlService.search(prompt);
+                const data = Array.isArray(searchResult?.data) ? searchResult.data : [];
+                templateSearchUrls = data.map((r: any) => r.url).filter((u: any) => typeof u === 'string');
+              } catch (searchErr) {
+                this.logger.warn(`[GenerateJob] Firecrawl search failed for template '${templateName}': ${searchErr.message}`);
+              }
+            }
+
+            const urlsToScrape = Array.from(new Set([...
+              selectedLinks,
+              ...templateSearchUrls,
+            ])).slice(0, 8); // limit
+
+            if (urlsToScrape.length > 0) {
+              const schema = this.firecrawlService.getProductSchema(templateName);
+              const extracted = await this.firecrawlService.extract(urlsToScrape, schema);
+              // Adapt to AI service expectation (objects with data.markdown)
+              scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
+            } else {
+              scrapedDataArray = null;
+            }
+          } catch (err) {
+            this.logger.warn(`[GenerateJob] Scrape pipeline failed for product ${i + 1}: ${err.message}`);
+            scrapedDataArray = null;
+          }
+        }
+
+        await this.updateStage(jobId, 'Generating details', i, products.length);
+        let generated: any = null;
+        try {
+          if (scrapedDataArray && scrapedDataArray.length > 0) {
+            const contextQuery = (p.selectedMatches && p.selectedMatches[0]?.title) ? p.selectedMatches[0].title : 'Product';
+            generated = await this.aiGenerationService.generateProductDetailsFromScrapedData(
+              scrapedDataArray,
+              contextQuery,
+              (job as any).data.template || undefined,
+              {
+                selectedSerpApiResult: p.selectedMatches?.[0],
+                platformRequests: (platformRequests && platformRequests.length > 0)
+                  ? platformRequests
+                  : selectedPlatforms.map(platform => ({ platform })),
+                targetSites: (p.selectedMatches || []).map((m: any) => {
+                  try { return new URL(m.link).origin; } catch { return null; }
+                }).filter(Boolean) as string[],
+              }
+            );
+          } else {
+            generated = await this.aiGenerationService.generateProductDetails(
+              p.imageUrls,
+              coverUrl,
+              selectedPlatforms,
+              p.selectedMatches ? { visual_matches: p.selectedMatches as any } : null,
+              null,
+            );
+          }
+        } catch (err) {
+          this.logger.error(`[GenerateJob] Generation failed for product ${i + 1}: ${err.message}`);
+        }
+
+        await this.updateStage(jobId, 'Saving drafts', i, products.length);
+        // Persist generated data to DB as AI content or draft fields (skipping platform publish here)
+        // You can extend ProductsService to store AI suggestions tied to product/variant
+
+        const processingTimeMs = Date.now() - productStart;
+        totalProcessingTime += processingTimeMs;
+
+        const result: GenerateJobResult = {
+          productIndex: p.productIndex,
+          productId: p.productId,
+          variantId: p.variantId,
+          platforms: (generated as any) || {},
+          sourceImageUrl: coverUrl,
+          processingTimeMs,
+          source: scrapedDataArray && scrapedDataArray.length > 0 ? 'hybrid' : 'ai_generated',
+        };
+
+        results.push(result);
+        jobStatus.progress.completedProducts = i + 1;
+        await this.updateJobStatus(jobId, jobStatus);
+      }
+
+      await this.updateStage(jobId, 'Ready', products.length, products.length);
+      jobStatus.status = 'completed';
+      jobStatus.results = results;
+      jobStatus.summary = {
+        totalProducts: products.length,
+        completed: results.length,
+        failed: jobStatus.progress.failedProducts,
+        averageProcessingTimeMs: results.length ? totalProcessingTime / results.length : 0,
+      };
+      jobStatus.completedAt = new Date().toISOString();
+      jobStatus.updatedAt = new Date().toISOString();
+      await this.updateJobStatus(jobId, jobStatus);
+
+      await this.activityLogService.logUserAction(
+        'GENERATE_JOB_COMPLETED',
+        'Success',
+        `Generate job ${jobId} completed for ${products.length} products`,
+        {
+          action: 'generate_job_completed',
+          inputData: {
+            jobId,
+            totalProducts: products.length,
+          },
+        },
+        userId,
+      );
+
+      this.logger.log(`[GenerateJob] Job ${jobId} completed successfully`);
+    } catch (error) {
+      this.logger.error(`[GenerateJob] Job ${jobId} failed: ${error.message}`, error.stack);
+      jobStatus.status = 'failed';
+      jobStatus.error = error.message;
+      jobStatus.completedAt = new Date().toISOString();
+      jobStatus.updatedAt = new Date().toISOString();
+      await this.updateJobStatus(jobId, jobStatus);
+
+      await this.activityLogService.logUserAction(
+        'GENERATE_JOB_FAILED',
+        'Error',
+        `Generate job ${jobId} failed: ${error.message}`,
+        {
+          action: 'generate_job_failed',
+          inputData: { jobId, error: error.message },
+        },
+        userId,
+      );
+
+      throw error;
+    }
+  }
+
+  private async updateStage(
+    jobId: string,
+    stage: typeof this.stages[number],
+    currentProduct: number,
+    totalProducts: number,
+  ): Promise<void> {
+    const jobStatus = this.jobStatuses.get(jobId);
+    if (!jobStatus) return;
+    const stageIndex = this.stages.indexOf(stage);
+    const stageWeight = 100 / this.stages.length;
+    const productProgress = (currentProduct / totalProducts) * stageWeight;
+    const previousStagesProgress = stageIndex * stageWeight;
+
+    jobStatus.currentStage = stage as any;
+    jobStatus.progress.stagePercentage = Math.min(100, previousStagesProgress + productProgress);
+    jobStatus.updatedAt = new Date().toISOString();
+    await this.updateJobStatus(jobId, jobStatus);
+  }
+
+  private async updateJobStatus(jobId: string, status: GenerateJobStatus): Promise<void> {
+    this.jobStatuses.set(jobId, status);
+    await this.persistJobStatus(status);
+  }
+
+  private async persistJobStatus(status: GenerateJobStatus): Promise<void> {
+    try {
+      const supabase = this.supabaseService.getServiceClient();
+      const { error } = await supabase
+        .from('generate_jobs')
+        .upsert(
+          {
+            job_id: status.jobId,
+            user_id: status.userId,
+            status: status.status,
+            current_stage: status.currentStage,
+            progress: status.progress,
+            results: status.results,
+            summary: status.summary,
+            error: status.error,
+            started_at: status.startedAt,
+            completed_at: status.completedAt,
+            estimated_completion_at: status.estimatedCompletionAt,
+            updated_at: status.updatedAt,
+          },
+          { onConflict: 'job_id' },
+        );
+      if (error) this.logger.error(`Failed to persist generate job: ${error.message}`);
+    } catch (err) {
+      this.logger.error(`Error persisting generate job: ${err.message}`);
+    }
+  }
+
+  getJobStatus(jobId: string): GenerateJobStatus | null {
+    return this.jobStatuses.get(jobId) || null;
+  }
+
+  async getJobStatusFromDatabase(jobId: string): Promise<GenerateJobStatus | null> {
+    try {
+      const supabase = this.supabaseService.getServiceClient();
+      const { data } = await supabase
+        .from('generate_jobs')
+        .select('*')
+        .eq('job_id', jobId)
+        .single();
+      if (!data) return null;
+      const status: GenerateJobStatus = {
+        jobId: data.job_id,
+        userId: data.user_id,
+        status: data.status,
+        currentStage: data.current_stage,
+        progress: data.progress,
+        results: data.results || [],
+        summary: data.summary,
+        error: data.error,
+        startedAt: data.started_at,
+        completedAt: data.completed_at,
+        estimatedCompletionAt: data.estimated_completion_at,
+        updatedAt: data.updated_at,
+      } as any;
+      this.jobStatuses.set(jobId, status);
+      return status;
+    } catch (err) {
+      this.logger.error(`Error fetching generate job from DB: ${err.message}`);
+      return null;
+    }
+  }
+
+  cancelJob(jobId: string): boolean {
+    const jobStatus = this.jobStatuses.get(jobId);
+    if (!jobStatus || jobStatus.status === 'completed' || jobStatus.status === 'failed') return false;
+    jobStatus.status = 'cancelled';
+    jobStatus.completedAt = new Date().toISOString();
+    jobStatus.updatedAt = new Date().toISOString();
+    this.updateJobStatus(jobId, jobStatus);
+    return true;
+  }
+
+  cleanupOldJobs(): void {
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    for (const [jobId, status] of this.jobStatuses.entries()) {
+      const completedAt = status.completedAt ? new Date(status.completedAt).getTime() : 0;
+      if (completedAt && completedAt < oneHourAgo) this.jobStatuses.delete(jobId);
+    }
+  }
+}
+
+
+
+

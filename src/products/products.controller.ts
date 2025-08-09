@@ -33,6 +33,8 @@ import { ProductOrchestratorService, RecognizeStageInput, MatchStageInput, Gener
 import { ProductAnalysisJobData, ProductAnalysisJobStatus } from './types/product-analysis-job.types';
 import { ProductAnalysisProcessor } from './processors/product-analysis.processor';
 import { MatchJobData, MatchJobStatus, MatchJobResult } from './types/match-job.types';
+import { GenerateJobData, GenerateJobStatus, GenerateJobResult } from './types/generate-job.types';
+import { GenerateJobProcessor } from './processors/generate-job.processor';
 import { MatchJobProcessor } from './processors/match-job.processor';
 
 interface LocationProduct {
@@ -96,6 +98,7 @@ export class ProductsController {
         private readonly productOrchestratorService: ProductOrchestratorService,
         private readonly productAnalysisProcessor: ProductAnalysisProcessor,
         private readonly matchJobProcessor: MatchJobProcessor,
+        private readonly generateJobProcessor: GenerateJobProcessor,
     ) {}
 
     // Helper method for retry logic
@@ -2311,10 +2314,8 @@ Return JSON format:
         }
     }
 
-    /**
-     * 🚀 FLEXIBLE GENERATE ENDPOINT - Generate from any sources with target sites
-     * NEW: Works with scraped data from any sites (not just rigid templates)
-     */
+    // Removed invalid submitGenerateJobs draft endpoint
+
     @Post('orchestrate/generate-flexible')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
@@ -3757,6 +3758,215 @@ Return JSON format:
             this.logger.error(`[Submit Job] Failed to submit job: ${error.message}`);
             throw new InternalServerErrorException('Failed to submit job for processing');
         }
+    }
+
+    // ===== GENERATE JOBS (mirror of match jobs) =====
+
+    @Post('generate/jobs')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 5, ttl: 60000 }})
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.ACCEPTED)
+    async submitGenerateJob(
+        @Body() generateRequest: {
+            products: Array<{
+                productIndex: number;
+                productId?: string;
+                variantId?: string;
+                imageUrls: string[];
+                coverImageIndex: number;
+                selectedMatches?: any[];
+            }>;
+            selectedPlatforms: string[];
+            template?: string | null;
+            options?: { useScraping?: boolean };
+            platformRequests?: Array<{ 
+                platform: string; 
+                fieldSources?: Record<string, string[]>; 
+                customPrompt?: string 
+            }>;
+            templateSources?: string[];
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        jobId: string;
+        status: 'queued';
+        estimatedTimeMinutes: number;
+        totalProducts: number;
+        message: string;
+    }> {
+        const userId = req.user?.id;
+        if (!userId) {
+            throw new BadRequestException('User ID not found after authentication.');
+        }
+
+        if (!generateRequest.products?.length) {
+            throw new BadRequestException('At least one product is required');
+        }
+
+        const jobId = `generate_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const estimatedTimeMinutes = Math.ceil(generateRequest.products.length * 20 / 60); // rough estimate
+
+        const jobData: GenerateJobData = {
+            type: 'generate-job',
+            jobId,
+            userId,
+            products: generateRequest.products,
+            selectedPlatforms: generateRequest.selectedPlatforms || [],
+            template: generateRequest.template ?? null,
+            platformRequests: generateRequest.platformRequests,
+            templateSources: generateRequest.templateSources,
+            options: generateRequest.options,
+            metadata: {
+                totalProducts: generateRequest.products.length,
+                estimatedTimeMinutes,
+                createdAt: new Date().toISOString(),
+            },
+        };
+
+        try {
+            await QueueManager.enqueueJob(jobData as any);
+            this.logger.log(`[Submit Generate Job] Created generate job ${jobId} for ${generateRequest.products.length} products`);
+            await this.activityLogService.logUserAction(
+                'GENERATE_JOB_SUBMITTED',
+                'Success',
+                `Generate job submitted for ${generateRequest.products.length} products`,
+                {
+                    action: 'generate_job_submitted',
+                    inputData: {
+                        jobId,
+                        productCount: generateRequest.products.length,
+                        platforms: generateRequest.selectedPlatforms,
+                        template: generateRequest.template,
+                    },
+                },
+                userId,
+            );
+
+            return {
+                jobId,
+                status: 'queued',
+                estimatedTimeMinutes,
+                totalProducts: generateRequest.products.length,
+                message: `Generate job submitted successfully. Estimated completion: ${estimatedTimeMinutes} minutes.`,
+            };
+        } catch (error) {
+            this.logger.error(`[Submit Generate Job] Failed to submit job: ${error.message}`);
+            throw new InternalServerErrorException('Failed to submit generate job for processing');
+        }
+    }
+
+    @Get('generate/jobs/:jobId/status')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async getGenerateJobStatus(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<GenerateJobStatus> {
+        const userId = req.user?.id;
+        if (!userId) throw new BadRequestException('User ID not found after authentication.');
+
+        let status = this.generateJobProcessor.getJobStatus(jobId);
+        if (!status) status = await this.generateJobProcessor.getJobStatusFromDatabase(jobId);
+        if (!status || status.userId !== userId) throw new NotFoundException(`Generate job ${jobId} not found`);
+        return status;
+    }
+
+    @Get('generate/jobs/:jobId/results')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async getGenerateJobResults(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        jobId: string;
+        status: string;
+        results: GenerateJobResult[];
+        summary?: any;
+        completedAt?: string;
+    }> {
+        const userId = req.user?.id;
+        if (!userId) throw new BadRequestException('User ID not found after authentication.');
+        let status = this.generateJobProcessor.getJobStatus(jobId);
+        if (!status) status = await this.generateJobProcessor.getJobStatusFromDatabase(jobId);
+        if (!status || status.userId !== userId) throw new NotFoundException(`Generate job ${jobId} not found`);
+        if (status.status !== 'completed') throw new BadRequestException(`Job ${jobId} is not completed yet. Current status: ${status.status}`);
+        return {
+            jobId: status.jobId,
+            status: status.status,
+            results: status.results,
+            summary: status.summary,
+            completedAt: status.completedAt,
+        };
+    }
+
+    @Delete('generate/jobs/:jobId')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async cancelGenerateJob(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{ jobId: string; status: string; message: string }> {
+        const userId = req.user?.id;
+        if (!userId) throw new BadRequestException('User ID not found after authentication.');
+        const cancelled = this.generateJobProcessor.cancelJob(jobId);
+        if (cancelled) {
+            await this.activityLogService.logUserAction(
+                'GENERATE_JOB_CANCELLED',
+                'Success',
+                `Generate job ${jobId} cancelled by user`,
+                { action: 'generate_job_cancelled', inputData: { jobId } },
+                userId,
+            );
+            return { jobId, status: 'cancelled', message: 'Generate job has been successfully cancelled' };
+        }
+        return { jobId, status: 'not_cancellable', message: 'Generate job cannot be cancelled (may be completed, failed, or not found)' };
+    }
+
+    @Get('generate/jobs')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async getUserGenerateJobs(
+        @Req() req: AuthenticatedRequest,
+        @Query('status') status?: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled',
+        @Query('limit') limit?: string,
+        @Query('offset') offset?: string,
+    ): Promise<{
+        jobs?: Array<{ jobId: string; status: string; currentStage: string; totalProducts: number; completedProducts: number; failedProducts: number; stagePercentage: number; createdAt: string; completedAt?: string; estimatedCompletionAt?: string; }>;
+        pagination: { total: number; limit: number; offset: number };
+    }> {
+        const userId = req.user?.id;
+        if (!userId) throw new BadRequestException('User ID not found after authentication.');
+        const supabase = this.supabaseService.getServiceClient();
+        let query = supabase
+            .from('generate_jobs')
+            .select('job_id, status, current_stage, progress, started_at, completed_at, estimated_completion_at', { count: 'exact' })
+            .eq('user_id', userId);
+        if (status) query = query.eq('status', status);
+        const limitNum = parseInt(limit || '20') || 20;
+        const offsetNum = parseInt(offset || '0') || 0;
+        query = query.range(offsetNum, offsetNum + limitNum - 1);
+        query = query.order('started_at', { ascending: false });
+        const { data, error, count } = await query;
+        if (error) throw new InternalServerErrorException(`Database query failed: ${error.message}`);
+        const jobs = (data || []).map(job => ({
+            jobId: job.job_id,
+            status: job.status,
+            currentStage: job.current_stage,
+            totalProducts: job.progress?.totalProducts || 0,
+            completedProducts: job.progress?.completedProducts || 0,
+            failedProducts: job.progress?.failedProducts || 0,
+            stagePercentage: job.progress?.stagePercentage || 0,
+            createdAt: job.started_at,
+            completedAt: job.completed_at,
+            estimatedCompletionAt: job.estimated_completion_at,
+        }));
+        return { jobs, pagination: { total: count || 0, limit: limitNum, offset: offsetNum } };
     }
 
     @Get('jobs/:jobId/status')
