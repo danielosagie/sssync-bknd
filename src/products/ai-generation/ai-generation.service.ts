@@ -330,6 +330,46 @@ Fabric Warmth Description	Lightweight)`;
       5.  **Extract Complete Data:** Include title, description, price, brand, specifications, tags, and platform-specific fields.
       6.  **Multi-Platform Support:** Generate for all requested platforms with appropriate formatting and optimization.
 
+      PLATFORM-SPECIFIC FIELDS:
+
+      Shopify:
+        status: 'active' or 'draft'
+        vendor: Infer from brand or source
+        productType: Shopify's specific product category (e.g., "Lipstick", "Trading Card")
+        tags: An array of 10-15 relevant keywords
+        weightUnit: Must be "POUNDS", "KILOGRAMS", "OUNCES", or "GRAMS"
+
+      Amazon:
+        categorySuggestion: Amazon's specific category path (e.g., "Beauty & Personal Care > Makeup > Lips > Lipstick")
+        bullet_points: An array of 3-5 concise, benefit-driven sentences
+        search_terms: An array of backend keywords (no commas, no repetition from title)
+        amazonProductType: The specific Amazon product type string (e.g., "BEAUTY")
+        productIdType: 'ASIN', 'UPC', or 'EAN' if present in the context data
+
+      eBay:
+        categorySuggestion: eBay's specific category path (e.g., "Collectibles > Non-Sport Trading Cards > Magic: The Gathering > MTG Individual Cards")
+        listingFormat: "FixedPrice"
+        duration: "GTC" (Good 'Til Cancelled)
+        dispatchTime: "1 business day"
+        returnPolicy: "30-day returns accepted, buyer pays for return shipping."
+        shippingService: Suggest a common service (e.g., "USPS Ground Advantage")
+        itemSpecifics: A JSON object of key-value pairs critical for search (e.g., {"Game": "Magic: The Gathering", "Card Name": "Elite Scaleguard", "Set": "Fate Reforged"})
+
+      Square:
+        categorySuggestion: Square's category path
+        gtin: UPC, EAN, or JAN if available in context
+        locations: Set to All Available Locations
+
+      Facebook:
+        categorySuggestion: Facebook Marketplace's specific category
+        brand: The brand name
+        availability: "in stock"
+
+      Clover:
+        categorySuggestion: Clover's category path
+        brand: The brand name
+        availability: "in stock"
+
       **OUTPUT FORMAT:** Return a JSON object with platform-specific data:
       {
         "shopify": { "title": "...", "description": "...", "price": 123.45, "brand": "...", "tags": [...], "vendor": "...", "productType": "..." },
