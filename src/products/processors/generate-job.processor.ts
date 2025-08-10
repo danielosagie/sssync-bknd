@@ -83,24 +83,34 @@ export class GenerateJobProcessor {
                 const titleForQuery = (p.selectedMatches && p.selectedMatches[0]?.title) ? p.selectedMatches[0].title : 'product';
                 const prompt = `Find the product data for this product: (${titleForQuery})` +
                   (selectedLinks.length ? ` at this link(s): (${selectedLinks.map(u => new URL(u).origin).join(', ')})` : '');
+                this.logger.log(`[GenerateJob] Firecrawl search prompt: ${prompt}`);
                 const searchResult = await this.firecrawlService.search(prompt);
                 const data = Array.isArray(searchResult?.data) ? searchResult.data : [];
                 templateSearchUrls = data.map((r: any) => r.url).filter((u: any) => typeof u === 'string');
+                this.logger.log(`[GenerateJob] Firecrawl search returned ${templateSearchUrls.length} candidate URL(s)`);
               } catch (searchErr) {
                 this.logger.warn(`[GenerateJob] Firecrawl search failed for template '${templateName}': ${searchErr.message}`);
               }
             }
 
-            const urlsToScrape = Array.from(new Set([...
-              selectedLinks,
+            const urlsToScrape = Array.from(new Set([
+              ...selectedLinks,
               ...templateSearchUrls,
             ])).slice(0, 8); // limit
+
+            this.logger.log(`[GenerateJob] URLs to scrape for product ${i + 1}: ${urlsToScrape.length}`);
+            if (urlsToScrape.length) {
+              this.logger.debug(`[GenerateJob] URLs: ${urlsToScrape.map(u => {
+                try { return new URL(u).origin; } catch { return u; }
+              }).join(', ')}`);
+            }
 
             if (urlsToScrape.length > 0) {
               const schema = this.firecrawlService.getProductSchema(templateName);
               const extracted = await this.firecrawlService.extract(urlsToScrape, schema);
               // Adapt to AI service expectation (objects with data.markdown)
               scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
+              this.logger.log(`[GenerateJob] Extracted structured data from ${extracted.length} URL(s)`);
             } else {
               scrapedDataArray = null;
             }
@@ -114,6 +124,7 @@ export class GenerateJobProcessor {
         let generated: any = null;
         try {
           if (scrapedDataArray && scrapedDataArray.length > 0) {
+            this.logger.log(`[GenerateJob] Generating using scraped context for product ${i + 1}`);
             const contextQuery = (p.selectedMatches && p.selectedMatches[0]?.title) ? p.selectedMatches[0].title : 'Product';
             generated = await this.aiGenerationService.generateProductDetailsFromScrapedData(
               scrapedDataArray,
@@ -130,6 +141,7 @@ export class GenerateJobProcessor {
               }
             );
           } else {
+            this.logger.log(`[GenerateJob] Generating from image(s) only (no scraped context) for product ${i + 1}`);
             generated = await this.aiGenerationService.generateProductDetails(
               p.imageUrls,
               coverUrl,
@@ -158,6 +170,9 @@ export class GenerateJobProcessor {
           processingTimeMs,
           source: scrapedDataArray && scrapedDataArray.length > 0 ? 'hybrid' : 'ai_generated',
         };
+
+        const platformKeys = Object.keys(result.platforms || {});
+        this.logger.log(`[GenerateJob] Generated platform data for product ${i + 1}: ${platformKeys.join(', ') || 'none'}`);
 
         results.push(result);
         jobStatus.progress.completedProducts = i + 1;
