@@ -395,6 +395,159 @@ export class AuthService {
     return authUrl.toString();
   }
 
+  // --- eBay ---
+  getEbayAuthUrl(userId: string, finalRedirectUri: string): string {
+    const clientId = this.configService.get<string>('EBAY_CLIENT_ID');
+    const redirectUri = this.configService.get<string>('EBAY_REDIRECT_URI');
+    const scopes = this.configService.get<string>('EBAY_SCOPES');
+    const authBase = this.configService.get<string>('EBAY_AUTH_BASE_URL', 'https://auth.sandbox.ebay.com');
+    if (!clientId || !redirectUri || !scopes) {
+      throw new InternalServerErrorException('eBay OAuth not configured.');
+    }
+    const state = this.generateStateJwt({ userId, platform: 'ebay', finalRedirectUri });
+    const url = new URL('/oauth2/authorize', authBase);
+    url.searchParams.set('client_id', clientId);
+    url.searchParams.set('response_type', 'code');
+    url.searchParams.set('redirect_uri', redirectUri);
+    url.searchParams.set('scope', scopes);
+    url.searchParams.set('state', state);
+    return url.toString();
+  }
+
+  async handleEbayCallback(code: string, state: string): Promise<void> {
+    const payload = this.verifyStateJwt(state, 'ebay');
+    const clientId = this.configService.get<string>('EBAY_CLIENT_ID');
+    const clientSecret = this.configService.get<string>('EBAY_CLIENT_SECRET');
+    const redirectUri = this.configService.get<string>('EBAY_REDIRECT_URI');
+    const apiBase = this.configService.get<string>('EBAY_API_BASE_URL', 'https://api.sandbox.ebay.com');
+    if (!clientId || !clientSecret || !redirectUri) throw new InternalServerErrorException('eBay OAuth not configured.');
+
+    // Exchange code for refresh_token
+    const tokenUrl = new URL('/identity/v1/oauth2/token', apiBase);
+    const basic = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+    const body = new URLSearchParams();
+    body.set('grant_type', 'authorization_code');
+    body.set('code', code);
+    body.set('redirect_uri', redirectUri);
+
+    const resp = await fetch(tokenUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Authorization': `Basic ${basic}` },
+      body: body.toString(),
+    });
+    if (!resp.ok) {
+      const t = await resp.text();
+      this.logger.error(`eBay token exchange failed: ${resp.status} ${t}`);
+      throw new InternalServerErrorException('Failed to exchange eBay code.');
+    }
+    const tokenData = await resp.json();
+    const refreshToken = tokenData.refresh_token;
+    if (!refreshToken) throw new InternalServerErrorException('eBay response missing refresh_token.');
+
+    // Optional: get identity to derive account id/name
+    let accountId = 'ebay-account';
+    try {
+      const accessToken = tokenData.access_token;
+      if (accessToken) {
+        const idResp = await fetch(new URL('/identity/v1/oauth2/user/', apiBase).toString(), { headers: { Authorization: `Bearer ${accessToken}` } });
+        if (idResp.ok) {
+          const idBody = await idResp.json();
+          accountId = idBody?.userId || accountId;
+        }
+      }
+    } catch {}
+
+    await this.platformConnectionsService.createOrUpdateConnection(
+      payload.userId,
+      'ebay',
+      `eBay (${accountId})`,
+      { refreshToken },
+      'active',
+      { accountId },
+    );
+  }
+
+  // --- Facebook ---
+  getFacebookAuthUrl(userId: string, finalRedirectUri: string): string {
+    const appId = this.configService.get<string>('FB_APP_ID');
+    const redirectUri = this.configService.get<string>('FB_REDIRECT_URI');
+    const scopes = this.configService.get<string>('FB_SCOPES');
+    const version = this.configService.get<string>('FB_GRAPH_API_VERSION', 'v19.0');
+    if (!appId || !redirectUri || !scopes) throw new InternalServerErrorException('Facebook OAuth not configured.');
+    const state = this.generateStateJwt({ userId, platform: 'facebook', finalRedirectUri });
+    const url = new URL(`https://www.facebook.com/${version}/dialog/oauth`);
+    url.searchParams.set('client_id', appId);
+    url.searchParams.set('redirect_uri', redirectUri);
+    url.searchParams.set('scope', scopes);
+    url.searchParams.set('state', state);
+    return url.toString();
+  }
+
+  async handleFacebookCallback(code: string, state: string): Promise<void> {
+    const payload = this.verifyStateJwt(state, 'facebook');
+    const appId = this.configService.get<string>('FB_APP_ID');
+    const appSecret = this.configService.get<string>('FB_APP_SECRET');
+    const redirectUri = this.configService.get<string>('FB_REDIRECT_URI');
+    const version = this.configService.get<string>('FB_GRAPH_API_VERSION', 'v19.0');
+    if (!appId || !appSecret || !redirectUri) throw new InternalServerErrorException('Facebook OAuth not configured.');
+
+    // Exchange code for user access token
+    const tokenUrl = new URL(`https://graph.facebook.com/${version}/oauth/access_token`);
+    tokenUrl.searchParams.set('client_id', appId);
+    tokenUrl.searchParams.set('client_secret', appSecret);
+    tokenUrl.searchParams.set('redirect_uri', redirectUri);
+    tokenUrl.searchParams.set('code', code);
+
+    const resp = await fetch(tokenUrl.toString());
+    if (!resp.ok) {
+      const t = await resp.text();
+      this.logger.error(`Facebook token exchange failed: ${resp.status} ${t}`);
+      throw new InternalServerErrorException('Failed to exchange Facebook code.');
+    }
+    const tokenData = await resp.json();
+    const userAccessToken = tokenData.access_token;
+    if (!userAccessToken) throw new InternalServerErrorException('Facebook response missing access_token');
+
+    // Optional: exchange for long-lived token
+    let longLived = userAccessToken;
+    try {
+      const extUrl = new URL(`https://graph.facebook.com/${version}/oauth/access_token`);
+      extUrl.searchParams.set('grant_type', 'fb_exchange_token');
+      extUrl.searchParams.set('client_id', appId);
+      extUrl.searchParams.set('client_secret', appSecret);
+      extUrl.searchParams.set('fb_exchange_token', userAccessToken);
+      const extResp = await fetch(extUrl.toString());
+      if (extResp.ok) {
+        const extData = await extResp.json();
+        longLived = extData.access_token || userAccessToken;
+      }
+    } catch {}
+
+    // Fetch pages and pick first (phase 1)
+    let pageId = undefined;
+    let pageName = 'Facebook Page';
+    try {
+      const pagesResp = await fetch(`https://graph.facebook.com/${version}/me/accounts`, { headers: { Authorization: `Bearer ${longLived}` } });
+      if (pagesResp.ok) {
+        const pages = await pagesResp.json();
+        const first = pages.data?.[0];
+        if (first) {
+          pageId = first.id;
+          pageName = first.name || pageName;
+        }
+      }
+    } catch {}
+
+    await this.platformConnectionsService.createOrUpdateConnection(
+      payload.userId,
+      'facebook',
+      pageName,
+      { userAccessTokenLL: longLived, pageId },
+      'active',
+      { pageId },
+    );
+  }
+
   async handleSquareCallback(code: string, state: string): Promise<void> {
     this.logger.log(`Handling Square callback.`);
     let statePayload: StatePayload;

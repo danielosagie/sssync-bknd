@@ -29,6 +29,15 @@ export interface PlatformConnection {
   UpdatedAt: Date | string;
 }
 
+export interface PlatformToggle {
+  PlatformType: string; // 'shopify', 'square', etc.
+  Enabled: boolean;     // Globally enabled?
+  AllowPublish?: boolean; // Allowed to publish new listings?
+  AllowSync?: boolean;    // Allowed to sync inventory?
+  Message?: string;       // Admin notice to surface in UI
+  UpdatedAt: string;
+}
+
 @Injectable()
 export class PlatformConnectionsService {
     private readonly logger = new Logger(PlatformConnectionsService.name);
@@ -166,6 +175,10 @@ export class PlatformConnectionsService {
             case 'clover':
             case 'square':
                 return 'merchantId';
+            case 'ebay':
+                return 'accountId';
+            case 'facebook':
+                return 'pageId';
             default:
                 return null;
         }
@@ -406,5 +419,25 @@ export class PlatformConnectionsService {
             CreatedAt: row.CreatedAt,
             UpdatedAt: row.UpdatedAt,
         };
+    }
+
+    // --- Global Toggles ---
+    async getPlatformToggles(): Promise<PlatformToggle[]> {
+        const supabase = this.getSupabaseClient();
+        const { data, error } = await supabase
+            .from('PlatformToggles')
+            .select('*');
+        if (error) {
+            this.logger.error(`Error fetching PlatformToggles: ${error.message}`);
+            return [];
+        }
+        return (data || []).map((r: any) => ({
+            PlatformType: r.PlatformType,
+            Enabled: !!r.Enabled,
+            AllowPublish: r.AllowPublish ?? true,
+            AllowSync: r.AllowSync ?? true,
+            Message: r.Message || '',
+            UpdatedAt: r.UpdatedAt || r.updated_at || new Date().toISOString(),
+        }));
     }
 } 

@@ -400,6 +400,8 @@ CREATE TABLE IF NOT EXISTS "SearchTemplates" (
     "UsageCount" INTEGER DEFAULT 0,
     "CreatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     "UpdatedAt" TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    "FieldSourceMappings" JSONB,
+    "isFavorite" BOOLEAN DEFAULT false,
 );
 
 -- Create indexes for better performance

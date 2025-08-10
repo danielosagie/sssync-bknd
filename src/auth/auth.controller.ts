@@ -367,6 +367,105 @@ export class AuthController {
     }
   }
 
+  // --- eBay Endpoints ---
+  @Get('ebay/login')
+  async ebayLogin(
+    @Query('userId') userId: string,
+    @Res() res: Response,
+    @Query('finalRedirectUri') finalRedirectUri?: string,
+  ) {
+    if (!userId) {
+      throw new BadRequestException('Missing required query parameter: userId.');
+    }
+    const redirectTarget = finalRedirectUri || this.frontendRedirectBase;
+    this.logger.log(`Initiating eBay login for userId: ${userId}, redirecting to: ${redirectTarget}`);
+    try {
+      const authUrl = this.authService.getEbayAuthUrl(userId, redirectTarget);
+      res.redirect(authUrl);
+    } catch (error) {
+      this.logger.error(`Error generating eBay auth URL: ${error.message}`, error.stack);
+      const errorRedirect = buildRedirectUrl(redirectTarget, 'ebay', false, 'eBay OAuth not configured.');
+      res.redirect(errorRedirect);
+    }
+  }
+
+  @Get('ebay/callback')
+  async ebayCallback(
+    @Query() query: { code?: string; state?: string; error?: string; error_description?: string },
+    @Res() res: Response,
+  ) {
+    this.logger.log('Received eBay callback');
+    let errorRedirectTarget = this.frontendRedirectBase;
+    try {
+      if (query.error) {
+        this.logger.warn(`eBay callback error: ${query.error} - ${query.error_description}`);
+        throw new UnauthorizedException(query.error_description || query.error);
+      }
+      if (!query.code || !query.state) {
+        throw new BadRequestException('Missing required parameters in eBay callback.');
+      }
+      const statePayload = this.authService.verifyStateJwt(query.state, 'ebay');
+      errorRedirectTarget = statePayload.finalRedirectUri;
+      await this.authService.handleEbayCallback(query.code, query.state);
+      const successRedirect = buildRedirectUrl(statePayload.finalRedirectUri, 'ebay', true);
+      res.redirect(successRedirect);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'OAuth error';
+      this.logger.error(`Error during eBay callback: ${msg}`);
+      const errorRedirect = buildRedirectUrl(errorRedirectTarget, 'ebay', false, msg);
+      res.redirect(errorRedirect);
+    }
+  }
+
+  // --- Facebook Endpoints ---
+  @Get('facebook/login')
+  async facebookLogin(
+    @Query('userId') userId: string,
+    @Res() res: Response,
+    @Query('finalRedirectUri') finalRedirectUri?: string,
+  ) {
+    if (!userId) {
+      throw new BadRequestException('Missing required query parameter: userId.');
+    }
+    const redirectTarget = finalRedirectUri || this.frontendRedirectBase;
+    this.logger.log(`Initiating Facebook login for userId: ${userId}, redirecting to: ${redirectTarget}`);
+    try {
+      const authUrl = this.authService.getFacebookAuthUrl(userId, redirectTarget);
+      res.redirect(authUrl);
+    } catch (error) {
+      this.logger.error(`Error generating Facebook auth URL: ${error.message}`, error.stack);
+      const errorRedirect = buildRedirectUrl(redirectTarget, 'facebook', false, 'Facebook OAuth not configured.');
+      res.redirect(errorRedirect);
+    }
+  }
+
+  @Get('facebook/callback')
+  async facebookCallback(
+    @Query() query: { code?: string; state?: string; error?: string; error_description?: string },
+    @Res() res: Response,
+  ) {
+    this.logger.log('Received Facebook callback');
+    let errorRedirectTarget = this.frontendRedirectBase;
+    try {
+      if (query.error) {
+        this.logger.warn(`Facebook callback error: ${query.error} - ${query.error_description}`);
+        throw new UnauthorizedException(query.error_description || query.error);
+      }
+      if (!query.code || !query.state) {
+        throw new BadRequestException('Missing required parameters in Facebook callback.');
+      }
+      const statePayload = this.authService.verifyStateJwt(query.state, 'facebook');
+      errorRedirectTarget = statePayload.finalRedirectUri;
+      await this.authService.handleFacebookCallback(query.code, query.state);
+      const successRedirect = buildRedirectUrl(statePayload.finalRedirectUri, 'facebook', true);
+      res.redirect(successRedirect);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : 'OAuth error';
+      this.logger.error(`Error during Facebook callback: ${msg}`);
+      const errorRedirect = buildRedirectUrl(errorRedirectTarget, 'facebook', false, msg);
+      res.redirect(errorRedirect);
+    }
+  }
   @Get('square/callback')
   async squareCallback(
     // Square returns 'error' and 'error_description' query params on failure

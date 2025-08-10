@@ -1,5 +1,5 @@
 import { Controller, Get, Delete, Param, UseGuards, Request, Logger, ParseUUIDPipe, HttpCode, HttpStatus, Patch, Body, ValidationPipe, ForbiddenException } from '@nestjs/common';
-import { PlatformConnectionsService, PlatformConnection } from './platform-connections.service';
+import { PlatformConnectionsService, PlatformConnection, PlatformToggle } from './platform-connections.service';
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard'; // Adjust path
 import { UpdateConnectionStatusDto } from './dto/update-connection-status.dto';
 
@@ -16,6 +16,11 @@ export class PlatformConnectionsController {
         this.logger.log(`Listing connections for user ${userId}`);
         // Service should return only non-sensitive fields
         return this.connectionsService.getConnectionsForUser(userId);
+    }
+
+    @Get('toggles')
+    async getToggles(): Promise<PlatformToggle[]> {
+        return this.connectionsService.getPlatformToggles();
     }
 
     @Patch(':id/status')
