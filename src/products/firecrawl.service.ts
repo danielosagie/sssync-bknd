@@ -23,7 +23,8 @@ export interface FirecrawlDeepResearchResult {
 @Injectable()
 export class FirecrawlService {
   private readonly logger = new Logger(FirecrawlService.name);
-  private firecrawlApp;
+  private apiKey: string | null = null;
+  private baseUrl = 'https://api.firecrawl.dev/v1';
 
   constructor(
     private readonly configService: ConfigService,
@@ -32,34 +33,32 @@ export class FirecrawlService {
     const apiKey = this.configService.get<string>('FIRECRAWL_API_KEY');
     if (!apiKey) {
       this.logger.warn('FIRECRAWL_API_KEY is not configured. FirecrawlService will be disabled.');
+      this.apiKey = null;
       return;
     }
-    // Initialize with dynamic import or mock for now
-    this.firecrawlApp = { 
-      search: async (query: string, options?: any) => ({ data: [] }),
-      scrape: async (params: { url: string }) => ({ data: { markdown: 'Mock content' } })
-    };
+    this.apiKey = apiKey;
   }
 
   /**
    * Search the web and optionally extract content from search results
    */
   async search(query: string): Promise<any> {
-    if (!this.firecrawlApp) {
-      throw new Error('FirecrawlService is not initialized.');
-    }
+    if (!this.apiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
     this.logger.log(`Searching with Firecrawl: ${query}`);
-    try {
-      const results = await this.firecrawlApp.search(query, {
-        pageOptions: {
-          fetchPageContent: false
-        }
-      });
-      return results;
-    } catch (error) {
-      this.logger.error(`Firecrawl search failed for query: ${query}`, error.stack);
-      throw error;
+    const res = await fetch(`${this.baseUrl}/search`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({ query }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      this.logger.error(`Firecrawl search error ${res.status}: ${text}`);
+      throw new Error(`Firecrawl search failed: ${res.status}`);
     }
+    return res.json();
   }
 
   /**
@@ -73,20 +72,25 @@ export class FirecrawlService {
       systemPrompt?: string;
     } = {}
   ): Promise<FirecrawlExtractResult[]> {
-    try {
-      this.logger.log(`Extracting data from ${urls.length} URLs`);
-      
-      // Mock extraction for now
-      return urls.map(url => ({
-        url,
-        title: 'Mock Product',
-        price: 99.99,
-        description: 'Mock product description',
-      }));
-    } catch (error) {
-      this.logger.error(`Extraction failed for URLs ${urls.join(', ')}:`, error);
-      throw new Error(`Failed to extract: ${error.message}`);
+    if (!this.apiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
+    this.logger.log(`Extracting data from ${urls.length} URLs`);
+    const res = await fetch(`${this.baseUrl}/extract`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({ urls, schema, ...options }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      this.logger.error(`Firecrawl extract error ${res.status}: ${text}`);
+      throw new Error(`Firecrawl extract failed: ${res.status}`);
     }
+    const json = await res.json();
+    // Expect json.data or array; normalize
+    const data = (json?.data && Array.isArray(json.data)) ? json.data : (Array.isArray(json) ? json : []);
+    return data as FirecrawlExtractResult[];
   }
 
   /**
@@ -257,17 +261,22 @@ export class FirecrawlService {
   }
 
   async scrape(url: string): Promise<any> {
-    if (!this.firecrawlApp) {
-      throw new Error('FirecrawlService is not initialized.');
-    }
+    if (!this.apiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
     this.logger.log(`Scraping with Firecrawl: ${url}`);
-    try {
-      const result = await this.firecrawlApp.scrape({ url });
-      return result;
-    } catch (error) {
-      this.logger.error(`Firecrawl scrape failed for url: ${url}`, error.stack);
-      throw error;
+    const res = await fetch(`${this.baseUrl}/scrape`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify({ url }),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      this.logger.error(`Firecrawl scrape error ${res.status}: ${text}`);
+      throw new Error(`Firecrawl scrape failed: ${res.status}`);
     }
+    return res.json();
   }
 
   async deepProductSearch(

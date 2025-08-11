@@ -2,6 +2,7 @@ import { Injectable, InternalServerErrorException, Logger, BadRequestException }
 import { ConfigService } from '@nestjs/config';
 import Groq from 'groq-sdk'; // Import Groq SDK
 import { SerpApiLensResponse, VisualMatch } from '../image-recognition/image-recognition.service'; // Keep using these interfaces
+import { buildPlatformConstraintsText, validateAgainstPlatformSchemas } from '../types/platform-schemas';
 
 // Define richer expected output structure based on platform keys
 // Aligns more closely with frontend needs and user-provided structure
@@ -173,7 +174,7 @@ Use this exact JSON structure:
 Focus on accuracy, SEO optimization, and platform best practices. If visual matches are provided, use them to inform pricing and categorization but ensure your suggestions are competitive and realistic.`;
 
       const completion = await this.groq.chat.completions.create({
-        model: 'deepseek-r1-distill-llama-70b',
+        model: 'qwen/qwen3-32b',
         messages: [
           {
             role: 'user',
@@ -216,6 +217,7 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
         platform: string;
         fieldSources?: Record<string, string[]>; // Field-specific source URLs
         customPrompt?: string;
+        requestedFields?: string[];
       }>;
       targetSites?: string[]; // Sites to prioritize for data sourcing
     },
@@ -302,6 +304,9 @@ Fabric Warmth Description	Lightweight)`;
             platformRequirements += `  • ${field}: Use data primarily from ${sources.join(', ')}\n`;
           });
         }
+        if (platform.requestedFields && platform.requestedFields.length > 0) {
+          platformRequirements += `- ONLY GENERATE THESE FIELDS (HARD FAIL IF MISSING): ${platform.requestedFields.join(', ')}\n`;
+        }
       });
     }
 
@@ -310,6 +315,10 @@ Fabric Warmth Description	Lightweight)`;
     if (userSelections?.targetSites?.length) {
       targetSitesContext = `\n**PRIORITY DATA SOURCES:** Focus on data from these sites: ${userSelections.targetSites.join(', ')}\n`;
     }
+
+    // Limit prompt expectations to only selected platforms
+    const selectedPlatforms = (userSelections?.platformRequests?.map(p => p.platform) || []).filter(Boolean);
+    const constraintsText = buildPlatformConstraintsText(selectedPlatforms);
 
     const userPrompt = `
       The user has identified a similar product online and provided specific requirements. This context is your primary source for strategic enrichment. Deeply analyze this information.
@@ -370,8 +379,11 @@ Fabric Warmth Description	Lightweight)`;
         brand: The brand name
         availability: "in stock"
 
+      ${constraintsText}
+
       **OUTPUT FORMAT:** Return a JSON object with platform-specific data:
       {
+        // Only include keys for: ${selectedPlatforms.join(', ')}
         "shopify": { "title": "...", "description": "...", "price": 123.45, "brand": "...", "tags": [...], "vendor": "...", "productType": "..." },
         "amazon": { "title": "...", "description": "...", "price": 123.45, "bullet_points": [...], "search_terms": [...] },
         "ebay": { "title": "...", "description": "...", "price": 123.45, "itemSpecifics": {...}, "listingFormat": "FixedPrice" }
@@ -384,12 +396,20 @@ Fabric Warmth Description	Lightweight)`;
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        model: 'meta-llama/llama-4-maverick-17b-128e-instruct',
+        model: 'qwen/qwen3-32b',
         temperature: 0.2,
         response_format: { type: 'json_object' },
       });
 
       const generatedJson = JSON.parse(chatCompletion.choices[0]?.message?.content || '{}');
+      // Hard-fail additive + enum validation from registry
+      const requestedByPlatform: Record<string, string[] | undefined> = {};
+      for (const req of (userSelections?.platformRequests || [])) {
+        requestedByPlatform[req.platform] = req.requestedFields;
+      }
+      if (selectedPlatforms.length) {
+        validateAgainstPlatformSchemas(generatedJson, selectedPlatforms, requestedByPlatform);
+      }
       return generatedJson as GeneratedDetails;
     } catch (error) {
       this.logger.error('Error generating product details from scraped data with Groq:', error);
