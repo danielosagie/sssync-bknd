@@ -42,7 +42,7 @@ export class FirecrawlService {
   /**
    * Search the web and optionally extract content from search results
    */
-  async search(query: string): Promise<any> {
+  async search(query: string, opts: { limit?: number; scrapeOptions?: { formats?: string[] } } = {}): Promise<any> {
     if (!this.apiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
     this.logger.log(`Searching with Firecrawl: ${query}`);
     const res = await fetch(`${this.baseUrl}/search`, {
@@ -51,7 +51,7 @@ export class FirecrawlService {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query, limit: opts.limit ?? 5, scrapeOptions: opts.scrapeOptions }),
     });
     if (!res.ok) {
       const text = await res.text();
@@ -89,7 +89,16 @@ export class FirecrawlService {
     }
     const json = await res.json();
     // Expect json.data or array; normalize
-    const data = (json?.data && Array.isArray(json.data)) ? json.data : (Array.isArray(json) ? json : []);
+    let data = (json?.data && Array.isArray(json.data)) ? json.data : (Array.isArray(json) ? json : []);
+
+    // Fallback: if extract returns empty, do lightweight scrape for content
+    if (!data || data.length === 0) {
+      this.logger.warn(`Firecrawl extract returned 0 results. Falling back to scrape() for ${urls.length} URL(s).`);
+      const scraped = await this.scrapeMany(urls);
+      // Map to a consistent structure for downstream usage
+      data = scraped.map(s => ({ url: s.url, title: s.metadata?.title, markdown: s.markdown, html: s.html, links: s.links }));
+    }
+
     return data as FirecrawlExtractResult[];
   }
 
@@ -269,7 +278,7 @@ export class FirecrawlService {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${this.apiKey}`,
       },
-      body: JSON.stringify({ url }),
+      body: JSON.stringify({ url, formats: ['markdown', 'links', 'html'] }),
     });
     if (!res.ok) {
       const text = await res.text();
@@ -277,6 +286,20 @@ export class FirecrawlService {
       throw new Error(`Firecrawl scrape failed: ${res.status}`);
     }
     return res.json();
+  }
+
+  async scrapeMany(urls: string[]): Promise<Array<{ url: string; markdown?: string; html?: string; links?: string[]; metadata?: any }>> {
+    const results: Array<{ url: string; markdown?: string; html?: string; links?: string[]; metadata?: any }> = [];
+    for (const url of urls) {
+      try {
+        const out = await this.scrape(url);
+        const data = out?.data || out || {};
+        results.push({ url, markdown: data.markdown, html: data.html, links: data.links, metadata: data.metadata });
+      } catch (err) {
+        this.logger.warn(`Scrape failed for ${url}: ${err?.message || err}`);
+      }
+    }
+    return results;
   }
 
   async deepProductSearch(
@@ -287,7 +310,7 @@ export class FirecrawlService {
     } = {}
   ): Promise<any[]> {
     try {
-      const searchResults = await this.search(query);
+      const searchResults = await this.search(query, { limit: 6, scrapeOptions: { formats: ['links'] } });
       const targetWebsites = options.websites;
 
       if (!targetWebsites || targetWebsites.length === 0) {
@@ -295,7 +318,7 @@ export class FirecrawlService {
         return searchResults.data || [];
       }
       
-      const urlsToScrape = searchResults.data
+      const urlsToScrape = (searchResults.data || [])
         .filter(r => targetWebsites.some(w => r.url.includes(w)))
         .map(r => r.url)
         .slice(0, 5); // Limit to top 5 relevant URLs
