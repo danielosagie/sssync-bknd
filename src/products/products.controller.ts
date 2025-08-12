@@ -2220,6 +2220,8 @@ Return JSON format:
                             imageUrl: match.imageUrl,
                             price: match.price,
                             metadata: {
+                                sourceUrl: match.link || match.url || match.sourceUrl,
+                                source: match.source,
                                 productId: match.productId,
                                 imageSimilarity: match.imageSimilarity,
                                 textSimilarity: match.textSimilarity,
@@ -2300,6 +2302,22 @@ Return JSON format:
                 },
                 userId
             );
+
+            // Record scan event to AiGeneratedContent (analytics/training)
+            try {
+                const supabase = this.supabaseService.getServiceClient();
+                await supabase.from('AiGeneratedContent').insert({
+                    UserId: req.user?.id || null,
+                    ContentType: 'scan',
+                    SourceApi: 'serpapi+embeddings',
+                    Prompt: 'quick-scan',
+                    GeneratedText: JSON.stringify({ results }),
+                    Metadata: { overallConfidence, recommendedAction, imageCount: scanInput.images.length },
+                    IsActive: false,
+                });
+            } catch (e) {
+                this.logger.warn(`Failed to store scan analytics: ${e?.message || e}`);
+            }
 
             return {
                 results,
@@ -3901,6 +3919,63 @@ Return JSON format:
             summary: status.summary,
             completedAt: status.completedAt,
         };
+    }
+
+    // === Generate Versions History ===
+    @Get('generate/versions')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @HttpCode(HttpStatus.OK)
+    async getGenerateVersions(
+        @Query('productId') productId: string,
+        @Query('variantId') variantId?: string,
+        @Query('limit') limit?: string,
+        @Query('offset') offset?: string,
+        @Req() req?: AuthenticatedRequest,
+    ): Promise<Array<{ id: string; jobId: string; createdAt: string; platforms: any; sources: Array<{ url: string; usedForFields?: string[] }> }>> {
+        const userId = req?.user?.id;
+        if (!userId) throw new BadRequestException('User ID not found after authentication.');
+        if (!productId) throw new BadRequestException('productId is required');
+
+        const limitNum = parseInt(limit || '20') || 20;
+        const offsetNum = parseInt(offset || '0') || 0;
+
+        const supabase = this.supabaseService.getServiceClient();
+
+        // Pull from generate_jobs results where productId/variantId match
+        const { data, error } = await supabase
+          .from('generate_jobs')
+          .select('job_id, results, started_at')
+          .eq('user_id', userId)
+          .order('started_at', { ascending: false })
+          .range(offsetNum, offsetNum + limitNum - 1);
+
+        if (error) throw new InternalServerErrorException(`Database error: ${error.message}`);
+
+        const versions: Array<{ id: string; jobId: string; createdAt: string; platforms: any; sources: Array<{ url: string; usedForFields?: string[] }> }> = [];
+
+        for (const row of (data || [])) {
+            const results = Array.isArray(row.results) ? row.results : [];
+            for (const r of results) {
+                if (r.productId === productId && (!variantId || r.variantId === variantId)) {
+                    const id = `${row.job_id}_${r.productIndex}`;
+                    const sources = Array.isArray(r.sources)
+                        ? r.sources
+                        : Array.isArray(r.platforms?.sources)
+                            ? r.platforms.sources
+                            : [];
+                    versions.push({
+                        id,
+                        jobId: row.job_id,
+                        createdAt: row.started_at,
+                        platforms: r.platforms || {},
+                        sources: (sources || []).map((s: any) => ({ url: s?.url || s, usedForFields: s?.usedForFields || undefined })),
+                    });
+                }
+            }
+        }
+
+        return versions;
     }
 
     @Delete('generate/jobs/:jobId')

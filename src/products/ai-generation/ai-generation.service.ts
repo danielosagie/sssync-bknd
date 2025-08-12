@@ -191,9 +191,10 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
         return null;
       }
 
-      // Parse JSON response
+      // Parse JSON response with sanitizer (handles <think>...</think> and fenced code)
       try {
-        const generatedDetails = JSON.parse(responseText) as GeneratedDetails;
+        const sanitized = this.sanitizeJsonLikeResponse(responseText);
+        const generatedDetails = JSON.parse(sanitized) as GeneratedDetails;
         this.logger.log('Successfully generated product details using AI');
         return generatedDetails;
       } catch (parseError) {
@@ -205,6 +206,27 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
       this.logger.error(`Error generating product details: ${error.message}`, error.stack);
       return null;
     }
+  }
+
+  /**
+   * Extracts JSON from model outputs that may include a <think> prelude or fenced code blocks.
+   */
+  private sanitizeJsonLikeResponse(text: string): string {
+    if (!text) return '{}';
+    // 1) Strip <think>...</think> blocks
+    let out = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+    // 2) Prefer fenced ```json ... ``` if present
+    const fencedMatch = out.match(/```json[\r\n]+([\s\S]*?)```/i);
+    if (fencedMatch && fencedMatch[1]) {
+      return fencedMatch[1].trim();
+    }
+    // 3) If output is pure JSON, return as is
+    const starts = out.indexOf('{');
+    const ends = out.lastIndexOf('}');
+    if (starts !== -1 && ends !== -1 && ends > starts) {
+      return out.substring(starts, ends + 1);
+    }
+    return out;
   }
 
   async generateProductDetailsFromScrapedData(

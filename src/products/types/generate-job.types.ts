@@ -52,6 +52,7 @@ export interface GenerateJobResult {
   sourceImageUrl: string;
   processingTimeMs: number;
   source?: 'ai_generated' | 'scraped_content' | 'hybrid';
+  sources?: Array<{ url: string; usedForFields?: string[] }>;
   error?: string;
 }
 

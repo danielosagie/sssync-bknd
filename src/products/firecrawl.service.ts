@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../common/supabase.service';
+import FirecrawlApp, { SearchResponse } from '@mendable/firecrawl-js';
 
 export interface FirecrawlSearchResult {
   url: string;
@@ -23,33 +24,35 @@ export interface FirecrawlDeepResearchResult {
 @Injectable()
 export class FirecrawlService {
   private readonly logger = new Logger(FirecrawlService.name);
-  private apiKey: string | null = null;
+  private fcApiKey: string | undefined;
   private baseUrl = 'https://api.firecrawl.dev/v1';
+ 
 
   constructor(
     private readonly configService: ConfigService,
     private readonly supabaseService: SupabaseService,
   ) {
-    const apiKey = this.configService.get<string>('FIRECRAWL_API_KEY');
-    if (!apiKey) {
+    const fcApiKey = process.env.FIRECRAWL_API_KEY
+    if (!fcApiKey) {
       this.logger.warn('FIRECRAWL_API_KEY is not configured. FirecrawlService will be disabled.');
-      this.apiKey = null;
-      return;
-    }
-    this.apiKey = apiKey;
+    } 
+
+    const app = new FirecrawlApp({apiKey: fcApiKey});
   }
+
 
   /**
    * Search the web and optionally extract content from search results
    */
+
   async search(query: string, opts: { limit?: number; scrapeOptions?: { formats?: string[] } } = {}): Promise<any> {
-    if (!this.apiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
+    if (!this.fcApiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
     this.logger.log(`Searching with Firecrawl: ${query}`);
     const res = await fetch(`${this.baseUrl}/search`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
+        'Authorization': `Bearer ${this.fcApiKey}`,
       },
       body: JSON.stringify({ query, limit: opts.limit ?? 5, scrapeOptions: opts.scrapeOptions }),
     });
@@ -72,13 +75,13 @@ export class FirecrawlService {
       systemPrompt?: string;
     } = {}
   ): Promise<FirecrawlExtractResult[]> {
-    if (!this.apiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
+    if (!this.fcApiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
     this.logger.log(`Extracting data from ${urls.length} URLs`);
     const res = await fetch(`${this.baseUrl}/extract`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
+        'Authorization': `Bearer ${this.fcApiKey}`,
       },
       body: JSON.stringify({ urls, schema, ...options }),
     });
@@ -270,13 +273,13 @@ export class FirecrawlService {
   }
 
   async scrape(url: string): Promise<any> {
-    if (!this.apiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
+    if (!this.fcApiKey) throw new Error('FirecrawlService not initialized (missing FIRECRAWL_API_KEY).');
     this.logger.log(`Scraping with Firecrawl: ${url}`);
     const res = await fetch(`${this.baseUrl}/scrape`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
+        'Authorization': `Bearer ${this.fcApiKey}`,
       },
       body: JSON.stringify({ url, formats: ['markdown', 'links', 'html'] }),
     });

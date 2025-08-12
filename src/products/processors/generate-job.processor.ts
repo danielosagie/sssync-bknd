@@ -63,6 +63,7 @@ export class GenerateJobProcessor {
         await this.updateStage(jobId, 'Fetching sources', i, products.length);
 
         const coverUrl = p.imageUrls[p.coverImageIndex];
+        let usedSources: string[] = [];
 
         // Optionally scrape sources using user-selected URLs and template search
         let scrapedDataArray: any[] | null = null;
@@ -97,6 +98,7 @@ export class GenerateJobProcessor {
               ...selectedLinks,
               ...templateSearchUrls,
             ])).slice(0, 8); // limit
+            usedSources = urlsToScrape;
 
             this.logger.log(`[GenerateJob] URLs to scrape for product ${i + 1}: ${urlsToScrape.length}`);
             if (urlsToScrape.length) {
@@ -111,6 +113,22 @@ export class GenerateJobProcessor {
               // Adapt to AI service expectation (objects with data.markdown)
               scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
               this.logger.log(`[GenerateJob] Extracted structured data from ${extracted.length} URL(s)`);
+
+              // Log scrape event for training/analytics
+              try {
+                const svc = this.supabaseService.getServiceClient();
+                await svc.from('AiGeneratedContent').insert({
+                  UserId: userId,
+                  ContentType: 'scrape',
+                  SourceApi: 'firecrawl',
+                  Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
+                  GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: extracted.length }),
+                  Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
+                  IsActive: false,
+                });
+              } catch (e) {
+                this.logger.warn(`[GenerateJob] Failed to log scrape event: ${e?.message || e}`);
+              }
             } else {
               scrapedDataArray = null;
             }
@@ -121,9 +139,9 @@ export class GenerateJobProcessor {
         }
 
         await this.updateStage(jobId, 'Generating details', i, products.length);
-        let generated: any = null;
+         let generated: any = null;
         try {
-          if (scrapedDataArray && scrapedDataArray.length > 0) {
+           if (scrapedDataArray && scrapedDataArray.length > 0) {
             this.logger.log(`[GenerateJob] Generating using scraped context for product ${i + 1}`);
             const contextQuery = (p.selectedMatches && p.selectedMatches[0]?.title) ? p.selectedMatches[0].title : 'Product';
             generated = await this.aiGenerationService.generateProductDetailsFromScrapedData(
@@ -140,7 +158,7 @@ export class GenerateJobProcessor {
                 }).filter(Boolean) as string[],
               }
             );
-          } else {
+           } else {
             this.logger.log(`[GenerateJob] Generating from image(s) only (no scraped context) for product ${i + 1}`);
             generated = await this.aiGenerationService.generateProductDetails(
               p.imageUrls,
@@ -154,14 +172,14 @@ export class GenerateJobProcessor {
           this.logger.error(`[GenerateJob] Generation failed for product ${i + 1}: ${err.message}`);
         }
 
-        await this.updateStage(jobId, 'Saving drafts', i, products.length);
+         await this.updateStage(jobId, 'Saving drafts', i, products.length);
         // Persist generated data to DB as AI content or draft fields (skipping platform publish here)
         // You can extend ProductsService to store AI suggestions tied to product/variant
 
         const processingTimeMs = Date.now() - productStart;
         totalProcessingTime += processingTimeMs;
 
-        const result: GenerateJobResult = {
+         const result: GenerateJobResult = {
           productIndex: p.productIndex,
           productId: p.productId,
           variantId: p.variantId,
@@ -169,10 +187,35 @@ export class GenerateJobProcessor {
           sourceImageUrl: coverUrl,
           processingTimeMs,
           source: scrapedDataArray && scrapedDataArray.length > 0 ? 'hybrid' : 'ai_generated',
+           sources: (usedSources && usedSources.length ? usedSources : (p.selectedMatches || []).map((m:any)=>m?.link).filter(Boolean)).map((u:string)=>({ url: u })),
         };
 
-        const platformKeys = Object.keys(result.platforms || {});
+         const platformKeys = Object.keys(result.platforms || {});
         this.logger.log(`[GenerateJob] Generated platform data for product ${i + 1}: ${platformKeys.join(', ') || 'none'}`);
+
+         // Log generate event
+         try {
+           const svc = this.supabaseService.getServiceClient();
+           await svc.from('AiGeneratedContent').insert({
+             UserId: userId,
+             ProductId: p.productId || null,
+             ContentType: 'generate',
+             SourceApi: scrapedDataArray && scrapedDataArray.length > 0 ? 'groq+scrape' : 'groq',
+             Prompt: `generate_job:${jobId}:product_${i+1}`,
+             GeneratedText: JSON.stringify({ platforms: result.platforms }),
+             Metadata: {
+               productIndex: p.productIndex,
+               variantId: p.variantId || null,
+               platforms: platformKeys,
+               source: result.source,
+               processingTimeMs,
+               sources: (p.selectedMatches || []).map((m: any) => ({ url: m?.link })).filter(Boolean)
+             },
+             IsActive: false,
+           });
+         } catch (e) {
+           this.logger.warn(`[GenerateJob] Failed to log generate event: ${e?.message || e}`);
+         }
 
         results.push(result);
         jobStatus.progress.completedProducts = i + 1;

@@ -60,6 +60,7 @@ export interface MatchInteraction {
 export class RerankerService {
   private readonly logger = new Logger(RerankerService.name);
   private readonly aiServerUrl: string;
+  private readonly reputableHosts: string[];
 
   // Confidence thresholds for tier classification
   private readonly HIGH_CONFIDENCE_THRESHOLD = 0.95;
@@ -71,6 +72,9 @@ export class RerankerService {
     private readonly aiUsageTracker: AiUsageTrackerService
   ) {
     this.aiServerUrl = this.configService.get<string>('AI_SERVER_URL') || 'http://localhost:8000';
+    const hostsFromEnv = this.configService.get<string>('RERANK_REPUTABLE_HOSTS');
+    const defaultHosts = ['amazon.com','ebay.com','bestbuy.com','target.com','walmart.com'];
+    this.reputableHosts = (hostsFromEnv ? hostsFromEnv.split(',').map(h => h.trim()).filter(Boolean) : defaultHosts);
   }
 
   /**
@@ -125,15 +129,53 @@ export class RerankerService {
       const processingTime = Date.now() - startTime;
 
       // Build ranked candidates with original data
+      // Re-weight scores to favor reputable sources, clean titles, and presence of price
+      // Pull latest dynamic boosts if available (from nightly job)
+      let dynamicPriceBoost = 0.05;
+      let dynamicHostBoost = 0.08;
+      try {
+        const supabase = this.supabaseService.getServiceClient();
+        const { data: weights } = await supabase
+          .from('AiGeneratedContent')
+          .select('GeneratedText')
+          .eq('ContentType', 'rerank_weights')
+          .order('CreatedAt', { ascending: false })
+          .limit(1);
+        if (Array.isArray(weights) && weights.length) {
+          const w = JSON.parse(weights[0].GeneratedText || '{}');
+          dynamicPriceBoost = typeof w.priceBoost === 'number' ? w.priceBoost : dynamicPriceBoost;
+          dynamicHostBoost = typeof w.hostBoost === 'number' ? w.hostBoost : dynamicHostBoost;
+        }
+      } catch {}
+
       const rankedCandidates: RankedCandidate[] = data.ranked_candidates.map((candidate: any, index: number) => {
         const originalCandidate = request.candidates.find(c => c.id === candidate.id);
+        const base = data.scores[index] as number;
+        const title = (originalCandidate?.title || '').trim();
+        const pricePresent = (originalCandidate?.price ?? 0) > 0;
+        const source = (originalCandidate as any)?.metadata?.source || '';
+        const sourceUrl = (originalCandidate as any)?.metadata?.sourceUrl || '';
+        const host = (() => { try { return new URL(sourceUrl).hostname.replace(/^www\./,''); } catch { return ''; } })();
+        const isReputable = this.reputableHosts.some(h => host.endsWith(h));
+
+        // Clean title heuristic: fewer punctuation, reasonable length
+        const punctuation = (title.match(/[!@#$%^&*()_+=\[\]{};:'",<>/?\\|`~]/g) || []).length;
+        const cleanTitleBonus = Math.max(0, 1 - Math.min(1, punctuation / 10));
+        const priceBonus = pricePresent ? dynamicPriceBoost : 0;
+        const sourceBonus = isReputable ? dynamicHostBoost : 0;
+
+        const adjusted = Math.min(1, base + cleanTitleBonus * 0.03 + priceBonus + sourceBonus);
+
         return {
           ...originalCandidate,
           rank: index + 1,
-          score: data.scores[index],
-          explanation: this.generateScoreExplanation(data.scores[index])
-        };
-      });
+          score: adjusted,
+          explanation: this.generateScoreExplanation(adjusted)
+        } as RankedCandidate;
+      })
+      // resort after adjustment
+      .sort((a, b) => b.score - a.score)
+      .map((c, i) => ({ ...c, rank: i + 1 }));
 
       const topScore = data.scores[0] || 0;
       const confidenceTier = this.determineConfidenceTier(topScore);
@@ -166,6 +208,26 @@ export class RerankerService {
             candidates_count: request.candidates.length
           }
         });
+      }
+
+      try {
+        // Log to AiGeneratedContent for analytics/training
+        const svc = this.supabaseService.getServiceClient();
+        await svc.from('AiGeneratedContent').insert({
+          UserId: request.userId || null,
+          ContentType: 'rerank',
+          SourceApi: 'ai-server',
+          Prompt: searchQuery,
+          GeneratedText: JSON.stringify(rerankerResponse),
+          Metadata: {
+            candidates: request.candidates?.length || 0,
+            topScore,
+            confidenceTier,
+          },
+          IsActive: false,
+        });
+      } catch (e) {
+        this.logger.warn(`Failed to record rerank event: ${e?.message || e}`);
       }
 
       return rerankerResponse;
@@ -262,6 +324,24 @@ export class RerankerService {
       }
 
       this.logger.log(`Recorded user feedback for match ${matchId}`);
+
+      // Also log to AiGeneratedContent for nightly training signals
+      try {
+        const svc = this.supabaseService.getServiceClient();
+        // Ensure feedback stored as JSON payload for nightly job
+        let payloadStr = userFeedback || '';
+        try { if (payloadStr && typeof JSON.parse(payloadStr) === 'object') { /* ok */ } } catch { payloadStr = JSON.stringify({ note: userFeedback || '', matchId, userSelection, userRejected }); }
+        await svc.from('AiGeneratedContent').insert({
+          ContentType: 'feedback',
+          SourceApi: 'client',
+          Prompt: matchId,
+          GeneratedText: payloadStr,
+          Metadata: { matchId, userSelection, userRejected },
+          IsActive: false,
+        });
+      } catch (e) {
+        this.logger.warn(`Failed to store feedback in AiGeneratedContent: ${e?.message || e}`);
+      }
 
     } catch (error) {
       this.logger.error('Failed to record user feedback:', error);
