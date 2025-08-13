@@ -266,6 +266,51 @@ export class PlatformConnectionsService {
             IsEnabled: false,
             Status: 'inactive' 
         });
+        // Soft-disable related mappings and clear platform presence flags
+        try {
+            const supabase = this.getSupabaseClient();
+            // Disable all mappings for this connection
+            const { error: mappingsError } = await supabase
+                .from('PlatformProductMappings')
+                .update({ IsEnabled: false, SyncStatus: 'Disconnected', UpdatedAt: new Date().toISOString() })
+                .eq('PlatformConnectionId', connectionId);
+            if (mappingsError) {
+                this.logger.error(`Failed to disable mappings for connection ${connectionId}: ${mappingsError.message}`);
+            }
+
+            // Load connection to determine platform type for flag update
+            const connection = await this.getConnectionById(connectionId, userId);
+            const platform = (connection?.PlatformType || '').toLowerCase();
+            const flagColumn = platform === 'shopify' ? 'OnShopify'
+                : platform === 'square' ? 'OnSquare'
+                : platform === 'clover' ? 'OnClover'
+                : platform === 'amazon' ? 'OnAmazon'
+                : platform === 'ebay' ? 'OnEbay'
+                : platform === 'facebook' ? 'OnFacebook'
+                : null;
+
+            if (flagColumn) {
+                // Find affected variant IDs
+                const { data: mappingRows, error: loadMapErr } = await supabase
+                    .from('PlatformProductMappings')
+                    .select('ProductVariantId')
+                    .eq('PlatformConnectionId', connectionId);
+                if (!loadMapErr && Array.isArray(mappingRows) && mappingRows.length > 0) {
+                    const variantIds = [...new Set(mappingRows.map((r: any) => r.ProductVariantId))];
+                    if (variantIds.length > 0) {
+                        const { error: flagErr } = await supabase
+                            .from('ProductVariants')
+                            .update({ [flagColumn]: false })
+                            .in('Id', variantIds);
+                        if (flagErr) {
+                            this.logger.warn(`Failed to update ${flagColumn} flags on ${variantIds.length} variants: ${flagErr.message}`);
+                        }
+                    }
+                }
+            }
+        } catch (e: any) {
+            this.logger.error(`Error during disconnect cascade for ${connectionId}: ${e?.message}`);
+        }
         // We are not deleting the record, just marking it as disabled.
         // This preserves mappings and history, and allows for easy reconnection.
      }

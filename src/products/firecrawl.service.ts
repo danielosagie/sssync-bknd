@@ -32,12 +32,19 @@ export class FirecrawlService {
     private readonly configService: ConfigService,
     private readonly supabaseService: SupabaseService,
   ) {
-    const fcApiKey = process.env.FIRECRAWL_API_KEY
-    if (!fcApiKey) {
+    // Read from ConfigService first, fallback to process.env
+    this.fcApiKey = this.configService.get<string>('FIRECRAWL_API_KEY') || process.env.FIRECRAWL_API_KEY;
+    if (!this.fcApiKey) {
       this.logger.warn('FIRECRAWL_API_KEY is not configured. FirecrawlService will be disabled.');
-    } 
-
-    const app = new FirecrawlApp({apiKey: fcApiKey});
+    } else {
+      try {
+        // Initialize SDK instance (optional for future use)
+        const _app = new FirecrawlApp({ apiKey: this.fcApiKey });
+        this.logger.log('FirecrawlService initialized');
+      } catch (e) {
+        this.logger.warn(`Firecrawl SDK init warning: ${e?.message || e}`);
+      }
+    }
   }
 
 

@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Body, Param, UseGuards, Request, Logger, ParseUUIDPipe, ValidationPipe, HttpCode, HttpStatus, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common'; // Added ValidationPipe and other imports
+import { Controller, Post, Get, Put, Body, Param, UseGuards, Request, Logger, ParseUUIDPipe, ValidationPipe, HttpCode, HttpStatus, NotFoundException, BadRequestException, InternalServerErrorException } from '@nestjs/common'; // Added ValidationPipe and other imports
 import { InitialSyncService, InitialScanResult, SyncPreview } from './initial-sync.service'; // Check path
 import { MappingSuggestion } from './mapping.service'; // <<< Import from mapping.service
 import { SupabaseAuthGuard } from '../auth/guards/supabase-auth.guard'; // Check path
@@ -88,6 +88,53 @@ export class SyncController {
       this.logger.debug(`Request for progress of job ${jobId}`);
       return this.initialSyncService.getJobProgress(jobId);
     }
+
+  // --- Draft mappings: allow saving and restoring in-progress review state ---
+  @Get('connections/:connectionId/draft-mappings')
+  async getDraftMappings(
+    @Request() req,
+    @Param('connectionId', ParseUUIDPipe) connectionId: string,
+  ): Promise<{ confirmedMatches: any[]; updatedAt?: string } | { confirmedMatches: []; updatedAt?: string }> {
+    const userId = req.user.id;
+    const connection = await this.platformConnectionsService.getConnectionById(connectionId, userId);
+    if (!connection) {
+      throw new NotFoundException(`Connection ${connectionId} not found for user.`);
+    }
+    const drafts = connection.PlatformSpecificData?.mappingDrafts;
+    const confirmations = connection.PlatformSpecificData?.mappingConfirmations;
+    if (drafts && Array.isArray(drafts.confirmedMatches)) {
+      return { confirmedMatches: drafts.confirmedMatches, updatedAt: drafts.updatedAt };
+    }
+    if (confirmations && Array.isArray(confirmations.confirmedMatches)) {
+      // Fallback to last confirmed set if drafts don't exist
+      return { confirmedMatches: confirmations.confirmedMatches, updatedAt: confirmations.confirmedAt };
+    }
+    return { confirmedMatches: [] };
+  }
+
+  @Put('connections/:connectionId/draft-mappings')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async saveDraftMappings(
+    @Request() req,
+    @Param('connectionId', ParseUUIDPipe) connectionId: string,
+    @Body(ValidationPipe) draftData: ConfirmMappingsDto,
+  ): Promise<void> {
+    const userId = req.user.id;
+    const connection = await this.platformConnectionsService.getConnectionById(connectionId, userId);
+    if (!connection) {
+      throw new NotFoundException(`Connection ${connectionId} not found for user.`);
+    }
+    // Store under PlatformSpecificData.mappingDrafts without triggering any sync operations
+    const current = connection.PlatformSpecificData || {};
+    const newData = {
+      ...current,
+      mappingDrafts: {
+        confirmedMatches: draftData.confirmedMatches || [],
+        updatedAt: new Date().toISOString(),
+      },
+    };
+    await this.platformConnectionsService.updateConnectionData(connectionId, userId, { PlatformSpecificData: newData });
+  }
 
     @Post('connection/:connectionId/reconcile')
     @HttpCode(HttpStatus.ACCEPTED)

@@ -120,6 +120,30 @@ export class MatchJobProcessor {
             this.logger.warn(`[MatchJobProcessor] No GeneratedText found in analysis result for product ${i + 1}`);
           }
 
+          // Publish preliminary result immediately so frontend can render fast
+          try {
+            const preliminary: MatchJobResult = {
+              productIndex: product.productIndex,
+              productId: analysisResult.product.Id,
+              variantId: analysisResult.variant.Id,
+              serpApiData: serpApiResults,
+              rerankedResults: [],
+              confidence: 'low',
+              vectorSearchFoundResults: false,
+              originalTargetImage: primaryImageUrl,
+              processingTimeMs: Date.now() - productStartTime,
+              timing: { ...timing }
+            } as any;
+            if (jobStatus.results[i]) {
+              jobStatus.results[i] = { ...jobStatus.results[i], ...preliminary } as any;
+            } else {
+              jobStatus.results.push(preliminary);
+            }
+            await this.updateJobStatus(jobId, jobStatus);
+          } catch (e) {
+            this.logger.warn(`[MatchJobProcessor] Failed to publish preliminary result for product ${i + 1}: ${e?.message || e}`);
+          }
+
           if (serpApiResults.length === 0) {
             // No SerpAPI results - return low confidence
             timing.totalMs = Date.now() - productStartTime;
@@ -210,7 +234,10 @@ export class MatchJobProcessor {
             processingTimeMs: compareResult.processingTimeMs,
             timing
           };
-
+          // Update in-memory results list (replace preliminary)
+          if (jobStatus.results[i]) {
+            jobStatus.results[i] = result;
+          }
           results.push(result);
           totalEmbeddingsStored += compareResult.totalEmbeddingsStored;
           totalProcessingTime += compareResult.processingTimeMs;
