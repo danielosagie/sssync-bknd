@@ -122,7 +122,7 @@ export class FeatureUsageGuard implements CanActivate {
                      throw new HttpException(`Feature limit not configured for your subscription`, HttpStatus.FORBIDDEN);
                 }
 
-                if (currentLimit <= 0) {
+                 if (currentLimit <= 0) {
                     this.logger.log(`FeatureUsageGuard: Limit reached for user ${userId}, feature ${featureKey}. Current limit: ${currentLimit}`);
                     throw new HttpException(`Usage limit reached for this feature`, HttpStatus.TOO_MANY_REQUESTS);
                 }

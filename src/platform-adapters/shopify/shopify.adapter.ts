@@ -336,15 +336,58 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
     async updateProduct(
         connection: PlatformConnection,
         existingMapping: any, // PlatformProductMapping
-        canonicalProduct: any, // CanonicalProduct
-        canonicalVariants: any[], // CanonicalProductVariant[]
-        canonicalInventoryLevels: any[], // CanonicalInventoryLevel[]
-    ): Promise<any> {
-        this.logger.warn(`updateProduct not implemented for Shopify. Connection: ${connection.Id}`);
-        // TODO: Implement Shopify product update logic
-        // 1. Map data to Shopify format
-        // 2. Call shopifyApiClient.updateProduct
-        throw new Error('Shopify updateProduct not implemented');
+        canonicalProduct: CanonicalProduct,
+        canonicalVariants: CanonicalProductVariant[],
+        canonicalInventoryLevels: CanonicalInventoryLevel[],
+    ): Promise<{ productId: string; updatedVariantIds: string[]; errors: string[] }> {
+        this.logger.log(`Shopify updateProduct for mapping ${existingMapping?.Id} on connection ${connection.Id}`);
+        const apiClient = this.getApiClient(connection);
+        const mapper = this.getMapper();
+        const results = { productId: existingMapping?.PlatformProductId as string, updatedVariantIds: [] as string[], errors: [] as string[] };
+        try {
+            const platformProductGid = existingMapping?.PlatformProductId;
+            if (!platformProductGid) {
+                throw new Error('PlatformProductId missing in mapping');
+            }
+
+            // Fetch newly created/updated Shopify variants to build CanonicalId -> ShopifyVariantGID map
+            const productNodes = await apiClient.fetchProductsByIds(connection, [platformProductGid]);
+            if (!productNodes || productNodes.length === 0) throw new Error(`Shopify product ${platformProductGid} not found`);
+            const shopifyProductNode = productNodes[0];
+            const existingPlatformVariantGids = new Map<string, string>();
+            for (const variantEdge of shopifyProductNode.variants.edges) {
+                const v = variantEdge.node;
+                const mapping = await this.mappingsService.getMappingByPlatformIdentifiers(connection.Id, platformProductGid, v.id);
+                if (mapping?.ProductVariantId) existingPlatformVariantGids.set(mapping.ProductVariantId, v.id);
+            }
+
+            // Map canonical data to Shopify update input
+            const shopifyLocationGids = (await apiClient.getAllLocations(connection)).map(l => l.id);
+            const updateInput = mapper.mapCanonicalProductToShopifyUpdateInput(
+                canonicalProduct,
+                canonicalVariants,
+                canonicalInventoryLevels,
+                shopifyLocationGids,
+                existingPlatformVariantGids,
+            );
+
+            const updateResult = await apiClient.updateProductAsync(connection, platformProductGid, updateInput);
+            const updated = updateResult.product;
+            if (!updated) {
+                results.errors.push('No product returned from update');
+                return results;
+            }
+            results.productId = updated.id;
+            for (const v of updated.variants?.nodes || []) {
+                results.updatedVariantIds.push(v.id);
+            }
+            return results;
+        } catch (e: any) {
+            const msg = `Shopify updateProduct failed: ${e?.message || e}`;
+            this.logger.error(msg);
+            results.errors.push(msg);
+            return results;
+        }
     }
 
     async deleteProduct(
@@ -358,11 +401,43 @@ export class ShopifyAdapter implements BaseAdapter { // <<< Implement interface
 
     async updateInventoryLevels(
         connection: PlatformConnection,
-        inventoryUpdates: Array<{ mapping: any /* PlatformProductMapping */; level: any /* CanonicalInventoryLevel */ }>
-    ): Promise<any> {
-        this.logger.warn('ShopifyAdapter.updateInventoryLevels called but not fully implemented.');
-        // Placeholder implementation
-        return Promise.resolve({ successCount: 0, failureCount: inventoryUpdates.length, errors: ['Not implemented'] });
+        inventoryUpdates: Array<{ mapping: PlatformProductMapping; level: CanonicalInventoryLevel }>
+    ): Promise<{ successCount: number; failureCount: number; errors: string[] }> {
+        const apiClient = this.getApiClient(connection);
+        let successCount = 0;
+        let failureCount = 0;
+        const errors: string[] = [];
+        try {
+            // Group by (inventoryItemId, locationId)
+            for (const { mapping, level } of inventoryUpdates) {
+                try {
+                    // Need Shopify InventoryItem GID from mapping.PlatformSpecificData
+                    const inventoryItemGid = mapping.PlatformSpecificData?.shopifyInventoryItemId;
+                    if (!inventoryItemGid) {
+                        failureCount++;
+                        errors.push(`Missing shopifyInventoryItemId in mapping ${mapping.Id}`);
+                        continue;
+                    }
+                    if (!level.PlatformLocationId) {
+                        failureCount++;
+                        errors.push(`Missing PlatformLocationId for level of variant ${mapping.ProductVariantId}`);
+                        continue;
+                    }
+                    await apiClient.setInventoryQuantities(connection, [{
+                        inventoryItemId: inventoryItemGid,
+                        locationId: level.PlatformLocationId,
+                        quantity: Math.round(level.Quantity),
+                    }]);
+                    successCount++;
+                } catch (err: any) {
+                    failureCount++;
+                    errors.push(`Inventory update failed for mapping ${mapping.Id}: ${err?.message || err}`);
+                }
+            }
+        } catch (e: any) {
+            errors.push(`Batch inventory update error: ${e?.message || e}`);
+        }
+        return { successCount, failureCount, errors };
     }
 
     async processWebhook(

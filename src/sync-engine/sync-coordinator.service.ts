@@ -27,7 +27,7 @@ export class SyncCoordinatorService {
     ) {}
 
     // Method called by WebhookController or a dedicated WebhookProcessor job
-    async handleWebhook(platformType: string, payload: any, headers: Record<string, string>, webhookId?: string): Promise<void> {
+    async handleWebhook(platformType: string, payload: any, headers: Record<string, string>, webhookId?: string, explicitConnectionId?: string): Promise<void> {
         const logPrefix = webhookId ? `[${webhookId}]` : '';
         this.logger.log(`${logPrefix} Processing webhook for platform: ${platformType}`);
         
@@ -44,10 +44,24 @@ export class SyncCoordinatorService {
 
         // Find the connection based on platform-specific identifiers in payload or headers
         let connection: PlatformConnection | null = null;
+
+        // If a connectionId was explicitly provided (via webhook path), prefer it
+        if (explicitConnectionId) {
+            try {
+                const conn = await this.connectionService.getConnectionById(explicitConnectionId);
+                if (conn) {
+                    connection = conn;
+                } else {
+                    this.logger.warn(`${logPrefix} Explicit connectionId ${explicitConnectionId} not found. Falling back to header-based lookup.`);
+                }
+            } catch (e: any) {
+                this.logger.warn(`${logPrefix} Failed to load explicit connectionId ${explicitConnectionId}: ${e?.message}. Falling back.`);
+            }
+        }
         const shopifyShopDomain = headers['x-shopify-shop-domain'];
         // Add other platform-specific header checks (e.g., Square merchant ID, Clover merchant ID if available in headers)
 
-        if (platformType === 'shopify' && shopifyShopDomain) {
+        if (!connection && platformType === 'shopify' && shopifyShopDomain) {
             const connections = await this.connectionService.getConnectionsByPlatformAndAttribute('shopify', 'shop', shopifyShopDomain);
             if (connections.length > 0) {
                 connection = connections[0]; // Assuming one connection per shop domain for webhooks
@@ -58,7 +72,7 @@ export class SyncCoordinatorService {
                 this.logger.error(`No Shopify connection found for shop domain: ${shopifyShopDomain} from webhook header.`);
                 return;
             }
-        } else if (platformType === 'clover') {
+        } else if (!connection && platformType === 'clover') {
             // Example: Clover might send merchant_id in the payload or a specific header
             const merchantId = payload?.merchant_id || payload?.merchantId || headers['x-clover-merchant-id']; // Check common places
             if (merchantId) {
@@ -76,7 +90,7 @@ export class SyncCoordinatorService {
                 this.logger.error('Could not determine Clover merchant ID from webhook payload or headers.');
                 return;
             }
-        } else if (platformType === 'square') {
+        } else if (!connection && platformType === 'square') {
             // Example: Square might send merchant_id in the payload (event.merchant_id) or a specific header
             const merchantId = payload?.merchant_id || payload?.event?.merchant_id || headers['x-square-merchant-id'];
             if (merchantId) {

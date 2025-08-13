@@ -151,15 +151,86 @@ export class WebhookController {
     }
   }
 
+  // Optional route variant that includes a connectionId path param (used by some webhook registrations)
+  @Post(':platform/:connectionId')
+  @HttpCode(HttpStatus.OK)
+  async handlePlatformWebhookWithConnection(
+    @Param('platform') platform: string,
+    @Param('connectionId') connectionId: string,
+    @Headers() headers: Record<string, string>,
+    @Req() req: RawBodyRequest<Request>,
+    @Res() res: Response,
+  ): Promise<void> {
+    const startTime = Date.now();
+    const webhookId = `wh_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    this.logger.log(`[${webhookId}] Received webhook for platform: ${platform} (conn ${connectionId})`);
+    const rawBody = req.rawBody;
+    if (!rawBody) {
+      res.status(HttpStatus.BAD_REQUEST).json({ error: 'Bad Request', message: 'Request body is missing or not in raw format', webhookId });
+      return;
+    }
+    const platformLower = platform.toLowerCase();
+    try {
+      let validatedPayload: any;
+      let shopIdentifier: string | null = null;
+      switch (platformLower) {
+        case 'shopify': {
+          const result = await this.validateShopifyWebhook(rawBody, headers, webhookId);
+          validatedPayload = result.payload;
+          shopIdentifier = result.shopIdentifier;
+          break;
+        }
+        case 'clover': {
+          const { payload, merchantIdentifier } = await this.validateCloverWebhook(rawBody, headers, webhookId);
+          validatedPayload = payload;
+          shopIdentifier = merchantIdentifier;
+          break;
+        }
+        case 'square': {
+          const { payload, merchantIdentifier } = await this.validateSquareWebhook(rawBody, headers, webhookId);
+          validatedPayload = payload;
+          shopIdentifier = merchantIdentifier;
+          break;
+        }
+        default:
+          res.status(HttpStatus.BAD_REQUEST).json({ error: 'Bad Request', message: `Platform ${platform} not supported`, webhookId });
+          return;
+      }
+
+      res.status(HttpStatus.OK).json({ received: true, webhookId, platform: platformLower, timestamp: new Date().toISOString() });
+
+      await this.activityLogService.logActivity({
+        UserId: 'system',
+        EntityType: 'Webhook',
+        EntityId: webhookId,
+        EventType: 'WEBHOOK_RECEIVED',
+        Status: 'Info',
+        Message: `Webhook received from ${platformLower} (explicit connection)`,
+        Details: { platform: platformLower, shopIdentifier, connectionId, processingTime: Date.now() - startTime, payloadSize: rawBody.length }
+      });
+
+      // Process with explicit connectionId
+      this.processWebhookAsync(platformLower, validatedPayload, headers, webhookId, shopIdentifier, connectionId)
+        .then(() => this.logger.log(`[${webhookId}] Webhook processing completed successfully (conn ${connectionId})`))
+        .catch(err => this.logger.error(`[${webhookId}] Webhook processing failed (conn ${connectionId}): ${err.message}`, err.stack));
+    } catch (error) {
+      this.logger.error(`[${webhookId}] Webhook validation error: ${error.message}`, error.stack);
+      if (!res.headersSent) {
+        res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({ error: 'Internal Server Error', message: 'Error processing webhook', webhookId });
+      }
+    }
+  }
+
   private async processWebhookAsync(
     platform: string,
     payload: any,
     headers: Record<string, string>,
     webhookId: string,
     shopIdentifier: string | null,
+    connectionId?: string,
   ): Promise<void> {
     try {
-      await this.syncCoordinator.handleWebhook(platform, payload, headers, webhookId);
+      await this.syncCoordinator.handleWebhook(platform, payload, headers, webhookId, connectionId);
       
       // Log successful processing
       await this.activityLogService.logActivity({

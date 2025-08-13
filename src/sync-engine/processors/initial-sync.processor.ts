@@ -41,11 +41,27 @@ export class InitialSyncProcessor extends WorkerHost {
     }
 
     async process(job: Job<JobData, any, string>): Promise<any> {
-        const { connectionId, userId, platformType, confirmedMatches, syncRules, platformSpecificDataSnapshot } = job.data as any;
+        let { connectionId, userId, platformType, confirmedMatches, syncRules, platformSpecificDataSnapshot } = job.data as any;
         this.logger.log(`Processing initial sync for connection ${connectionId} (${platformType}), User: ${userId}, Job ID: ${job.id}. ${confirmedMatches?.length || 0} confirmed matches.`);
 
-        if (!connectionId || !userId || !platformType || !confirmedMatches || !syncRules) {
-            this.logger.error(`Job ${job.id} is missing essential data (connectionId, userId, platformType, confirmedMatches, or syncRules). Aborting.`);
+        // Fallbacks: load from saved confirmations and connection sync rules when missing
+        if (!confirmedMatches || (Array.isArray(confirmedMatches) && confirmedMatches.length === 0)) {
+            try {
+                const stored = await this.mappingService.getConfirmedMappings(connectionId);
+                if (stored?.confirmedMatches?.length) {
+                    confirmedMatches = stored.confirmedMatches;
+                    this.logger.log(`Loaded ${confirmedMatches.length} confirmedMatches from PlatformSpecificData for job ${job.id}.`);
+                }
+            } catch (e: any) {
+                this.logger.warn(`Unable to load mapping confirmations for ${connectionId}: ${e?.message}`);
+            }
+        }
+
+        const connectionForRules = await this.connectionService.getConnectionById(connectionId, userId);
+        const effectiveSyncRules = syncRules || connectionForRules?.SyncRules || {};
+
+        if (!connectionId || !userId || !platformType || !Array.isArray(confirmedMatches) || confirmedMatches.length === 0 || !effectiveSyncRules) {
+            this.logger.error(`Job ${job.id} is missing essential data after fallbacks (connectionId, userId, platformType, confirmedMatches, or syncRules). Aborting.`);
             throw new Error('Missing essential data for initial sync job.');
         }
 
@@ -113,10 +129,10 @@ export class InitialSyncProcessor extends WorkerHost {
                 try {
                     switch (match.action) {
                         case 'link':
-                            await this.handleLinkAction(connection, userId, match, platformProductFullData, adapter, syncRules);
+                            await this.handleLinkAction(connection, userId, match, platformProductFullData, adapter, effectiveSyncRules);
                             break;
                         case 'create':
-                            await this.handleCreateAction(connection, userId, match, platformProductFullData, adapter, syncRules);
+                            await this.handleCreateAction(connection, userId, match, platformProductFullData, adapter, effectiveSyncRules);
                             break;
                         case 'ignore':
                             await this.handleIgnoreAction(connectionId, userId, match);
@@ -146,7 +162,7 @@ export class InitialSyncProcessor extends WorkerHost {
             
             this.logger.log(`Initial sync for connection ${connectionId} completed. Total: ${totalItemsProcessed}, Success: ${itemsSuccessfullySynced}, Failed: ${itemsFailedToSync}.`);
             await this.connectionService.updateConnectionStatus(connectionId, userId, itemsFailedToSync > 0 ? 'error' : 'active');
-            await this.connectionService.updateLastSyncSuccess(connectionId, new Date().toISOString());
+            await this.connectionService.updateLastSyncSuccess(connectionId, userId);
 
             await this.activityLogService.logActivity({
                 UserId: userId,

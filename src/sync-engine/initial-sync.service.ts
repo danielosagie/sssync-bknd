@@ -259,9 +259,9 @@ export class InitialSyncService {
         UserId: userId,
         EntityType: 'PlatformConnection',
         EntityId: connectionId,
-        EventType: 'INITIAL_SYNC_COMPLETED',
-        Status: 'Success',
-        Message: `Initial sync completed successfully for ${connection.PlatformType} connection: ${connection.DisplayName}`,
+        EventType: 'INITIAL_SYNC_QUEUED',
+        Status: 'Info',
+        Message: `Initial sync queued for ${connection.PlatformType} connection: ${connection.DisplayName}`,
         PlatformConnectionId: connectionId,
         Details: { platform: connection.PlatformType }
       });
@@ -469,6 +469,22 @@ export class InitialSyncService {
     this.logger.log(
       `Reconciliation job ${job.id} queued for connection ${connectionId}.`,
     );
+
+    // Store job tracking info on the connection for client progress polling
+    try {
+      const connection = await this.getConnectionAndVerify(connectionId, userId);
+      await this.connectionService.updateConnectionData(connectionId, userId, {
+        PlatformSpecificData: {
+          ...(connection.PlatformSpecificData || {}),
+          currentJobId: job.id,
+          jobStartedAt: new Date().toISOString(),
+          jobType: 'reconcile',
+        },
+        Status: 'reconciling',
+      });
+    } catch (e: any) {
+      this.logger.warn(`Failed to persist reconcile job metadata for ${connectionId}: ${e?.message}`);
+    }
     await this.activityLogService.logActivity({
       UserId: userId,
       EntityType: 'Connection',

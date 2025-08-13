@@ -19,6 +19,7 @@ import { QueueModule } from './queue.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TasksModule } from './tasks/tasks.module';
 import { PlatformAdaptersModule } from './platform-adapters/platform-adapters.module';
+import { BillingModule } from './billing/billing.module';
 
 @Global()
 @Module({
@@ -42,6 +43,7 @@ import { PlatformAdaptersModule } from './platform-adapters/platform-adapters.mo
     QueueModule,
     TasksModule,
     PlatformAdaptersModule,
+    BillingModule,
   ],
   controllers: [AppController],
   providers: [
