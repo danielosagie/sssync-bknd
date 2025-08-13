@@ -109,7 +109,18 @@ export class GenerateJobProcessor {
 
             if (urlsToScrape.length > 0) {
               const schema = this.firecrawlService.getProductSchema(templateName);
-              const extracted = await this.firecrawlService.extract(urlsToScrape, schema);
+              // New behavior: perform a Firecrawl search using product title/query and then extract from top URLs
+              let searchedUrls: string[] = [];
+              try {
+                const titleForQuery = (p.selectedMatches && p.selectedMatches[0]?.title) ? p.selectedMatches[0].title : 'product';
+                const searchResult = await this.firecrawlService.search(titleForQuery, { limit: 5, scrapeOptions: { formats: ['links'] } });
+                const data = Array.isArray(searchResult?.data) ? searchResult.data : [];
+                searchedUrls = data.map((r: any) => r.url).filter((u: any) => typeof u === 'string');
+              } catch (searchErr) {
+                this.logger.warn(`[GenerateJob] Firecrawl search phase failed: ${searchErr?.message || searchErr}`);
+              }
+              const combinedUrls = Array.from(new Set([ ...searchedUrls, ...urlsToScrape ])).slice(0, 8);
+              const extracted = await this.firecrawlService.extract(combinedUrls, schema);
               // Adapt to AI service expectation (objects with data.markdown)
               scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
               this.logger.log(`[GenerateJob] Extracted structured data from ${extracted.length} URL(s)`);

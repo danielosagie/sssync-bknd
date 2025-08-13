@@ -311,19 +311,21 @@ export class RerankerService {
     try {
       const supabase = this.supabaseService.getClient();
 
-      const { error } = await supabase.rpc('record_user_feedback', {
-        p_match_id: matchId,
-        p_user_selection: userSelection,
-        p_user_rejected: userRejected,
-        p_user_feedback: userFeedback
-      });
-
-      if (error) {
-        this.logger.error('Failed to record user feedback:', error);
-        throw error;
+      // Only call RPC if matchId is a UUID, else skip RPC (some clients pass non-UUID job ids)
+      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(matchId || ''));
+      if (isUuid) {
+        const { error } = await supabase.rpc('record_user_feedback', {
+          p_match_id: matchId,
+          p_user_selection: userSelection,
+          p_user_rejected: userRejected,
+          p_user_feedback: userFeedback
+        });
+        if (error) {
+          this.logger.error('Failed to record user feedback via RPC:', error);
+        }
       }
 
-      this.logger.log(`Recorded user feedback for match ${matchId}`);
+      this.logger.log(`Recorded user feedback for match ${matchId} (uuid=${isUuid})`);
 
       // Also log to AiGeneratedContent for nightly training signals
       try {
