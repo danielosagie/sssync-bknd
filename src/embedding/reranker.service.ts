@@ -311,39 +311,19 @@ export class RerankerService {
     try {
       const supabase = this.supabaseService.getClient();
 
-      // Only call RPC if matchId is a UUID, else skip RPC (some clients pass non-UUID job ids)
-      const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(matchId || ''));
-      if (isUuid) {
-        const { error } = await supabase.rpc('record_user_feedback', {
-          p_match_id: matchId,
-          p_user_selection: userSelection,
-          p_user_rejected: userRejected,
-          p_user_feedback: userFeedback
-        });
-        if (error) {
-          this.logger.error('Failed to record user feedback via RPC:', error);
-        }
+      const { error } = await supabase.rpc('record_user_feedback', {
+        p_match_id: matchId,
+        p_user_selection: userSelection,
+        p_user_rejected: userRejected,
+        p_user_feedback: userFeedback
+      });
+
+      if (error) {
+        this.logger.error('Failed to record user feedback:', error);
+        throw error;
       }
 
-      this.logger.log(`Recorded user feedback for match ${matchId} (uuid=${isUuid})`);
-
-      // Also log to AiGeneratedContent for nightly training signals
-      try {
-        const svc = this.supabaseService.getServiceClient();
-        // Ensure feedback stored as JSON payload for nightly job
-        let payloadStr = userFeedback || '';
-        try { if (payloadStr && typeof JSON.parse(payloadStr) === 'object') { /* ok */ } } catch { payloadStr = JSON.stringify({ note: userFeedback || '', matchId, userSelection, userRejected }); }
-        await svc.from('AiGeneratedContent').insert({
-          ContentType: 'feedback',
-          SourceApi: 'client',
-          Prompt: matchId,
-          GeneratedText: payloadStr,
-          Metadata: { matchId, userSelection, userRejected },
-          IsActive: false,
-        });
-      } catch (e) {
-        this.logger.warn(`Failed to store feedback in AiGeneratedContent: ${e?.message || e}`);
-      }
+      this.logger.log(`Recorded user feedback for match ${matchId}`);
 
     } catch (error) {
       this.logger.error('Failed to record user feedback:', error);

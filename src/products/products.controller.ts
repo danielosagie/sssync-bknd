@@ -2164,11 +2164,11 @@ Return JSON format:
                 const image = scanInput.images[i];
                 
                 try {
-                    const imageResult = await this.quickProductScan({
+                        const imageResult = await this.quickProductScan({
                         imageUrl: image.url,
                         imageBase64: image.base64,
                         businessTemplate: 'general', // Always general for recognition
-                        threshold: 0.0 // Show ALL results for debugging - will filter later
+                            threshold: 0.7 // Filter out weak matches (<70%) so we only show solid candidates
                     }, req);
 
                     results.push({
@@ -2279,7 +2279,7 @@ Return JSON format:
             if (highCount === totalCount && totalCount > 0) {
                 overallConfidence = 'high';
                 recommendedAction = 'show_single_match';
-            } else if ((highCount + mediumCount) >= totalCount * 0.7) {
+            } else if ((highCount + mediumCount) >= totalCount * 0.8) {
                 overallConfidence = 'medium';
                 recommendedAction = 'show_multiple_candidates';
             } else {
@@ -3550,7 +3550,7 @@ Return JSON format:
                     const quickScanResult = await this.quickProductScan({
                         imageUrl: primaryImageUrl,
                         businessTemplate: 'general',
-                        threshold: 0.6
+                        threshold: 0.7
                     }, req);
                     
                     databaseMatches = quickScanResult.matches || [];
@@ -3826,6 +3826,24 @@ Return JSON format:
         const jobId = `generate_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const estimatedTimeMinutes = Math.ceil(generateRequest.products.length * 20 / 60); // rough estimate
 
+        // Normalize templateSources to canonical https URLs and collect hostnames
+        const normalizedTemplateUrls: string[] = [];
+        const normalizedHosts: string[] = [];
+        if (Array.isArray(generateRequest.templateSources)) {
+            for (const s of generateRequest.templateSources) {
+                try {
+                    let input = (s || '').trim();
+                    if (!input) continue;
+                    if (!/^https?:\/\//i.test(input)) input = `https://${input}`;
+                    const u = new URL(input);
+                    const host = u.hostname.startsWith('www.') ? u.hostname : `www.${u.hostname}`;
+                    const httpsUrl = `https://${host}`;
+                    if (!normalizedTemplateUrls.includes(httpsUrl)) normalizedTemplateUrls.push(httpsUrl);
+                    if (!normalizedHosts.includes(host)) normalizedHosts.push(host);
+                } catch { /* ignore bad */ }
+            }
+        }
+
         const jobData: GenerateJobData = {
             type: 'generate-job',
             jobId,
@@ -3834,12 +3852,13 @@ Return JSON format:
             selectedPlatforms: generateRequest.selectedPlatforms || [],
             template: generateRequest.template ?? null,
             platformRequests: generateRequest.platformRequests,
-            templateSources: generateRequest.templateSources,
+            templateSources: normalizedTemplateUrls,
             options: generateRequest.options,
             metadata: {
                 totalProducts: generateRequest.products.length,
                 estimatedTimeMinutes,
                 createdAt: new Date().toISOString(),
+                targetSites: normalizedHosts,
             },
         };
 

@@ -150,19 +150,34 @@ export class MappingService {
         }
 
         // Also save direct links to PlatformProductMappings table for 'link' actions
-        const mappingsToUpsert = confirmationData.confirmedMatches
+        // Build upsert list and de-duplicate by (PlatformConnectionId, ProductVariantId)
+        const rawMappings = confirmationData.confirmedMatches
             .filter(match => match.action === 'link' && match.sssyncVariantId)
             .map(match => ({
                 PlatformConnectionId: connection.Id,
-                ProductVariantId: match.sssyncVariantId,
+                ProductVariantId: match.sssyncVariantId!,
                 PlatformProductId: match.platformProductId,
                 PlatformVariantId: match.platformVariantId || null,
                 PlatformSku: match.platformProductSku || null,
                 PlatformSpecificData: { confirmedByUser: true, action: 'link' },
-                SyncStatus: 'Linked', // Or 'Pending' if initial sync needed
+                SyncStatus: 'Linked',
                 IsEnabled: true,
                 UpdatedAt: new Date().toISOString(),
             }));
+
+        // Prefer entries that include a PlatformVariantId when duplicates exist
+        const dedupMap = new Map<string, any>();
+        for (const m of rawMappings) {
+            const key = `${m.PlatformConnectionId}|${m.ProductVariantId}`;
+            const existing = dedupMap.get(key);
+            if (!existing) {
+                dedupMap.set(key, m);
+            } else {
+                const preferNew = (!!m.PlatformVariantId && !existing.PlatformVariantId);
+                dedupMap.set(key, preferNew ? m : existing);
+            }
+        }
+        const mappingsToUpsert = Array.from(dedupMap.values());
 
         if (mappingsToUpsert.length > 0) {
              const supabase = this.getSupabaseClient();
@@ -200,15 +215,15 @@ export class MappingService {
      /**
       * Retrieves the confirmed mapping actions from PlatformConnections.PlatformSpecificData.
       */
-     async getConfirmedMappings(connectionId: string): Promise<StoredConfirmationData | null> {
+      async getConfirmedMappings(connectionId: string): Promise<StoredConfirmationData | null> {
          const supabase = this.getSupabaseClient();
          this.logger.log(`Fetching confirmed mappings from PlatformSpecificData for connection ${connectionId}`);
 
-         const { data, error } = await supabase
+          const { data, error } = await supabase
             .from('PlatformConnections')
             .select('PlatformSpecificData')
             .eq('Id', connectionId)
-            .single();
+             .maybeSingle();
 
         if (error) {
             this.logger.error(`Failed to fetch PlatformSpecificData for connection ${connectionId}: ${error.message}`);

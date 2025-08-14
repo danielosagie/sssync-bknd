@@ -53,8 +53,13 @@ export class SyncController {
          @Body(ValidationPipe) confirmationData: ConfirmMappingsDto // Apply ValidationPipe
      ): Promise<{ success: boolean }> {
          const userId = req.user.id;
-         await this.initialSyncService.saveConfirmedMappings(connectionId, userId, confirmationData);
-         return { success: true };
+    await this.initialSyncService.saveConfirmedMappings(connectionId, userId, confirmationData);
+    // After saving confirmations, move the connection to needs_review so UI shows the Execute step
+    const connection = await this.platformConnectionsService.getConnectionById(connectionId, userId);
+    if (connection) {
+      await this.platformConnectionsService.updateConnectionStatus(connectionId, userId, 'needs_review');
+    }
+    return { success: true };
      }
 
      @Get('connections/:connectionId/sync-preview')
@@ -73,8 +78,15 @@ export class SyncController {
      ): Promise<{ jobId: string }> {
          const userId = req.user.id;
          this.logger.log(`Request to activate initial sync for connection ${connectionId}, user ${userId}`);
-         const jobId = await this.initialSyncService.queueInitialSyncJob(connectionId, userId);
-         return { jobId };
+    // Idempotency: if already syncing, return existing job
+    const connection = await this.platformConnectionsService.getConnectionById(connectionId, userId);
+    if (!connection) throw new NotFoundException('Connection not found');
+    const currentJobId = connection.PlatformSpecificData?.currentJobId;
+    if (connection.Status === 'syncing' && currentJobId) {
+      return { jobId: currentJobId };
+    }
+    const jobId = await this.initialSyncService.queueInitialSyncJob(connectionId, userId);
+    return { jobId };
      }
 
     @Get('jobs/:jobId/progress')

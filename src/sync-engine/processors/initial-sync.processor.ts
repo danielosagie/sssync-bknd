@@ -44,43 +44,62 @@ export class InitialSyncProcessor extends WorkerHost {
         let { connectionId, userId, platformType, confirmedMatches, syncRules, platformSpecificDataSnapshot } = job.data as any;
         this.logger.log(`Processing initial sync for connection ${connectionId} (${platformType}), User: ${userId}, Job ID: ${job.id}. ${confirmedMatches?.length || 0} confirmed matches.`);
 
-        // Fallbacks: load from saved confirmations and connection sync rules when missing
-        if (!confirmedMatches || (Array.isArray(confirmedMatches) && confirmedMatches.length === 0)) {
-            try {
-                const stored = await this.mappingService.getConfirmedMappings(connectionId);
-                if (stored?.confirmedMatches?.length) {
-                    confirmedMatches = stored.confirmedMatches;
-                    this.logger.log(`Loaded ${confirmedMatches.length} confirmedMatches from PlatformSpecificData for job ${job.id}.`);
-                }
-            } catch (e: any) {
-                this.logger.warn(`Unable to load mapping confirmations for ${connectionId}: ${e?.message}`);
-            }
-        }
-
-        const connectionForRules = await this.connectionService.getConnectionById(connectionId, userId);
-        const effectiveSyncRules = syncRules || connectionForRules?.SyncRules || {};
-
-        if (!connectionId || !userId || !platformType || !Array.isArray(confirmedMatches) || confirmedMatches.length === 0 || !effectiveSyncRules) {
-            this.logger.error(`Job ${job.id} is missing essential data after fallbacks (connectionId, userId, platformType, confirmedMatches, or syncRules). Aborting.`);
-            throw new Error('Missing essential data for initial sync job.');
-        }
-
-        const connection = await this.connectionService.getConnectionById(connectionId, userId);
-        if (!connection) {
-            this.logger.error(`Connection ${connectionId} not found for user ${userId}. Aborting job ${job.id}.`);
-            throw new NotFoundException(`Connection ${connectionId} not found.`);
-        }
-
-        const adapter = this.adapterRegistry.getAdapter(platformType);
-        if (!adapter) {
-            this.logger.error(`No adapter found for platform type: ${platformType} on connection ${connectionId}. Aborting job ${job.id}.`);
-            throw new InternalServerErrorException(`Adapter not found for ${platformType}.`);
-        }
-
-        // Use the Supabase client from SupabaseService for transactions
-        const supabaseClient = this.supabaseService.getClient(); 
-
         try {
+            // Fallbacks: load from saved confirmations and connection sync rules when missing
+            if (!confirmedMatches || (Array.isArray(confirmedMatches) && confirmedMatches.length === 0)) {
+                try {
+                    const stored = await this.mappingService.getConfirmedMappings(connectionId);
+                    if (stored?.confirmedMatches?.length) {
+                        confirmedMatches = stored.confirmedMatches;
+                        this.logger.log(`Loaded ${confirmedMatches.length} confirmedMatches from PlatformSpecificData for job ${job.id}.`);
+                    }
+                } catch (e: any) {
+                    this.logger.warn(`Unable to load mapping confirmations for ${connectionId}: ${e?.message}`);
+                }
+            }
+
+            const connectionForRules = await this.connectionService.getConnectionById(connectionId, userId);
+            const effectiveSyncRules = syncRules || connectionForRules?.SyncRules || {};
+
+            if (!connectionId || !userId || !platformType) {
+                this.logger.error(`Job ${job.id} missing core identifiers (connectionId/userId/platformType).`);
+                throw new Error('Missing identifiers');
+            }
+
+            // If there are still no confirmed matches, mark as needs_review instead of throwing, so UI can proceed
+            if (!Array.isArray(confirmedMatches) || confirmedMatches.length === 0) {
+                this.logger.warn(`No confirmed matches provided for initial sync on ${connectionId}. Marking connection as 'needs_review'.`);
+                await this.connectionService.updateConnectionStatus(connectionId, userId, 'needs_review');
+                await this.activityLogService.logActivity({
+                    UserId: userId,
+                    EntityType: 'Connection',
+                    EntityId: connectionId,
+                    EventType: 'INITIAL_SYNC_SKIPPED_NO_MATCHES',
+                    Status: 'Warning',
+                    Message: `Initial sync skipped due to no confirmed matches. User review required.`,
+                    PlatformConnectionId: connectionId,
+                    Details: { platform: platformType }
+                });
+                // Also store a last success to unstick UI timers
+                await this.connectionService.updateLastSyncSuccess(connectionId, userId);
+                return { totalItemsProcessed: 0, itemsSuccessfullySynced: 0, itemsFailedToSync: 0, skipped: true };
+            }
+
+            const connection = await this.connectionService.getConnectionById(connectionId, userId);
+            if (!connection) {
+                this.logger.error(`Connection ${connectionId} not found for user ${userId}. Aborting job ${job.id}.`);
+                throw new NotFoundException(`Connection ${connectionId} not found.`);
+            }
+
+            const adapter = this.adapterRegistry.getAdapter(platformType);
+            if (!adapter) {
+                this.logger.error(`No adapter found for platform type: ${platformType} on connection ${connectionId}. Aborting job ${job.id}.`);
+                throw new InternalServerErrorException(`Adapter not found for ${platformType}.`);
+            }
+
+            // Use the Supabase client from SupabaseService for transactions
+            const supabaseClient = this.supabaseService.getClient(); 
+
             await this.activityLogService.logActivity({
                 UserId: userId,
                 EntityType: 'Connection',
@@ -188,7 +207,7 @@ export class InitialSyncProcessor extends WorkerHost {
                     EntityId: connectionId,
                     EventType: 'INITIAL_SYNC_FAILED',
                     Status: 'Error',
-                    Message: `Initial sync critically failed for ${platformType} connection: ${connection.DisplayName}. Error: ${error.message}`,
+                    Message: `Initial sync critically failed for ${platformType} connection ${connectionId}. Error: ${error.message}`,
                     PlatformConnectionId: connectionId,
                     Details: { platform: platformType, error: error.message }
                 });

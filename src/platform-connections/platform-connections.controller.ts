@@ -51,5 +51,19 @@ export class PlatformConnectionsController {
         return this.connectionsService.disconnectConnection(connectionId, userId);
     }
 
+    // Smooth reactivation endpoint: flips IsEnabled=true and Status to pending (or inactive if you prefer),
+    // and clears 'error' to allow the UI to proceed without a hard re-auth flow.
+    @Patch(':id/enable')
+    @HttpCode(HttpStatus.OK)
+    async enableConnection(
+        @Request() req,
+        @Param('id', ParseUUIDPipe) connectionId: string
+    ): Promise<PlatformConnection | null> {
+        const userId = req.user.id;
+        this.logger.log(`Request from user ${userId} to enable/reactivate connection ${connectionId}.`);
+        // If stuck in error, reset to inactive to unblock UI flows
+        await this.connectionsService.resetStatusIfError(connectionId, userId);
+        return this.connectionsService.enableConnection(connectionId, userId);
+    }
     // TODO: Add endpoints for GET /:id (details?), PATCH /:id (update status/rules?)
 } 

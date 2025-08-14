@@ -332,6 +332,24 @@ export class PlatformConnectionsService {
         this.logger.log(`Connection ${connectionId} deleted for user ${userId}.`);
     }
 
+    async enableConnection(connectionId: string, userId: string): Promise<PlatformConnection | null> {
+        this.logger.log(`Enabling (reactivating) connection ${connectionId} for user ${userId}.`);
+        await this.updateConnectionData(connectionId, userId, {
+            IsEnabled: true,
+            Status: 'pending',
+            LastSyncAttemptAt: new Date().toISOString(),
+        });
+        return this.getConnectionById(connectionId, userId);
+    }
+
+    async resetStatusIfError(connectionId: string, userId: string): Promise<PlatformConnection | null> {
+        const connection = await this.getConnectionById(connectionId, userId);
+        if (connection && connection.Status === 'error') {
+            await this.updateConnectionData(connectionId, userId, { Status: 'inactive' });
+            return this.getConnectionById(connectionId, userId);
+        }
+        return connection;
+    }
     async updateLastSyncSuccess(connectionId: string, userId: string): Promise<void> {
         await this.updateConnectionData(connectionId, userId, { LastSyncSuccessAt: new Date().toISOString() });
     }

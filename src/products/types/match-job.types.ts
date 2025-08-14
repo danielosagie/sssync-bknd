@@ -21,6 +21,7 @@ export interface MatchJobData {
     estimatedTimeMinutes: number;
     createdAt: string;
     batchSize?: number; // Internal batching size
+    targetSites?: string[]; // normalized hostnames for site: filters
   };
 }
 
