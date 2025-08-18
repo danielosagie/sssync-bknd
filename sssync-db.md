@@ -601,3 +601,126 @@ CREATE TRIGGER trigger_update_match_jobs_updated_at
     BEFORE UPDATE ON public.match_jobs
     FOR EACH ROW
     EXECUTE FUNCTION update_match_jobs_updated_at(); 
+
+create or replace view public.me as
+select u."Id", u."Email", u."SubscriptionTierId"
+from "Users" u
+where u."Id" = (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid;
+grant select on public.me to authenticated;
+
+    -- Helper if not defined yet
+create or replace function public.current_user_id()
+returns uuid language sql stable as $$
+  select (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid
+$$;
+
+-- Optional mapping to Clerk user id for future webhook mirroring
+alter table "Users" add column if not exists "ClerkUserId" text unique;
+
+-- Organizations
+create table if not exists "Organizations" (
+  "Id" uuid primary key default gen_random_uuid(),
+  "ClerkOrgId" text unique,
+  "Name" text not null,
+  "CreatedAt" timestamptz not null default now(),
+  "UpdatedAt" timestamptz not null default now()
+);
+create index if not exists idx_orgs_clerk on "Organizations"("ClerkOrgId");
+
+-- Org memberships
+create table if not exists "OrgMemberships" (
+  "Id" uuid primary key default gen_random_uuid(),
+  "OrgId" uuid not null references "Organizations"("Id") on delete cascade,
+  "UserId" uuid not null references "Users"("Id") on delete cascade,
+  "Role" text not null default 'member',
+  "CreatedAt" timestamptz not null default now()
+);
+create unique index if not exists uniq_org_membership on "OrgMemberships"("OrgId","UserId");
+create index if not exists idx_org_memberships_user on "OrgMemberships"("UserId");
+
+-- Subscriptions
+create table if not exists "Subscriptions" (
+  "Id" uuid primary key default gen_random_uuid(),
+  "OrgId" uuid references "Organizations"("Id") on delete cascade,
+  "UserId" uuid references "Users"("Id") on delete cascade,
+  "StripeCustomerId" text,
+  "StripeSubscriptionId" text,
+  "Status" text not null check ("Status" in ('active','trialing','past_due','canceled','incomplete','incomplete_expired','unpaid')),
+  "CurrentPlan" text,
+  "CurrentPeriodEnd" timestamptz,
+  "TrialEnd" timestamptz,
+  "CanceledAt" timestamptz,
+  "CreatedAt" timestamptz not null default now(),
+  "UpdatedAt" timestamptz not null default now(),
+  constraint subs_one_subject check (
+    (case when "OrgId" is not null then 1 else 0 end) +
+    (case when "UserId" is not null then 1 else 0 end)
+    = 1
+  )
+);
+create index if not exists idx_subs_org on "Subscriptions"("OrgId");
+create index if not exists idx_subs_user on "Subscriptions"("UserId");
+create unique index if not exists uniq_subs_customer on "Subscriptions"("StripeCustomerId");
+
+-- Feature entitlements (per org or per user)
+create table if not exists "FeatureEntitlements" (
+  "Id" uuid primary key default gen_random_uuid(),
+  "OrgId" uuid references "Organizations"("Id") on delete cascade,
+  "UserId" uuid references "Users"("Id") on delete cascade,
+  "FeatureKey" text not null,
+  "Limit" integer,
+  "Status" text not null default 'active',
+  "ExpiresAt" timestamptz,
+  "CreatedAt" timestamptz not null default now(),
+  "UpdatedAt" timestamptz not null default now(),
+  constraint ents_one_subject check (
+    (case when "OrgId" is not null then 1 else 0 end) +
+    (case when "UserId" is not null then 1 else 0 end)
+    = 1
+  )
+);
+-- unique per subject + feature
+create unique index if not exists uniq_ent_org_feature on "FeatureEntitlements"("OrgId","FeatureKey") where "OrgId" is not null;
+create unique index if not exists uniq_ent_user_feature on "FeatureEntitlements"("UserId","FeatureKey") where "UserId" is not null;
+
+-- RLS
+alter table "Organizations" enable row level security;
+alter table "OrgMemberships" enable row level security;
+alter table "Subscriptions" enable row level security;
+alter table "FeatureEntitlements" enable row level security;
+
+-- Organizations: members can read their orgs
+create policy orgs_read_member on "Organizations" for select
+using (exists (select 1 from "OrgMemberships" m where m."OrgId" = "Organizations"."Id" and m."UserId" = auth.uid()));
+
+-- OrgMemberships: users can read their own memberships
+create policy orgm_read_self on "OrgMemberships" for select
+using ("UserId" = auth.uid());
+
+-- Subscriptions: read if your user row OR you belong to the org
+create policy subs_read_subject on "Subscriptions" for select
+using (
+  ("UserId" = auth.uid())
+  or ("OrgId" is not null and exists (
+    select 1 from "OrgMemberships" m where m."OrgId" = "Subscriptions"."OrgId" and m."UserId" = auth.uid()
+  ))
+);
+
+-- FeatureEntitlements: same subject logic
+create policy ents_read_subject on "FeatureEntitlements" for select
+using (
+  ("UserId" = auth.uid())
+  or ("OrgId" is not null and exists (
+    select 1 from "OrgMemberships" m where m."OrgId" = "FeatureEntitlements"."OrgId" and m."UserId" = auth.uid()
+  ))
+);
+
+-- Grant read to authenticated (RLS still applies)
+grant select on "Organizations","OrgMemberships","Subscriptions","FeatureEntitlements" to authenticated;
+
+-- Ensure 'me' view is UUID-based (JWT sub)
+create or replace view public.me as
+select u."Id", u."Email", u."SubscriptionTierId"
+from "Users" u
+where u."Id" = (current_setting('request.jwt.claims', true)::jsonb ->> 'sub')::uuid;
+grant select on public.me to authenticated;

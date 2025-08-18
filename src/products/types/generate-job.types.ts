@@ -28,7 +28,6 @@ export interface GenerateJobData {
     totalProducts: number;
     estimatedTimeMinutes: number;
     createdAt: string;
-    targetSites?: string[]; // normalized hostnames for site filters during scraping
   };
 }
 

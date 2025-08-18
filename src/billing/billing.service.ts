@@ -32,7 +32,7 @@ export class BillingService {
 
     const session = await this.stripe.billingPortal.sessions.create({
       customer: customerId,
-      return_url: process.env.BILLING_RETURN_URL || 'https://app.sssync.app',
+      return_url: process.env.BILLING_RETURN_URL || 'https://api.sssync.app',
     });
     return session.url;
   }

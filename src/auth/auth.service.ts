@@ -10,6 +10,8 @@ import { JwtService } from '@nestjs/jwt';
 import { SupabaseService } from '../common/supabase.service';
 import { EncryptionService } from '../common/encryption.service';
 import axios from 'axios';
+import { jwtVerify, createRemoteJWKSet } from 'jose';
+import jwt from 'jsonwebtoken';
 import { randomBytes } from 'crypto';
 import { SupabaseClient, PostgrestSingleResponse } from '@supabase/supabase-js';
 import { StatePayload } from './interfaces/state-payload.interface';
@@ -34,6 +36,95 @@ export class AuthService {
     if (!this.jwtSecret) {
       throw new Error('JWT_SECRET environment variable is not set');
     }
+  }
+
+  async exchangeClerkTokenForSupabase(clerkToken: string): Promise<{ supabase_token: string; expires_in: number }> {
+    const issuer = this.configService.get<string>('CLERK_ISSUER');
+    const audience = this.configService.get<string>('CLERK_AUDIENCE'); // optional
+    const supabaseJwtSecret = this.configService.get<string>('SUPABASE_JWT_SECRET');
+    if (!supabaseJwtSecret) {
+      throw new InternalServerErrorException('SUPABASE_JWT_SECRET not configured');
+    }
+
+    const jwksUrl = this.configService.get<string>('CLERK_JWKS_URL') || 'https://YOUR-CLERK-DOMAIN/.well-known/jwks.json';
+    const jwks = createRemoteJWKSet(new URL(jwksUrl));
+
+    const { payload } = await jwtVerify(clerkToken, jwks, {
+      issuer: issuer || undefined,
+      audience: audience || undefined,
+    });
+
+    const clerkUserId = payload.sub as string;
+    const email = (payload['email'] as string) || '';
+
+    // Find or create a Users row so we can use its UUID as JWT sub
+    const sb = this.supabaseService.getServiceClient();
+    let userId: string | null = null;
+
+    if (!email) {
+      // For minimal setup we require email to link users; configure Clerk to include email in session token
+      throw new InternalServerErrorException('Clerk token missing email claim. Enable email in Clerk session token.');
+    }
+
+    // Try to find existing user by email
+    const { data: existing, error: findErr } = await sb
+      .from('Users')
+      .select('Id, Email')
+      .eq('Email', email)
+      .maybeSingle();
+    if (findErr) {
+      throw new InternalServerErrorException(`Supabase query error: ${findErr.message}`);
+    }
+    if (existing?.Id) {
+      userId = existing.Id as string;
+    } else {
+      // Create
+      const { data: inserted, error: insertErr } = await sb
+        .from('Users')
+        .insert({ Email: email })
+        .select('Id')
+        .single();
+      if (insertErr || !inserted?.Id) {
+        throw new InternalServerErrorException(`Failed to create user: ${insertErr?.message || 'unknown error'}`);
+      }
+      userId = inserted.Id as string;
+    }
+
+    // Minimal claim set for Supabase RLS. Keep short-lived.
+    const expiresInSeconds = 600; // 10m
+    const supabaseToken = jwt.sign(
+      {
+        sub: userId, // UUID from our Users table
+        role: 'authenticated',
+        email,
+      },
+      supabaseJwtSecret,
+      { algorithm: 'HS256', expiresIn: expiresInSeconds }
+    );
+
+    return { supabase_token: supabaseToken, expires_in: expiresInSeconds };
+  }
+
+  // --- Clerk webhook handling (basic user/org mirror) ---
+  async handleClerkWebhook(event: any): Promise<{ ok: true }> {
+    const type = event?.type as string | undefined;
+    const data = event?.data;
+    const sb = this.supabaseService.getServiceClient();
+    if (!type || !data) return { ok: true };
+
+    if (type === 'user.created' || type === 'user.updated') {
+      const email = data?.primary_email_address?.email_address || data?.email_addresses?.[0]?.email_address;
+      if (email) {
+        // Upsert Users by Email
+        await sb.from('Users').upsert({ Email: email }, { onConflict: 'Email' });
+      }
+      return { ok: true };
+    }
+
+    // TODO: Add organization and membership mirror when you enable Clerk Orgs
+    // e.g., organization.created, organizationMembership.created, ... map to Supabase tables
+
+    return { ok: true };
   }
 
   // --- State Management ---

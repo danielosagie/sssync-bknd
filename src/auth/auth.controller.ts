@@ -1,6 +1,8 @@
 import {
   Controller,
   Get,
+  Post,
+  Headers,
   Query,
   Res,
   UnauthorizedException,
@@ -73,6 +75,30 @@ export class AuthController {
   ) {
      // Initialize from environment variables or default
      this.frontendRedirectBase = this.configService.get<string>('FRONTEND_REDIRECT_BASE', 'http://localhost:3000/auth/callback'); // Example default
+  }
+
+  // --- Clerk → Supabase token exchange ---
+  @Post('exchange')
+  async exchange(@Headers('authorization') authHeader?: string) {
+    const bearer = authHeader?.split(' ');
+    const token = bearer && bearer[0] === 'Bearer' ? bearer[1] : undefined;
+    if (!token) {
+      throw new BadRequestException('Missing Authorization: Bearer <clerk_token>');
+    }
+    return this.authService.exchangeClerkTokenForSupabase(token);
+  }
+
+  // --- Clerk Webhooks (users/orgs) ---
+  @Post('clerk/webhooks')
+  async clerkWebhooks(@Headers('svix-id') svixId: string | undefined,
+    @Headers('svix-timestamp') svixTimestamp: string | undefined,
+    @Headers('svix-signature') svixSignature: string | undefined,
+    @Req() req: any) {
+    // Optional: verify via SVIX if you configure Clerk webhooks with secret
+    // For now, handle basic events to mirror Users; expand to orgs later.
+    const event = req.body;
+    // Expected types: 'user.created', 'user.updated', 'user.deleted', 'organization.created', 'organizationMembership.created', ...
+    return this.authService.handleClerkWebhook(event);
   }
 
   // --- Shopify Endpoints ---
