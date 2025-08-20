@@ -111,7 +111,8 @@ ${enhancedWebData ? '- USE THE DETAILED PRODUCT INFORMATION as your PRIMARY sour
 - Cross-reference image with ${enhancedWebData ? 'web data' : 'visual matches'} for consistency
 - Generate realistic, competitive pricing
 - Create detailed, engaging descriptions
-- Extract specific specifications and features
+- Extract specific specifications and features.
+- DO NOT WRITE IN HTML TAGS UNLESS INSTRUCTED TO -- ESPECIALLY FOR SHOPIFY JUST PLAIN TEXT IS FINE
 
 Generate a JSON response with platform-specific details. For each platform, provide:
 
