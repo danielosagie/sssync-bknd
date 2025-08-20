@@ -16,18 +16,15 @@ export class RequestLoggerMiddleware implements NestMiddleware {
     const middlewareLogger = this.logger;
 
     // Log request details
-    middlewareLogger.log(
-      `[${requestId}] [${method}] ${originalUrl}` +
-      `\nUser: ${userId}` +
-      `\nUA: ${userAgent}` +
-      `\nQuery: ${JSON.stringify(query)}` +
-      `\nHeaders: ${JSON.stringify({
-        'content-type': headers['content-type'],
-        'authorization': headers['authorization'] ? 'Bearer ***' : undefined,
-        'x-forwarded-for': headers['x-forwarded-for'],
-        'x-real-ip': headers['x-real-ip']
-      })}`
-    );
+    middlewareLogger.log(`[${requestId}] [${method}] ${originalUrl} from ip=${req.ip}`);
+    middlewareLogger.debug(`UA: ${userAgent}`);
+    middlewareLogger.debug(`Query: ${JSON.stringify(query)}`);
+    middlewareLogger.debug(`Headers: ${JSON.stringify({
+      'content-type': headers['content-type'],
+      'authorization': headers['authorization'] ? 'Bearer ***' : undefined,
+      'x-forwarded-for': headers['x-forwarded-for'],
+      'x-real-ip': headers['x-real-ip']
+    })}`);
 
     // Detailed logging for media.imageUris
     if (body && typeof body === 'object' && body.media && Array.isArray(body.media.imageUris)) {
