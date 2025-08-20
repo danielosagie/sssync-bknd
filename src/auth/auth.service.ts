@@ -10,7 +10,15 @@ import { JwtService } from '@nestjs/jwt';
 import { SupabaseService } from '../common/supabase.service';
 import { EncryptionService } from '../common/encryption.service';
 import axios from 'axios';
-import { jwtVerify, createRemoteJWKSet } from 'jose';
+// jose is ESM-only. Load it dynamically from CommonJS at runtime to avoid require() ESM error in Node 18/20
+let _josePromise: Promise<any> | null = null;
+async function loadJose() {
+  if (!_josePromise) {
+    // Use eval('import') to prevent TS from transforming to require()
+    _josePromise = (eval('import'))('jose');
+  }
+  return _josePromise;
+}
 import jwt from 'jsonwebtoken';
 import { randomBytes } from 'crypto';
 import { SupabaseClient, PostgrestSingleResponse } from '@supabase/supabase-js';
@@ -47,6 +55,7 @@ export class AuthService {
     }
 
     const jwksUrl = this.configService.get<string>('CLERK_JWKS_URL') || 'https://YOUR-CLERK-DOMAIN/.well-known/jwks.json';
+    const { jwtVerify, createRemoteJWKSet } = await loadJose();
     const jwks = createRemoteJWKSet(new URL(jwksUrl));
 
     const { payload } = await jwtVerify(clerkToken, jwks, {
