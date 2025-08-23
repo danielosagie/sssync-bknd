@@ -10,16 +10,8 @@ import { JwtService } from '@nestjs/jwt';
 import { SupabaseService } from '../common/supabase.service';
 import { EncryptionService } from '../common/encryption.service';
 import axios from 'axios';
-// jose is ESM-only. Load it dynamically from CommonJS at runtime to avoid require() ESM error in Node 18/20
-let _josePromise: Promise<any> | null = null;
-async function loadJose() {
-  if (!_josePromise) {
-    // Use eval('import') to prevent TS from transforming to require()
-    _josePromise = (eval('import'))('jose');
-  }
-  return _josePromise;
-}
 import jwt from 'jsonwebtoken';
+import jwkToPem from 'jwk-to-pem';
 import { randomBytes } from 'crypto';
 import { SupabaseClient, PostgrestSingleResponse } from '@supabase/supabase-js';
 import { StatePayload } from './interfaces/state-payload.interface';
@@ -86,16 +78,24 @@ export class AuthService {
         this.logger.error('CLERK_JWKS_URL is not configured correctly. Set it to your Clerk domain JWKS endpoint.');
         throw new InternalServerErrorException('Server misconfiguration: CLERK_JWKS_URL not set');
       }
-      const { jwtVerify, createRemoteJWKSet } = await loadJose();
-      const jwks = createRemoteJWKSet(new URL(jwksUrl));
       try {
-        const verified = await jwtVerify(clerkToken, jwks, {
+        // Manually fetch JWKS and verify using jsonwebtoken with PEM
+        const res = await axios.get(jwksUrl, { timeout: 5000 });
+        const keys = res.data?.keys as Array<any> | undefined;
+        if (!keys || keys.length === 0) throw new Error('No JWKS keys');
+        // Decode header to get kid
+        const headerB64 = clerkToken.split('.')[0];
+        const headerJson = Buffer.from(headerB64.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+        const kid = JSON.parse(headerJson)?.kid;
+        const jwk = (kid ? keys.find(k => k.kid === kid) : keys[0]) || keys[0];
+        const pem = jwkToPem(jwk);
+        payload = jwt.verify(clerkToken, pem, {
+          algorithms: ['RS256', 'RS512', 'ES256', 'ES384'],
           issuer: issuer || undefined,
           audience: audience || undefined,
-        });
-        payload = verified.payload as Record<string, any>;
+        }) as Record<string, any>;
       } catch (e: any) {
-        this.logger.error(`Clerk token verification failed: ${e?.message || e}`);
+        this.logger.error(`Clerk token verification (JWKS) failed: ${e?.message || e}`);
         throw new UnauthorizedException('Invalid Clerk session token');
       }
     }
