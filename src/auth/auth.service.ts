@@ -54,14 +54,51 @@ export class AuthService {
       throw new InternalServerErrorException('SUPABASE_JWT_SECRET not configured');
     }
 
-    const jwksUrl = this.configService.get<string>('CLERK_JWKS_URL') || 'https://YOUR-CLERK-DOMAIN/.well-known/jwks.json';
-    const { jwtVerify, createRemoteJWKSet } = await loadJose();
-    const jwks = createRemoteJWKSet(new URL(jwksUrl));
+    // Determine token algorithm to support both Clerk default (RS256 via JWKS) and optional HS256 custom templates
+    let headerAlg: string | undefined;
+    try {
+      const headerPart = clerkToken.split('.')[0];
+      const json = Buffer.from(headerPart.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+      const header = JSON.parse(json);
+      headerAlg = header.alg as string | undefined;
+    } catch {}
 
-    const { payload } = await jwtVerify(clerkToken, jwks, {
-      issuer: issuer || undefined,
-      audience: audience || undefined,
-    });
+    let payload: Record<string, any>;
+    if (headerAlg && headerAlg.toUpperCase().startsWith('HS')) {
+      const hsSecret = this.configService.get<string>('CLERK_JWT_HS_SECRET');
+      if (!hsSecret) {
+        this.logger.error('HS256 Clerk token received but CLERK_JWT_HS_SECRET is not configured.');
+        throw new InternalServerErrorException('Server misconfiguration: missing CLERK_JWT_HS_SECRET');
+      }
+      try {
+        payload = jwt.verify(clerkToken, hsSecret, {
+          algorithms: [headerAlg as any],
+          issuer: issuer || undefined,
+          audience: audience || undefined,
+        }) as Record<string, any>;
+      } catch (e: any) {
+        this.logger.error(`HS Clerk token verification failed: ${e?.message || e}`);
+        throw new UnauthorizedException('Invalid Clerk session token');
+      }
+    } else {
+      const jwksUrl = this.configService.get<string>('CLERK_JWKS_URL') || 'https://YOUR-CLERK-DOMAIN/.well-known/jwks.json';
+      if (!jwksUrl || jwksUrl.includes('YOUR-CLERK-DOMAIN')) {
+        this.logger.error('CLERK_JWKS_URL is not configured correctly. Set it to your Clerk domain JWKS endpoint.');
+        throw new InternalServerErrorException('Server misconfiguration: CLERK_JWKS_URL not set');
+      }
+      const { jwtVerify, createRemoteJWKSet } = await loadJose();
+      const jwks = createRemoteJWKSet(new URL(jwksUrl));
+      try {
+        const verified = await jwtVerify(clerkToken, jwks, {
+          issuer: issuer || undefined,
+          audience: audience || undefined,
+        });
+        payload = verified.payload as Record<string, any>;
+      } catch (e: any) {
+        this.logger.error(`Clerk token verification failed: ${e?.message || e}`);
+        throw new UnauthorizedException('Invalid Clerk session token');
+      }
+    }
 
     const clerkUserId = payload.sub as string;
     const email = (payload['email'] as string) || '';

@@ -28,7 +28,12 @@ CREATE TABLE "Users" (
 );
 CREATE INDEX idx_users_email ON "Users"("Email");
 
+-- Normalize existing data
+update "Users" set "Email" = lower(trim("Email"));
+-- Add uniqueness (case-insensitive) on Email
+create unique index if not exists users_email_unique_ci on "Users"(lower("Email"));
 -- New table for public-facing seller profiles
+
 CREATE TABLE "UserProfiles" (
     "UserId" uuid PRIMARY KEY REFERENCES "Users"("Id") ON DELETE CASCADE, -- One-to-one with Users
     "DisplayName" text NOT NULL, -- Public seller name
