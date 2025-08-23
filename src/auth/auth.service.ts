@@ -46,21 +46,31 @@ export class AuthService {
       throw new InternalServerErrorException('SUPABASE_JWT_SECRET not configured');
     }
 
-    // Determine token algorithm to support both Clerk default (RS256 via JWKS) and optional HS256 custom templates
+    // Unverified decode for diagnostics (alg, kid, iss, aud)
     let headerAlg: string | undefined;
+    let headerKid: string | undefined;
+    let unverifiedIss: string | undefined;
+    let unverifiedAud: string | undefined;
     try {
-      const headerPart = clerkToken.split('.')[0];
-      const json = Buffer.from(headerPart.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
-      const header = JSON.parse(json);
+      const [h, p] = clerkToken.split('.');
+      const headerJson = Buffer.from(h.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+      const payloadJson = Buffer.from(p.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+      const header = JSON.parse(headerJson);
+      const unverifiedPayload = JSON.parse(payloadJson);
       headerAlg = header.alg as string | undefined;
+      headerKid = header.kid as string | undefined;
+      unverifiedIss = unverifiedPayload.iss as string | undefined;
+      unverifiedAud = unverifiedPayload.aud as string | undefined;
     } catch {}
+    this.logger.debug(`[Auth.exchange] incoming token alg=${headerAlg} kid=${headerKid} iss=${unverifiedIss} aud=${unverifiedAud}`);
+    this.logger.debug(`[Auth.exchange] configured issuer=${issuer} audience=${audience}`);
 
     let payload: Record<string, any>;
     if (headerAlg && headerAlg.toUpperCase().startsWith('HS')) {
       const hsSecret = this.configService.get<string>('CLERK_JWT_HS_SECRET');
       if (!hsSecret) {
         this.logger.error('HS256 Clerk token received but CLERK_JWT_HS_SECRET is not configured.');
-        throw new InternalServerErrorException('Server misconfiguration: missing CLERK_JWT_HS_SECRET');
+        throw new UnauthorizedException('HS256 token received but server configured for RS256');
       }
       try {
         payload = jwt.verify(clerkToken, hsSecret, {
@@ -78,6 +88,7 @@ export class AuthService {
         this.logger.error('CLERK_JWKS_URL is not configured correctly. Set it to your Clerk domain JWKS endpoint.');
         throw new InternalServerErrorException('Server misconfiguration: CLERK_JWKS_URL not set');
       }
+      this.logger.debug(`[Auth.exchange] Verifying RS token using JWKS: ${jwksUrl}`);
       try {
         // Manually fetch JWKS and verify using jsonwebtoken with PEM
         const res = await axios.get(jwksUrl, { timeout: 5000 });
@@ -88,6 +99,8 @@ export class AuthService {
         const headerJson = Buffer.from(headerB64.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
         const kid = JSON.parse(headerJson)?.kid;
         const jwk = (kid ? keys.find(k => k.kid === kid) : keys[0]) || keys[0];
+        if (!jwk) throw new Error('Matching JWK not found');
+        this.logger.debug(`[Auth.exchange] Selected JWK kid=${jwk.kid} kty=${jwk.kty} alg=${jwk.alg}`);
         const pem = jwkToPem(jwk);
         payload = jwt.verify(clerkToken, pem, {
           algorithms: ['RS256', 'RS512', 'ES256', 'ES384'],
