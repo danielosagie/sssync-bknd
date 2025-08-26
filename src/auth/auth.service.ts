@@ -156,6 +156,7 @@ export class AuthService {
         sub: userId, // UUID from our Users table
         role: 'authenticated',
         email,
+        aud: 'authenticated', // Required audience for Supabase auth.getUser()
       },
       supabaseJwtSecret,
       { algorithm: 'HS256', expiresIn: expiresInSeconds }
