@@ -20,6 +20,9 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { TasksModule } from './tasks/tasks.module';
 import { PlatformAdaptersModule } from './platform-adapters/platform-adapters.module';
 import { BillingModule } from './billing/billing.module';
+import { IngestModule } from './ingest/ingest.module';
+import { MatchModule } from './match/match.module';
+import { BackfillModule } from './sync-engine/backfill.module';
 
 @Global()
 @Module({
@@ -44,6 +47,9 @@ import { BillingModule } from './billing/billing.module';
     TasksModule,
     PlatformAdaptersModule,
     BillingModule,
+    IngestModule,
+    MatchModule,
+    BackfillModule,
   ],
   controllers: [AppController],
   providers: [

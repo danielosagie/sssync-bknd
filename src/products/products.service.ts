@@ -1184,6 +1184,7 @@ export class ProductsService {
           threshold?: number;
       },
       userId: string,
+      userJwtToken?: string,
   ): Promise<{
       matches: any[];
       confidence: 'high' | 'medium' | 'low';
@@ -1210,7 +1211,7 @@ export class ProductsService {
               businessTemplate: scanData.businessTemplate,
               threshold: scanData.threshold,
               userId: userId,
-          });
+          }, userJwtToken);
 
           this.logger.log(`[ProductsService.quickProductScan] User: ${userId} - Completed with ${result.matches.length} matches, confidence: ${result.confidence}`);
 

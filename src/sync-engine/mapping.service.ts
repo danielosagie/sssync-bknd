@@ -27,7 +27,7 @@ export interface PlatformProductData {
 export interface MappingSuggestion {
     platformProduct: PlatformProductData;
     suggestedCanonicalVariant?: Partial<ProductVariant> | null; // Use Partial<ProductVariant>
-    matchType: 'SKU' | 'BARCODE' | 'NONE';
+    matchType: 'SKU' | 'BARCODE' | 'TITLE' | 'NONE';
     confidence: number; // 0 to 1
 }
 
@@ -75,9 +75,11 @@ export class MappingService {
         const suggestions: MappingSuggestion[] = [];
         const canonicalVariantsMap = new Map<string, Partial<ProductVariant>>();
         const canonicalBarcodesMap = new Map<string, Partial<ProductVariant>>();
+        const canonicalTitleMap = new Map<string, Partial<ProductVariant>>();
         canonicalVariants?.forEach(v => {
             if (v.Sku) canonicalVariantsMap.set(v.Sku.trim().toLowerCase(), v);
             if (v.Barcode) canonicalBarcodesMap.set(v.Barcode.trim().toLowerCase(), v);
+            if (v.Title) canonicalTitleMap.set(this.normalizeTitle(v.Title), v);
         });
 
         const itemsToMap: PlatformProductData[] = platformData.variants?.length > 0 ? platformData.variants : platformData.products;
@@ -96,6 +98,7 @@ export class MappingService {
 
             const itemSku = item.sku?.trim().toLowerCase();
             const itemBarcode = item.barcode?.trim().toLowerCase();
+            const itemTitleNorm = item.title ? this.normalizeTitle(item.title) : undefined;
 
             // Try barcode match first
             if (itemBarcode && canonicalBarcodesMap.has(itemBarcode)) {
@@ -115,6 +118,13 @@ export class MappingService {
                 }
             }
 
+            // Try normalized title exact match as a cheap fallback
+            if (!match && itemTitleNorm && canonicalTitleMap.has(itemTitleNorm)) {
+                match = canonicalTitleMap.get(itemTitleNorm)!;
+                matchType = 'TITLE';
+                confidence = 0.82; // Lower than SKU/Barcode
+            }
+
             suggestions.push({
                 platformProduct: item,
                 suggestedCanonicalVariant: match ?? null,
@@ -125,6 +135,14 @@ export class MappingService {
 
         this.logger.log(`Generated ${suggestions.length} mapping suggestions for ${platformType}, user ${userId}`);
         return suggestions;
+    }
+
+    private normalizeTitle(input: string): string {
+        return input
+            .toLowerCase()
+            .replace(/[^a-z0-9\s]/g, '') // remove punctuation
+            .replace(/\s+/g, ' ') // collapse whitespace
+            .trim();
     }
 
     /**

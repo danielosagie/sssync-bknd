@@ -71,4 +71,28 @@ export class SupabaseService {
     }
     return this._supabaseService;
   }
+
+  /**
+   * Creates an authenticated Supabase client with the user's JWT token
+   * This is essential for RLS to work correctly with Clerk/Supabase exchange
+   */
+  getAuthenticatedClient(userJwtToken: string): SupabaseClient {
+    const supabaseUrl = this.configService.get<string>('SUPABASE_URL');
+    const supabaseAnonKey = this.configService.get<string>('SUPABASE_ANON_KEY');
+
+    if (!supabaseUrl || !supabaseAnonKey) {
+      throw new InternalServerErrorException('Supabase config missing for authenticated client creation.');
+    }
+
+    // Create a new client instance with the user's token
+    const authenticatedClient = createClient(supabaseUrl, supabaseAnonKey, {
+      global: {
+        headers: {
+          Authorization: `Bearer ${userJwtToken}`,
+        },
+      },
+    });
+
+    return authenticatedClient;
+  }
 }

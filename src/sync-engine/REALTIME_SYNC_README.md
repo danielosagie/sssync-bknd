@@ -75,6 +75,17 @@ External Platform → Webhook → WebhookController → Platform Adapter → Syn
 ### Future Platforms
 - Square: `item.created`, `item.updated`, `inventory.count.updated`
 - Clover: Similar product and inventory events
+- eBay/Facebook/Whatnot: Webhooks and polling vary; initial implementation uses adapter stubs and will rely on job-based polling or partner APIs when enabled.
+
+## Ingestion (CSV/Unstructured)
+
+CSV imports are handled by a dedicated importer service (planned):
+- Column mapping with auto-suggest
+- Normalization for price/quantity/date
+- Storage into `RawImportItems` (table planned) for subsequent matching
+- Async matching job to produce `match_candidate` rows and suggestions
+
+> Note: Embedding + reranker pipeline exists in products AI services and will be integrated for Step D matching.
 
 ## Real-time Sync Management
 

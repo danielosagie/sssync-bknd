@@ -60,7 +60,7 @@ export class InitialScanProcessor extends WorkerHost {
             const apiClient = adapter.getApiClient({ Id: connectionId, UserId: userId, PlatformType: platformType });
             this.logger.log(`[ACTIVE JOB] Fetching platform data for connection ${connectionId}`);
             await job.updateProgress({ progress: 10, description: `Fetching products from ${platformType}...` });
-            
+
             const platformData = await apiClient.fetchAllRelevantData({ Id: connectionId, UserId: userId, PlatformType: platformType });
             
             // Log analysis results
@@ -69,11 +69,28 @@ export class InitialScanProcessor extends WorkerHost {
 
             // Map and save the data
             const mapper = adapter.getMapper();
-            const { 
-                canonicalProducts: mappedProducts, 
-                canonicalVariants: mappedVariants, 
-                canonicalInventoryLevels: mappedInventoryLevels 
-            } = mapper.mapShopifyDataToCanonical(platformData, userId, connectionId);
+            // Platform-specific canonical mapping
+            let mappedProducts: CanonicalProduct[] = [];
+            let mappedVariants: CanonicalProductVariant[] = [];
+            let mappedInventoryLevels: CanonicalInventoryLevel[] = [];
+            if (platformType === 'shopify') {
+                const res = mapper.mapShopifyDataToCanonical(platformData, userId, connectionId);
+                mappedProducts = res.canonicalProducts;
+                mappedVariants = res.canonicalVariants;
+                mappedInventoryLevels = res.canonicalInventoryLevels;
+            } else if (platformType === 'square') {
+                const res = mapper.mapSquareDataToCanonical(platformData, userId, connectionId);
+                mappedProducts = res.canonicalProducts;
+                mappedVariants = res.canonicalVariants;
+                mappedInventoryLevels = res.canonicalInventoryLevels;
+            } else if (platformType === 'clover') {
+                const res = mapper.mapCloverDataToCanonical(platformData, userId, connectionId);
+                mappedProducts = res.canonicalProducts;
+                mappedVariants = res.canonicalVariants;
+                mappedInventoryLevels = res.canonicalInventoryLevels;
+            } else {
+                throw new InternalServerErrorException(`Mapping not implemented for platform: ${platformType}`);
+            }
 
             await job.updateProgress({ progress: 30, description: 'Saving product data...' });
             
@@ -202,20 +219,56 @@ export class InitialScanProcessor extends WorkerHost {
             this.logger.log(`Job ${job.id}: Scan summary saved: ${JSON.stringify(scanSummary)}`);
 
              this.logger.log(`Job ${job.id}: Generating mapping suggestions...`);
-            const variantsForSuggestions: PlatformProductData[] = platformData.products.flatMap(p => {
-                const firstImageUrl = p.media?.edges?.[0]?.node?.preview?.image?.url;
-                return p.variants.edges.map(vEdge => {
-                    const variantNode = vEdge.node;
-                    return {
-                        id: variantNode.id, 
-                        sku: variantNode.sku,
-                        barcode: variantNode.barcode,
-                        title: p.title,
-                        price: variantNode.price, 
-                        imageUrl: firstImageUrl || null,
-                    };
-                })
-            });
+            // Build platform-agnostic variant list for suggestions
+            let variantsForSuggestions: PlatformProductData[] = [];
+            if (platformType === 'shopify') {
+                variantsForSuggestions = (platformData.products || []).flatMap((p: any) => {
+                    const firstImageUrl = p.media?.edges?.[0]?.node?.preview?.image?.url;
+                    return p.variants.edges.map((vEdge: any) => {
+                        const variantNode = vEdge.node;
+                        return {
+                            id: variantNode.id,
+                            sku: variantNode.sku,
+                            barcode: variantNode.barcode,
+                            title: p.title,
+                            price: variantNode.price,
+                            imageUrl: firstImageUrl || null,
+                        } as PlatformProductData;
+                    });
+                });
+            } else if (platformType === 'square') {
+                variantsForSuggestions = (platformData.items || []).flatMap((item: any) => {
+                    return (item.item_data?.variations || []).map((variation: any) => ({
+                        id: variation.id,
+                        sku: variation.item_variation_data?.sku,
+                        barcode: null,
+                        title: item.item_data?.name,
+                        price: (variation.item_variation_data?.price_money?.amount ?? 0) / 100,
+                        imageUrl: null,
+                    } as PlatformProductData));
+                });
+            } else if (platformType === 'clover') {
+                variantsForSuggestions = (platformData.items || []).map((it: any) => ({
+                    id: it.id,
+                    sku: it.sku || it.code,
+                    barcode: it.code,
+                    title: it.name,
+                    price: (it.price ?? 0) / 100,
+                    imageUrl: it.imageUrl || null,
+                } as PlatformProductData));
+            }
+
+            // If we couldn't extract platform variants, fall back to canonical ones so UI always has something to show for review
+            if (!variantsForSuggestions || variantsForSuggestions.length === 0) {
+                variantsForSuggestions = mappedVariants.map(v => ({
+                    id: v.Id || '',
+                    sku: v.Sku || undefined,
+                    barcode: v.Barcode || undefined,
+                    title: v.Title || undefined,
+                    price: v.Price || undefined,
+                    imageUrl: (mappedProducts.find(p => p.Id === v.ProductId)?.ImageUrls?.[0]) || null,
+                }));
+            }
             const suggestions = await this.mappingService.generateSuggestions(
                { products: [], variants: variantsForSuggestions }, 
                userId, 

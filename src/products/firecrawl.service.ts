@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../common/supabase.service';
 import FirecrawlApp, { SearchResponse } from '@mendable/firecrawl-js';
+import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
 
 export interface FirecrawlSearchResult {
   url: string;
@@ -31,6 +32,7 @@ export class FirecrawlService {
   constructor(
     private readonly configService: ConfigService,
     private readonly supabaseService: SupabaseService,
+    private readonly aiUsageTracker: AiUsageTrackerService
   ) {
     // Read from ConfigService first, fallback to process.env
     this.fcApiKey = this.configService.get<string>('FIRECRAWL_API_KEY') || process.env.FIRECRAWL_API_KEY;
@@ -109,6 +111,7 @@ export class FirecrawlService {
       data = scraped.map(s => ({ url: s.url, title: s.metadata?.title, markdown: s.markdown, html: s.html, links: s.links }));
     }
 
+ 
     return data as FirecrawlExtractResult[];
   }
 

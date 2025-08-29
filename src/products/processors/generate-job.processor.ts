@@ -6,6 +6,8 @@ import { ActivityLogService } from '../../common/activity-log.service';
 import { AiGenerationService } from '../ai-generation/ai-generation.service';
 import { FirecrawlService } from '../firecrawl.service';
 import { GenerateJobData, GenerateJobStatus, GenerateJobResult } from '../types/generate-job.types';
+import { AiUsageTrackerService } from '../../common/ai-usage-tracker.service';
+
 
 @Injectable()
 export class GenerateJobProcessor {
@@ -27,6 +29,7 @@ export class GenerateJobProcessor {
     private readonly activityLogService: ActivityLogService,
     private readonly aiGenerationService: AiGenerationService,
     private readonly firecrawlService: FirecrawlService,
+    private readonly aiUsageTracker: AiUsageTrackerService
   ) {}
 
   async process(job: Job<GenerateJobData>): Promise<void> {
@@ -86,6 +89,18 @@ export class GenerateJobProcessor {
                   (selectedLinks.length ? ` at this link(s): (${selectedLinks.map(u => new URL(u).origin).join(', ')})` : '');
                 this.logger.log(`[GenerateJob] Firecrawl search prompt: ${prompt}`);
                 const searchResult = await this.firecrawlService.search(prompt);
+                
+                // Log result
+                await this.aiUsageTracker.trackUsage({
+                  userId: userId,
+                  serviceType: 'firecrawl_search',
+                  modelName: 'firecrawl',
+                  operation: 'firecrawl_search',
+                  requestCount: 1,
+                  metadata: searchResult
+                });
+            
+
                 const data = Array.isArray(searchResult?.data) ? searchResult.data : [];
                 templateSearchUrls = data.map((r: any) => r.url).filter((u: any) => typeof u === 'string');
                 this.logger.log(`[GenerateJob] Firecrawl search returned ${templateSearchUrls.length} candidate URL(s)`);
@@ -127,6 +142,7 @@ export class GenerateJobProcessor {
 
               // Log scrape event for training/analytics
               try {
+                // Use service client for background job processing (not user-initiated)
                 const svc = this.supabaseService.getServiceClient();
                 await svc.from('AiGeneratedContent').insert({
                   UserId: userId,
@@ -137,6 +153,17 @@ export class GenerateJobProcessor {
                   Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
                   IsActive: false,
                 });
+
+                // Log result
+                await this.aiUsageTracker.trackUsage({
+                  userId: userId,
+                  serviceType: 'firecrawl_scrape',
+                  modelName: 'firecrawl',
+                  operation: 'firecrawl_scrape',
+                  requestCount: 1,
+                  metadata: scrapedDataArray
+                });
+
               } catch (e) {
                 this.logger.warn(`[GenerateJob] Failed to log scrape event: ${e?.message || e}`);
               }

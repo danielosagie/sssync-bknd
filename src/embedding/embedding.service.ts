@@ -314,9 +314,12 @@ export class EmbeddingService {
     scrapedData?: any;
     searchKeywords?: string[];
     userId?: string; // Add userId for RLS
-  }): Promise<void> {
+  }, userJwtToken?: string): Promise<void> {
     try {
-      const supabase = this.supabaseService.getClient();
+      // Use authenticated client if JWT token provided, otherwise fallback to service client
+      const supabase = userJwtToken 
+        ? this.supabaseService.getAuthenticatedClient(userJwtToken)
+        : this.supabaseService.getServiceClient();
 
       const { error } = await supabase
         .from('ProductEmbeddings')
@@ -585,7 +588,7 @@ export class EmbeddingService {
     businessTemplate?: string;
     threshold?: number;
     userId: string;
-  }): Promise<{
+  }, userJwtToken?: string): Promise<{
     matches: any[];
     confidence: 'high' | 'medium' | 'low';
     processingTimeMs: number;
@@ -624,8 +627,8 @@ export class EmbeddingService {
           
                      // Store as a "scanned product" embedding (no real Product record needed)
            await this.storeProductEmbedding({
-             productId: null, // No real product - this is a scan embedding
-             ProductVariantId: null, // No real variant - this is a scan embedding
+            productId: null, // No real product - this is a scan embedding
+            ProductVariantId: null, // No real variant - this is a scan embedding
             imageEmbedding: params.images?.length ? searchResult.searchEmbedding : undefined,
             textEmbedding: params.textQuery ? searchResult.searchEmbedding : undefined,
             combinedEmbedding: searchResult.searchEmbedding,
@@ -634,7 +637,7 @@ export class EmbeddingService {
             sourceType: 'quick_scan',
             businessTemplate: params.businessTemplate || 'General Products',
             userId: params.userId, // Add userId for RLS
-          });
+          }, userJwtToken);
           
           this.logger.log(`[EnhancedQuickScan] Stored embedding for future searches`);
         } catch (error) {

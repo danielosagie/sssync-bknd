@@ -375,7 +375,7 @@ Fabric Warmth Description	Lightweight)`;
         categorySuggestion: Amazon's specific category path (e.g., "Beauty & Personal Care > Makeup > Lips > Lipstick")
         bullet_points: An array of 3-5 concise, benefit-driven sentences
         search_terms: An array of backend keywords (no commas, no repetition from title)
-        amazonProductType: The specific Amazon product type string (e.g., "BEAUTY")
+        amazonProductType: Amazon product type (REQUIRED - common types: "BEAUTY", "KITCHEN", "TOOLS_AND_HOME_IMPROVEMENT", "CLOTHING_SHOES_AND_JEWELRY", "COLLECTIBLES", "BOOKS", "HEALTH_PERSONAL_CARE", "ELECTRONICS", "SPORTS_OUTDOORS", "TOYS_AND_GAMES" - choose the most appropriate one)
         productIdType: 'ASIN', 'UPC', or 'EAN' if present in the context data
 
       eBay:
@@ -404,12 +404,255 @@ Fabric Warmth Description	Lightweight)`;
 
       ${constraintsText}
 
-      **OUTPUT FORMAT:** Return a JSON object with platform-specific data:
+      **OUTPUT FORMAT:** Return a JSON object with platform-specific data only if that platform was requested STRICTLY IN THIS FORMat:
       {
-        // Only include keys for: ${selectedPlatforms.join(', ')}
-        "shopify": { "title": "...", "description": "...", "price": 123.45, "brand": "...", "tags": [...], "vendor": "...", "productType": "..." },
-        "amazon": { "title": "...", "description": "...", "price": 123.45, "bullet_points": [...], "search_terms": [...] },
-        "ebay": { "title": "...", "description": "...", "price": 123.45, "itemSpecifics": {...}, "listingFormat": "FixedPrice" }
+        "shopify": {
+          "title": "...",
+          "description": "...",
+          "vendor": "...",
+          "productCategory": "...",
+          "productType": "...",
+          "tags": ["...", "..."],
+          "status": "active",
+          "variants": [
+            {
+              "option1_name": "Size",
+              "option1_value": "Large",
+              "option2_name": "Color",
+              "option2_value": "Red",
+              "option3_name": "",
+              "option3_value": "",
+              "sku": "...",
+              "barcode": "...",
+              "price": 0.00,
+              "compareAtPrice": 0.00,
+              "costPerItem": 0.00,
+              "chargeTax": true,
+              "taxCode": "",
+              "inventoryTracker": "shopify",
+              "inventoryQuantity": 0,
+              "continueSellingWhenOutOfStock": false,
+              "weightValueGrams": 0,
+              "requiresShipping": true,
+              "fulfillmentService": "manual",
+              "variantImageURL": "https://..."
+            }
+          ],
+          "images": [
+            {
+              "productImageURL": "https://...",
+              "imagePosition": 1,
+              "imageAltText": "..."
+            }
+          ],
+          "publishedOnOnlineStore": true,
+          "giftCard": false,
+          "seo": {
+            "seoTitle": "...",
+            "seoDescription": "..."
+          },
+          "googleShopping": {
+            "googleProductCategory": "...",
+            "gender": "Unisex",
+            "ageGroup": "Adult",
+            "mpn": "...",
+            "adWordsGrouping": "",
+            "adWordsLabels": "",
+            "condition": "new",
+            "customProduct": false,
+            "customLabel0": "",
+            "customLabel1": "",
+            "customLabel2": "",
+            "customLabel3": "",
+            "customLabel4": ""
+          }
+        },
+        "amazon": {
+          "sku": "...",
+          "productId": "...",
+          "productIdType": "UPC",
+          "title": "...",
+          "brand": "...",
+          "manufacturer": "...",
+          "description": "...",
+          "bullet_points": [
+            "...",
+            "...",
+            "..."
+          ],
+          "search_terms": [
+            "...",
+            "..."
+          ],
+          "price": 0.00,
+          "quantity": 0,
+          "mainImageURL": "https://...",
+          "otherImageURLs": [],
+          "categorySuggestion": "...",
+          "amazonProductType": "COLLECTIBLES",
+          "condition": "New"
+        },
+        "ebay": {
+          "action": "Add",
+          "customLabel": "...",
+          "category": "...",
+          "storeCategory": "",
+          "title": "...",
+          "subtitle": "",
+          "relationship": "",
+          "relationshipDetails": "",
+          "scheduleTime": "",
+          "conditionID": 1000,
+          "conditionDetails": {
+            "professionalGrader": "",
+            "grade": "",
+            "certificationNumber": "",
+            "cardCondition": "Near mint or better"
+          },
+          "itemSpecifics": {
+            "brand": "...",
+            "type": "...",
+            "size": "...",
+            "color": "...",
+            "style": "..."
+          },
+          "media": {
+            "picURL": "https://...",
+            "galleryType": "Gallery",
+            "videoID": ""
+          },
+          "description": "...",
+          "listingDetails": {
+            "format": "FixedPrice",
+            "duration": "GTC",
+            "startPrice": 0.00,
+            "buyItNowPrice": 0.00,
+            "bestOfferEnabled": false,
+            "bestOfferAutoAcceptPrice": 0,
+            "minimumBestOfferPrice": 0,
+            "quantity": 0,
+            "immediatePayRequired": true,
+            "location": "..."
+          },
+          "shippingDetails": {
+            "shippingType": "Flat",
+            "dispatchTimeMax": 1,
+            "promotionalShippingDiscount": false,
+            "shippingDiscountProfileID": "",
+            "services": [
+              {
+                "option": "USPS Ground Advantage",
+                "cost": 0.00
+              }
+            ]
+          },
+          "returnPolicy": {
+            "returnsAcceptedOption": "ReturnsAccepted",
+            "returnsWithinOption": "Days_30",
+            "refundOption": "MoneyBack",
+            "shippingCostPaidByOption": "Buyer",
+            "additionalDetails": ""
+          },
+          "productSafety": {
+            "productSafetyPictograms": "",
+            "productSafetyStatements": "",
+            "productSafetyComponent": "",
+            "regulatoryDocumentIds": ""
+          },
+          "manufacturerDetails": {
+            "manufacturerName": "",
+            "manufacturerAddressLine1": "",
+            "manufacturerAddressLine2": "",
+            "manufacturerCity": "",
+            "manufacturerCountry": "",
+            "manufacturerPostalCode": "",
+            "manufacturerStateOrProvince": "",
+            "manufacturerPhone": "",
+            "manufacturerEmail": "",
+            "manufacturerContactURL": ""
+          },
+          "responsiblePerson": {
+            "type": "",
+            "addressLine1": "",
+            "addressLine2": "",
+            "city": "",
+            "country": "",
+            "postalCode": "",
+            "stateOrProvince": "",
+            "phone": "",
+            "email": "",
+            "contactURL": ""
+          }
+        },
+        "whatnot": {
+          "category": "...",
+          "subCategory": "...",
+          "title": "...",
+          "description": "...",
+          "quantity": 1,
+          "type": "Buy it Now",
+          "price": 0.00,
+          "shippingProfile": "0-1 oz",
+          "offerable": true,
+          "hazmat": "Not Hazmat",
+          "condition": "Near Mint",
+          "costPerItem": 0.00,
+          "sku": "...",
+          "imageUrls": ["https://..."]
+        },
+        "square": {
+          "object": {
+            "type": "ITEM",
+            "id": "#placeholder",
+            "itemData": {
+              "name": "...",
+              "description": "...",
+              "categorySuggestion": "...",
+              "gtin": null,
+              "variations": [
+                {
+                  "type": "ITEM_VARIATION",
+                  "id": "#placeholder_variant",
+                  "itemVariationData": {
+                    "sku": "...",
+                    "name": "Regular",
+                    "pricingType": "FIXED_PRICING",
+                    "priceMoney": {
+                      "amount": 0,
+                      "currency": "USD"
+                    }
+                  }
+                }
+              ],
+              "locations": "All Available Locations"
+            }
+          }
+        },
+        "facebook": {
+          "id": "...",
+          "title": "...",
+          "description": "...",
+          "availability": "in stock",
+          "condition": "new",
+          "price": "0.00 USD",
+          "link": "https://...",
+          "image_link": "https://...",
+          "brand": "...",
+          "google_product_category": "...",
+          "categorySuggestion": "..."
+        },
+        "clover": {
+          "name": "...",
+          "price": 0,
+          "priceType": "FIXED",
+          "sku": "...",
+          "category": {
+            "name": "..."
+          },
+          "modifierGroups": [],
+          "availability": "in stock",
+          "brand": "..."
+        }
       }
     `;
 

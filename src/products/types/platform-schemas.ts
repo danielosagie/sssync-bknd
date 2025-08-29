@@ -14,7 +14,7 @@ export const PlatformSchemas: Record<PlatformKey, PlatformSchemaSpec> = {
     },
   },
   amazon: {
-    requiredFields: ['title', 'description', 'price', 'amazonProductType', 'productIdType'],
+    requiredFields: ['title', 'description', 'price', 'productIdType'],
     enums: {
       productIdType: ['UPC', 'EAN', 'GTIN', 'ASIN', 'ISBN'],
       condition: ['New', 'Used', 'Refurbished'],

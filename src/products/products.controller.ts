@@ -2054,7 +2054,11 @@ Return JSON format:
             throw new BadRequestException('User ID not found after authentication.');
         }
 
-        return this.productsService.quickProductScan(scanData, userId);
+        // Extract JWT token from Authorization header for RLS
+        const authHeader = req.headers.authorization;
+        const jwtToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+
+        return this.productsService.quickProductScan(scanData, userId, jwtToken);
     }
 
 
