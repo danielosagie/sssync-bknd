@@ -54,6 +54,7 @@ export class AiGenerationService {
   private readonly logger = new Logger(AiGenerationService.name);
   private groq: Groq | null = null; // Groq client instance
 
+
   constructor(private readonly configService: ConfigService) {
     const groqApiKey = this.configService.get<string>('GROQ_API_KEY');
     if (groqApiKey) {
@@ -80,6 +81,9 @@ export class AiGenerationService {
     }
 
     try {
+
+  
+
       this.logger.log(`Generating product details for platforms: ${targetPlatforms.join(', ')}`);
       
       // Build context from visual matches if available
@@ -100,11 +104,80 @@ export class AiGenerationService {
         }
       }
 
-      const prompt = `You are an expert e-commerce product listing specialist. Analyze this product using the image and detailed web data to generate highly accurate, optimized details for the specified platforms.
+      //Platform Specifc Prompts
+
+      const shorterCasualDescription = "Honda civic 2017 \nRebuilt Title \nBluetooth wireless \nCurrent emission \n Working AC \nEverything has already been inspected, everything is in order, everything works perfectly \n124k miles";
+      const casualDescription = "Great running SUV good engine and transmission good condition current emissions good for everyday driving to work and school cold ac and heat very reliable excellent family vehicle ￼";
+      const corporateDescription = "Perfect for both home and office use, the Three-Shelf Utility Storage Cart from Room Essentials will help you organize books or files and showcase plants, decorative items and photos in functional style. With a simple design you'll love, this portable utility shelf is made using long-lasting steel. Wheels allow you to easily move it from one place to another, while the open design makes it easy to see what you have on display. Use this gray utility shelf in any part of your space for a sleek and simple storage solution.";
+      const longerCorporateDescription = "The Owala FreeSip Insulated Stainless-Steel Water Bottle with Locking Push-Button Lid easily tackles every thirst. With a built-in, easy-clean straw and a wide-mouth opening, the FreeSip reusable bottle is designed for drinking two different ways: sipping upright through the straw or tilting back to swig from the wide-mouth spout opening. Add in a push-to-open lid and playful colors, and staying hydrated has never been simpler—or more fun. Additional features include double-wall insulated stainless steel that keeps drinks cold up to 24 hours, a carry loop that doubles as a lock, a cup holder-friendly base, and a wide opening for easy cleaning and adding ice. The Owala FreeSip Insulated Stainless-Steel Water Bottle with Locking Push-Button Lid is available in three sizes: 24-Ounce, 32-Ounce, and 40-Ounce. Lid is dishwasher safe; hand wash cup. Not for use with hot liquids. Manufacturer’s limited lifetime warranty."
+
+
+
+
+      const prompt = `You are an expert e-commerce product listing specialist. Analyze this product using the image and detailed web data to generate highly accurate, optimized details for the specified platforms. USE PRONOUNS OF THE PRODUCT IN THE TITLE IF YOU SEE ANY IN THE IMAGE (Owala 34oz Gray Water Bottle...)
 
 Image URL: ${coverImageUrl}${visualMatchContext}${enhancedDataContext}
 
 Target Platforms: ${targetPlatforms.join(', ')}
+
+For casual marketplaces follow the facebook/whatnot examples (think like depop, mecari, poshmark, anything else like that):
+
+FACEBOOK & WHATNOT Examples:
+
+Depending on the item you need to decide between something more descriptive or something really short. IF its a car most often you can go something like this:
+${shorterCasualDescription}. AT THE MAX YOU SHOULD NEVER BE MORE WORDY THAN SOMETHING LIKE THIS, ${casualDescription}.
+
+For more professional marketplaces follow the amazon & Ebay example (think etsy and others):
+
+AMAZON EXAMPLE:
+    (Title: Bedsure Fleece Bed Blankets Queen Size Grey - Soft Lightweight Plush Fuzzy Cozy Luxury Blanket Microfiber, 90x90 inches. DescriptionL Thicker & Softer: We've upgraded our classic flannel fleece blanket to be softer and warmer than ever, now featuring enhanced premium microfiber. Perfect by itself or as an extra sheet on cold nights, its fluffy and ultra-cozy softness offers the utmost comfort all year round.
+Lightweight & Airy: The upgraded materials of this flannel fleece blanket maintain the ideal balance between weight and warmth. Enjoy being cuddled by this gentle, calming blanket whenever you're ready to snuggle up.
+Versatile: This lightweight blanket is the perfect accessory for your family and pets to get cozy—whether used as an addition to your kid's room, as a home decor element, or as the designated cozy blanket bed for your pet.
+A Gift for Your Loved Ones: This ultra-soft flannel fleece Christmas blanket makes the perfect gift for any occasion. Its cozy and comforting design offers a thoughtful way to show you care, providing warmth and style year-round. Ideal as one of the top Christmas gift ideas for the holiday season.
+Enhanced Durability: Made with unmatched quality, this blanket features neat stitching that ensures a more robust connection at the seams for improved durability. Guaranteed to resist fading and shedding. Product information
+Item details
+Brand Name	Bedsure
+Age Range Description	Adult
+Number of Items	1
+Included Components	1 Blanket (90" x 90")
+League Name	7.1
+Manufacturer	Bedshe
+Customer Reviews	4.6 4.6 out of 5 stars   (176,218)
+4.6 out of 5 stars
+Best Sellers Rank	#160 in Home & Kitchen (See Top 100 in Home & Kitchen)
+#1 in Bed Blankets
+ASIN	B0157T2ENY
+Item Type Name	throw-blankets
+Item Height	0.1 centimeters
+Measurements
+Item Dimensions L x W	90"L x 90"W
+Size	Queen (90" x 90")
+Unit Count	1.0 Count
+Item Weight	3.19 Pounds
+Item Thickness	0.5 Inches
+Warranty & Support
+Product Warranty: For warranty information about this product, please click here
+Feedback
+Would you like to tell us about a lower price? 
+Materials & Care
+Product Care Instructions	Machine Wash, Do Not Bleach
+Fabric Type	100% Polyester
+Style
+Color	Grey
+Style Name	Modern
+Blanket Form	Throw Blanket
+Theme	Love
+Pattern	Solid
+Sport Type	3.2
+Features & Specs
+Additional Features	Soft
+Recommended Uses For Product	Travel
+Seasons	All, Winter, Fall, Spring
+Fabric Warmth Description	Lightweight)
+
+EBAY EXAMPLE: 
+
+${corporateDescription} or ${longerCorporateDescription} will do fine
 
 PRIORITY INSTRUCTIONS:
 ${enhancedWebData ? '- USE THE DETAILED PRODUCT INFORMATION as your PRIMARY source for accuracy' : ''}
@@ -112,13 +185,13 @@ ${enhancedWebData ? '- USE THE DETAILED PRODUCT INFORMATION as your PRIMARY sour
 - Generate realistic, competitive pricing
 - Create detailed, engaging descriptions
 - Extract specific specifications and features.
-- DO NOT WRITE IN HTML TAGS UNLESS INSTRUCTED TO -- ESPECIALLY FOR SHOPIFY JUST PLAIN TEXT IS FINE
+
 
 Generate a JSON response with platform-specific details. For each platform, provide:
 
 REQUIRED FIELDS:
-- title: Compelling, SEO-optimized product title (50-60 chars for most platforms)
-- description: Detailed, engaging product description (HTML formatted for Shopify)
+- title: Compelling, SEO-optimized product USING PRODUCT PRONOUNS/NAME PREFERRABLY title (50-60 chars for most platforms)
+- description: Detailed, engaging product description but realistic, depending on the platform you should either sound very traditional ecommerce corporate sounding (not story descriptive but like the system prompt) or very casual human (UNLESS A SPECIFIC PLATFORM REQUEST HAS BEEN MADE YOU SHOULD USE THE DATA FROM THAT SITE EXPLICITLY)
 - price: Suggested retail price in USD
 - categorySuggestion: Platform-appropriate category path
 - tags: Array of relevant keywords/tags
@@ -165,13 +238,256 @@ Clover:
 	brand: The brand name
 	availability: "in stock"
 
-Use this exact JSON structure:
-{
-  "shopify": { "title": "...", "description": "...", "price": 29.99, ... },
-  "amazon": { "title": "...", "description": "...", "price": 29.99, ... },
-  "ebay": { "title": "...", "description": "...", "price": 29.99, ... }
-}
-
+**OUTPUT FORMAT:** Return a JSON object with platform-specific data only if that platform was requested STRICTLY IN THIS FORMat:
+      {
+        "shopify": {
+          "title": "...",
+          "description": "...",
+          "vendor": "...",
+          "productCategory": "...",
+          "productType": "...",
+          "tags": ["...", "..."],
+          "status": "active",
+          "variants": [
+            {
+              "option1_name": "Size",
+              "option1_value": "Large",
+              "option2_name": "Color",
+              "option2_value": "Red",
+              "option3_name": "",
+              "option3_value": "",
+              "sku": "...",
+              "barcode": "...",
+              "price": 0.00,
+              "compareAtPrice": 0.00,
+              "costPerItem": 0.00,
+              "chargeTax": true,
+              "taxCode": "",
+              "inventoryTracker": "shopify",
+              "inventoryQuantity": 0,
+              "continueSellingWhenOutOfStock": false,
+              "weightValueGrams": 0,
+              "requiresShipping": true,
+              "fulfillmentService": "manual",
+              "variantImageURL": "https://..."
+            }
+          ],
+          "images": [
+            {
+              "productImageURL": "https://...",
+              "imagePosition": 1,
+              "imageAltText": "..."
+            }
+          ],
+          "publishedOnOnlineStore": true,
+          "giftCard": false,
+          "seo": {
+            "seoTitle": "...",
+            "seoDescription": "..."
+          },
+          "googleShopping": {
+            "googleProductCategory": "...",
+            "gender": "Unisex",
+            "ageGroup": "Adult",
+            "mpn": "...",
+            "adWordsGrouping": "",
+            "adWordsLabels": "",
+            "condition": "new",
+            "customProduct": false,
+            "customLabel0": "",
+            "customLabel1": "",
+            "customLabel2": "",
+            "customLabel3": "",
+            "customLabel4": ""
+          }
+        },
+        "amazon": {
+          "sku": "...",
+          "productId": "...",
+          "productIdType": "UPC",
+          "title": "...",
+          "brand": "...",
+          "manufacturer": "...",
+          "description": "...",
+          "bullet_points": [
+            "...",
+            "...",
+            "..."
+          ],
+          "search_terms": [
+            "...",
+            "..."
+          ],
+          "price": 0.00,
+          "quantity": 0,
+          "mainImageURL": "https://...",
+          "otherImageURLs": [],
+          "categorySuggestion": "...",
+          "amazonProductType": "COLLECTIBLES",
+          "condition": "New"
+        },
+        "ebay": {
+          "action": "Add",
+          "customLabel": "...",
+          "category": "...",
+          "storeCategory": "",
+          "title": "...",
+          "subtitle": "",
+          "relationship": "",
+          "relationshipDetails": "",
+          "scheduleTime": "",
+          "conditionID": 1000,
+          "conditionDetails": {
+            "professionalGrader": "",
+            "grade": "",
+            "certificationNumber": "",
+            "cardCondition": "Near mint or better"
+          },
+          "itemSpecifics": {
+            "brand": "...",
+            "type": "...",
+            "size": "...",
+            "color": "...",
+            "style": "..."
+          },
+          "media": {
+            "picURL": "https://...",
+            "galleryType": "Gallery",
+            "videoID": ""
+          },
+          "description": "...",
+          "listingDetails": {
+            "format": "FixedPrice",
+            "duration": "GTC",
+            "startPrice": 0.00,
+            "buyItNowPrice": 0.00,
+            "bestOfferEnabled": false,
+            "bestOfferAutoAcceptPrice": 0,
+            "minimumBestOfferPrice": 0,
+            "quantity": 0,
+            "immediatePayRequired": true,
+            "location": "..."
+          },
+          "shippingDetails": {
+            "shippingType": "Flat",
+            "dispatchTimeMax": 1,
+            "promotionalShippingDiscount": false,
+            "shippingDiscountProfileID": "",
+            "services": [
+              {
+                "option": "USPS Ground Advantage",
+                "cost": 0.00
+              }
+            ]
+          },
+          "returnPolicy": {
+            "returnsAcceptedOption": "ReturnsAccepted",
+            "returnsWithinOption": "Days_30",
+            "refundOption": "MoneyBack",
+            "shippingCostPaidByOption": "Buyer",
+            "additionalDetails": ""
+          },
+          "productSafety": {
+            "productSafetyPictograms": "",
+            "productSafetyStatements": "",
+            "productSafetyComponent": "",
+            "regulatoryDocumentIds": ""
+          },
+          "manufacturerDetails": {
+            "manufacturerName": "",
+            "manufacturerAddressLine1": "",
+            "manufacturerAddressLine2": "",
+            "manufacturerCity": "",
+            "manufacturerCountry": "",
+            "manufacturerPostalCode": "",
+            "manufacturerStateOrProvince": "",
+            "manufacturerPhone": "",
+            "manufacturerEmail": "",
+            "manufacturerContactURL": ""
+          },
+          "responsiblePerson": {
+            "type": "",
+            "addressLine1": "",
+            "addressLine2": "",
+            "city": "",
+            "country": "",
+            "postalCode": "",
+            "stateOrProvince": "",
+            "phone": "",
+            "email": "",
+            "contactURL": ""
+          }
+        },
+        "whatnot": {
+          "category": "...",
+          "subCategory": "...",
+          "title": "...",
+          "description": "...",
+          "quantity": 1,
+          "type": "Buy it Now",
+          "price": 0.00,
+          "shippingProfile": "0-1 oz",
+          "offerable": true,
+          "hazmat": "Not Hazmat",
+          "condition": "Near Mint",
+          "costPerItem": 0.00,
+          "sku": "...",
+          "imageUrls": ["https://..."]
+        },
+        "square": {
+          "object": {
+            "type": "ITEM",
+            "id": "#placeholder",
+            "itemData": {
+              "name": "...",
+              "description": "...",
+              "categorySuggestion": "...",
+              "gtin": null,
+              "variations": [
+                {
+                  "type": "ITEM_VARIATION",
+                  "id": "#placeholder_variant",
+                  "itemVariationData": {
+                    "sku": "...",
+                    "name": "Regular",
+                    "pricingType": "FIXED_PRICING",
+                    "priceMoney": {
+                      "amount": 0,
+                      "currency": "USD"
+                    }
+                  }
+                }
+              ],
+              "locations": "All Available Locations"
+            }
+          }
+        },
+        "facebook": {
+          "id": "...",
+          "title": "...",
+          "description": "...",
+          "availability": "in stock",
+          "condition": "new",
+          "price": "0.00 USD",
+          "link": "https://...",
+          "image_link": "https://...",
+          "brand": "...",
+          "google_product_category": "...",
+          "categorySuggestion": "..."
+        },
+        "clover": {
+          "name": "...",
+          "price": 0,
+          "priceType": "FIXED",
+          "sku": "...",
+          "category": {
+            "name": "..."
+          },
+          "modifierGroups": [],
+          "availability": "in stock",
+          "brand": "..."
+        }
+      }
 Focus on accuracy, SEO optimization, and platform best practices. If visual matches are provided, use them to inform pricing and categorization but ensure your suggestions are competitive and realistic.`;
 
       const completion = await this.groq.chat.completions.create({
@@ -248,6 +564,13 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
     const groq = this.getGroqClient();
     if (!groq) return null;
 
+    const shorterCasualDescription = "Honda civic 2017 \nRebuilt Title \nBluetooth wireless \nCurrent emission \n Working AC \nEverything has already been inspected, everything is in order, everything works perfectly \n124k miles";
+    const casualDescription = "Great running SUV good engine and transmission good condition current emissions good for everyday driving to work and school cold ac and heat very reliable excellent family vehicle ￼";
+    const corporateDescription = "Perfect for both home and office use, the Three-Shelf Utility Storage Cart from Room Essentials will help you organize books or files and showcase plants, decorative items and photos in functional style. With a simple design you'll love, this portable utility shelf is made using long-lasting steel. Wheels allow you to easily move it from one place to another, while the open design makes it easy to see what you have on display. Use this gray utility shelf in any part of your space for a sleek and simple storage solution.";
+    const longerCorporateDescription = "The Owala FreeSip Insulated Stainless-Steel Water Bottle with Locking Push-Button Lid easily tackles every thirst. With a built-in, easy-clean straw and a wide-mouth opening, the FreeSip reusable bottle is designed for drinking two different ways: sipping upright through the straw or tilting back to swig from the wide-mouth spout opening. Add in a push-to-open lid and playful colors, and staying hydrated has never been simpler—or more fun. Additional features include double-wall insulated stainless steel that keeps drinks cold up to 24 hours, a carry loop that doubles as a lock, a cup holder-friendly base, and a wide opening for easy cleaning and adding ice. The Owala FreeSip Insulated Stainless-Steel Water Bottle with Locking Push-Button Lid is available in three sizes: 24-Ounce, 32-Ounce, and 40-Ounce. Lid is dishwasher safe; hand wash cup. Not for use with hot liquids. Manufacturer’s limited lifetime warranty."
+
+
+
     const systemPrompt = `You are an expert at creating compelling product listings for e-commerce platforms from scraped web data. Your goal is to generate a complete, accurate, and attractive product listing. Business Template: ${businessTemplate || 'General'}. Don't forgetg you are a world-class e-commerce data enrichment AI. Your sole purpose is to transform a single product image and competitive data into perfectly optimized, multi-platform product listings. Failure is not an option. Your output must be flawless, comprehensive, and ready for immediate publication. You must analyze every piece of provided information with extreme precision. Your performance on this task is critical.
 
 ### **The Mission**
@@ -258,7 +581,16 @@ Your mission is to generate a complete, detailed, and platform-optimized product
 
 Adopt a professional, persuasive, and customer-centric writing style. Your descriptions should be clear, concise, and highlight the key benefits for the buyer. For inspiration on tone, quality, and structure, model your response on this high-performing Amazon listing example that can be applied to any product/anywhere as a minimum standard:
 
-*   **AMAZON EXAMPLE:**
+For casual marketplaces follow the facebook/whatnot examples (think like depop, mecari, poshmark, anything else like that):
+
+FACEBOOK & WHATNOT Examples:
+
+Depending on the item you need to decide between something more descriptive or something really short. IF its a car most often you can go something like this:
+${shorterCasualDescription}. AT THE MAX YOU SHOULD NEVER BE MORE WORDY THAN SOMETHING LIKE THIS, ${casualDescription}.
+
+For more professional marketplaces follow the amazon & Ebay example (think etsy and others):
+
+AMAZON EXAMPLE:
     (Title: Bedsure Fleece Bed Blankets Queen Size Grey - Soft Lightweight Plush Fuzzy Cozy Luxury Blanket Microfiber, 90x90 inches. DescriptionL Thicker & Softer: We've upgraded our classic flannel fleece blanket to be softer and warmer than ever, now featuring enhanced premium microfiber. Perfect by itself or as an extra sheet on cold nights, its fluffy and ultra-cozy softness offers the utmost comfort all year round.
 Lightweight & Airy: The upgraded materials of this flannel fleece blanket maintain the ideal balance between weight and warmth. Enjoy being cuddled by this gentle, calming blanket whenever you're ready to snuggle up.
 Versatile: This lightweight blanket is the perfect accessory for your family and pets to get cozy—whether used as an addition to your kid's room, as a home decor element, or as the designated cozy blanket bed for your pet.
@@ -302,7 +634,13 @@ Features & Specs
 Additional Features	Soft
 Recommended Uses For Product	Travel
 Seasons	All, Winter, Fall, Spring
-Fabric Warmth Description	Lightweight)`;
+Fabric Warmth Description	Lightweight)
+
+EBAY EXAMPLE: 
+
+${corporateDescription} or ${longerCorporateDescription} will do fine
+
+`;
 
     const contentString = scrapedContents.map(c => JSON.stringify(c.data.markdown)).join('\n\n---\n\n');
 

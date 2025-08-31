@@ -33,7 +33,7 @@ export class GenerateJobProcessor {
   ) {}
 
   async process(job: Job<GenerateJobData>): Promise<void> {
-    const { jobId, userId, products, selectedPlatforms, options, platformRequests, templateSources } = job.data;
+    const { jobId, userId, userJwtToken, products, selectedPlatforms, options, platformRequests, templateSources } = job.data;
 
     const jobStatus: GenerateJobStatus = {
       jobId,
@@ -88,7 +88,9 @@ export class GenerateJobProcessor {
                 const prompt = `Find the product data for this product: (${titleForQuery})` +
                   (selectedLinks.length ? ` at this link(s): (${selectedLinks.map(u => new URL(u).origin).join(', ')})` : '');
                 this.logger.log(`[GenerateJob] Firecrawl search prompt: ${prompt}`);
-                const searchResult = await this.firecrawlService.search(prompt);
+                const searchResult = await this.firecrawlService.search(prompt); 
+
+                this.logger.log('Search Result: ' + searchResult);
                 
                 // Log result
                 await this.aiUsageTracker.trackUsage({
@@ -125,31 +127,42 @@ export class GenerateJobProcessor {
             if (urlsToScrape.length > 0) {
               const schema = this.firecrawlService.getProductSchema(templateName);
               // New behavior: perform a Firecrawl search using product title/query and then extract from top URLs
-              let searchedUrls: string[] = [];
+
               try {
                 const titleForQuery = (p.selectedMatches && p.selectedMatches[0]?.title) ? p.selectedMatches[0].title : 'product';
-                const searchResult = await this.firecrawlService.search(titleForQuery, { limit: 5, scrapeOptions: { formats: ['links'] } });
-                const data = Array.isArray(searchResult?.data) ? searchResult.data : [];
-                searchedUrls = data.map((r: any) => r.url).filter((u: any) => typeof u === 'string');
+                
+                // Use Promise.all for proper async handling
+                const scrapePromises = urlsToScrape.map(async link => {
+                  const searchResult = await this.firecrawlService.scrape(link);
+                  return Array.isArray(searchResult?.data) ? searchResult.data : [];
+                });
+                
+                const scrapeResults = await Promise.all(scrapePromises);
+                const extracted = scrapeResults.flat().map((r: any) => r.url).filter((u: any) => typeof u === 'string');
+
+                this.logger.log('Scrape Results: ' + extracted);
+                
+                // Adapt to AI service expectation (objects with data.markdown)
+                scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
+                
               } catch (searchErr) {
                 this.logger.warn(`[GenerateJob] Firecrawl search phase failed: ${searchErr?.message || searchErr}`);
+                scrapedDataArray = [];
               }
-              const combinedUrls = Array.from(new Set([ ...searchedUrls, ...urlsToScrape ])).slice(0, 8);
-              const extracted = await this.firecrawlService.extract(combinedUrls, schema);
-              // Adapt to AI service expectation (objects with data.markdown)
-              scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
-              this.logger.log(`[GenerateJob] Extracted structured data from ${extracted.length} URL(s)`);
+              this.logger.log(`[GenerateJob] Extracted structured data from ${scrapedDataArray.length} URL(s)`);
 
               // Log scrape event for training/analytics
               try {
-                // Use service client for background job processing (not user-initiated)
-                const svc = this.supabaseService.getServiceClient();
+                // Use authenticated client if JWT provided, otherwise fallback to service client
+                const svc = userJwtToken 
+                  ? this.supabaseService.getAuthenticatedClient(userJwtToken)
+                  : this.supabaseService.getServiceClient();
                 await svc.from('AiGeneratedContent').insert({
                   UserId: userId,
                   ContentType: 'scrape',
                   SourceApi: 'firecrawl',
                   Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
-                  GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: extracted.length }),
+                  GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: scrapedDataArray.length }),
                   Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
                   IsActive: false,
                 });
@@ -161,7 +174,7 @@ export class GenerateJobProcessor {
                   modelName: 'firecrawl',
                   operation: 'firecrawl_scrape',
                   requestCount: 1,
-                  metadata: scrapedDataArray
+                  metadata: { scrapedDataArray }
                 });
 
               } catch (e) {
@@ -214,6 +227,7 @@ export class GenerateJobProcessor {
         // Persist generated data to DB as AI content or draft fields (skipping platform publish here)
         // You can extend ProductsService to store AI suggestions tied to product/variant
 
+
         const processingTimeMs = Date.now() - productStart;
         totalProcessingTime += processingTimeMs;
 
@@ -233,8 +247,10 @@ export class GenerateJobProcessor {
 
          // Log generate event
          try {
-           const svc = this.supabaseService.getServiceClient();
-           await svc.from('AiGeneratedContent').insert({
+          const svc = userJwtToken 
+          ? this.supabaseService.getAuthenticatedClient(userJwtToken)
+          : this.supabaseService.getServiceClient();
+          await svc.from('AiGeneratedContent').insert({
              UserId: userId,
              ProductId: p.productId || null,
              ContentType: 'generate',
@@ -251,6 +267,18 @@ export class GenerateJobProcessor {
              },
              IsActive: false,
            });
+
+
+
+           // Log result
+           await this.aiUsageTracker.trackUsage({
+            userId: userId,
+            serviceType: 'generation',
+            modelName: 'qwen3',
+            operation: 'generation',
+            requestCount: 1,
+            metadata: { generated }
+          });
          } catch (e) {
            this.logger.warn(`[GenerateJob] Failed to log generate event: ${e?.message || e}`);
          }

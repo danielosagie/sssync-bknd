@@ -26,3 +26,5 @@ create policy "Users can access their own export jobs" on public."ExportJobs"
     for all using (auth.uid() = "UserId");
 
 grant all on public."ExportJobs" to authenticated;
+
+

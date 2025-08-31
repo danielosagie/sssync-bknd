@@ -3827,6 +3827,10 @@ Return JSON format:
             throw new BadRequestException('At least one product is required');
         }
 
+        // Extract JWT token from Authorization header for background job processing
+        const authHeader = req.headers.authorization;
+        const userJwtToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : undefined;
+
         const jobId = `generate_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
         const estimatedTimeMinutes = Math.ceil(generateRequest.products.length * 20 / 60); // rough estimate
 
@@ -3834,6 +3838,7 @@ Return JSON format:
             type: 'generate-job',
             jobId,
             userId,
+            userJwtToken, // Include JWT token in job data for authenticated operations
             products: generateRequest.products,
             selectedPlatforms: generateRequest.selectedPlatforms || [],
             template: generateRequest.template ?? null,

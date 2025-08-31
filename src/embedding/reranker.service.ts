@@ -85,7 +85,7 @@ export class RerankerService {
 
     // Create a proper search query from the target URL or use a generic query
     const searchQuery = request.targetUrl 
-      ? `product shown in image: ${request.targetUrl} make sure to pick the most official looking post considering title and price if available`
+      ? `product shown in image: ${request.targetUrl} make sure to pick the most official looking post considering title and price if available, we are ranking based on what looks like an offical professional product for sale with the best title/image that looks the most similar to our image`
       : request.query || 'product recognition and matching';
     
     this.logger.log(`[RerankerDebug] Using search query: "${searchQuery}"`);

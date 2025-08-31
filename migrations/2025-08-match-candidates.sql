@@ -26,3 +26,5 @@ create policy "Users can access their own match candidates" on public."MatchCand
     for all using (auth.uid() = "UserId");
 
 grant all on public."MatchCandidates" to authenticated;
+
+
