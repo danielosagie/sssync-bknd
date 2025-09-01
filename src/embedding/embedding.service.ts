@@ -1037,8 +1037,10 @@ export class EmbeddingService {
 
       this.logger.log(`[PgVectorSearch] Using PostgreSQL vector similarity search`);
       this.logger.log(`[PgVectorSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
+      this.logger.log(`[PgVectorSearch] Query embedding first 5 values: [${params.embedding?.slice(0, 5).map(v => v.toFixed(4)).join(', ')}...]`);
 
       // Try the multi-channel search first
+      this.logger.log(`[PgVectorSearch] Attempting multi-channel search with function: search_products_by_vector_multi`);
       const { data, error } = await supabase.rpc('search_products_by_vector_multi', {
         query_embedding: params.embedding,
         match_threshold: params.threshold,
@@ -1047,7 +1049,9 @@ export class EmbeddingService {
       });
 
       if (error) {
-        this.logger.warn(`[MultiChannelSearch] Failed, falling back to manual:`, error.message);
+        this.logger.error(`[MultiChannelSearch] FAILED with error: ${error.message}`, error);
+        this.logger.warn(`[MultiChannelSearch] Error details:`, error);
+        this.logger.warn(`[MultiChannelSearch] Falling back to manual search...`);
         return this.manualVectorSearch(params);
       }
   
@@ -1064,8 +1068,21 @@ export class EmbeddingService {
         this.logger.log(`[MultiChannelResult ${index + 1}] "${item.title?.substring(0, 50)}..." - Similarity: ${item.similarity?.toFixed(4)} Channels: ${item.source_channels} ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
       });
 
-      // Convert to ProductMatch format
-      return data.map((item: any) => ({
+      // Convert to ProductMatch format and deduplicate by productId + variantId
+      const seenIds = new Set<string>();
+      const deduplicatedResults = data.filter((item: any) => {
+        const uniqueKey = `${item.product_id || 'null'}_${item.variant_id || 'null'}`;
+        if (seenIds.has(uniqueKey)) {
+          this.logger.warn(`[MultiChannelSearch] Skipping duplicate: ${item.title?.substring(0, 30)}... (${uniqueKey})`);
+          return false;
+        }
+        seenIds.add(uniqueKey);
+        return true;
+      });
+
+      this.logger.log(`[MultiChannelSearch] Deduplicated ${data.length} -> ${deduplicatedResults.length} results`);
+
+      return deduplicatedResults.map((item: any) => ({
         productId: item.product_id || '',
         ProductVariantId: item.variant_id || null,
         title: item.title || 'Unknown Product',
@@ -1173,8 +1190,11 @@ export class EmbeddingService {
         const description = (item as any).ProductVariants?.Description || `Scanned product (${item.SourceType})`;
         const isActualProduct = !!(item as any).ProductVariants?.Title;
         
-        // Log every calculation for debugging
-        this.logger.debug(`[Similarity ${index + 1}/${data.length}] "${title.substring(0, 50)}..." - Score: ${similarity.toFixed(4)} (${calculationStatus}) ${isActualProduct ? '[PRODUCT]' : '[SCAN]'}`);
+        // Log every calculation for debugging (only log top 20 and any containing "mewtwo" for now)
+        const shouldLog = index < 20 || title.toLowerCase().includes('mewtwo') || similarity > 0.7;
+        if (shouldLog) {
+          this.logger.log(`[Similarity ${index + 1}/${data.length}] "${title.substring(0, 50)}..." - Score: ${similarity.toFixed(4)} (${calculationStatus}) ${isActualProduct ? '[PRODUCT]' : '[SCAN]'}`);
+        }
         
         return {
           productId: (item as any).ProductVariants?.Id || item.ProductId || '',
