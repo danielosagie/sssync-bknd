@@ -1190,10 +1190,13 @@ export class EmbeddingService {
         const description = (item as any).ProductVariants?.Description || `Scanned product (${item.SourceType})`;
         const isActualProduct = !!(item as any).ProductVariants?.Title;
         
-        // Log every calculation for debugging (only log top 20 and any containing "mewtwo" for now)
-        const shouldLog = index < 20 || title.toLowerCase().includes('mewtwo') || similarity > 0.7;
-        if (shouldLog) {
-          this.logger.log(`[Similarity ${index + 1}/${data.length}] "${title.substring(0, 50)}..." - Score: ${similarity.toFixed(4)} (${calculationStatus}) ${isActualProduct ? '[PRODUCT]' : '[SCAN]'}`);
+        // Log every calculation for debugging - show all calculations 
+        this.logger.debug(`[Similarity ${index + 1}/${data.length}] "${title.substring(0, 50)}..." - Score: ${similarity.toFixed(4)} (${calculationStatus}) ${isActualProduct ? '[PRODUCT]' : '[SCAN]'}`);
+        
+        // Also log high-scoring items and any containing target keywords
+        const shouldHighlight = index < 20 || title.toLowerCase().includes('mewtwo') || title.toLowerCase().includes('pikachu') || similarity > 0.7;
+        if (shouldHighlight) {
+          this.logger.log(`[HighScore ${index + 1}/${data.length}] "${title.substring(0, 50)}..." - Score: ${similarity.toFixed(4)} (${calculationStatus}) ${isActualProduct ? '[PRODUCT]' : '[SCAN]'}`);
         }
         
         return {

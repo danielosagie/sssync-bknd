@@ -2216,7 +2216,11 @@ Return JSON format:
                             this.logger.log(`  Raw Match ${index + 1}: "${match.title}" - URL: ${match.imageUrl} - ID: ${match.ProductVariantId || match.variantId}`);
                         });
 
-                        const rerankerCandidates = result.matches.slice(0, 15).map((match: any, index: number) => ({
+                        // 🎯 Deduplicate matches before sending to reranker 
+                        const uniqueMatches = this.deduplicateMatchesByTitle(result.matches.slice(0, 15));
+                        this.logger.log(`[RerankerDebug] Deduplicated ${result.matches.length} -> ${uniqueMatches.length} matches before reranker`);
+
+                        const rerankerCandidates = uniqueMatches.map((match: any, index: number) => ({
                             id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}_${index}`,
                             title: match.title || 'Unknown Product',
                             description: match.description || 'No description',
@@ -4231,6 +4235,59 @@ Return JSON format:
             this.logger.error(`[Get User Jobs] Error retrieving jobs: ${error.message}`);
             throw new InternalServerErrorException('Failed to retrieve user jobs');
         }
+    }
+
+    /**
+     * Deduplicate matches by title similarity to prevent duplicate products in reranker
+     */
+    private deduplicateMatchesByTitle(matches: any[]): any[] {
+        if (!matches || matches.length === 0) return matches;
+
+        const uniqueMatches: any[] = [];
+        const seenTitles = new Set<string>();
+
+        for (const match of matches) {
+            if (!match.title) continue;
+
+            // Normalize title for comparison
+            const normalizedTitle = match.title
+                .toLowerCase()
+                .replace(/[^\w\s]/g, '') // Remove special chars
+                .replace(/\s+/g, ' ')     // Normalize whitespace
+                .trim();
+
+            // Check if we've seen a very similar title
+            let isDuplicate = false;
+            for (const seenTitle of seenTitles) {
+                // Calculate similarity - if titles are 85% similar, consider them duplicates
+                const similarity = this.calculateTitleSimilarity(normalizedTitle, seenTitle);
+                if (similarity > 0.85) {
+                    this.logger.debug(`[DeduplicateTitle] Skipping duplicate: "${match.title}" (similar to existing title)`);
+                    isDuplicate = true;
+                    break;
+                }
+            }
+
+            if (!isDuplicate) {
+                seenTitles.add(normalizedTitle);
+                uniqueMatches.push(match);
+            }
+        }
+
+        return uniqueMatches;
+    }
+
+    /**
+     * Calculate simple similarity between two strings (Jaccard similarity on words)
+     */
+    private calculateTitleSimilarity(title1: string, title2: string): number {
+        const words1 = new Set(title1.split(/\s+/));
+        const words2 = new Set(title2.split(/\s+/));
+        
+        const intersection = new Set([...words1].filter(x => words2.has(x)));
+        const union = new Set([...words1, ...words2]);
+        
+        return intersection.size / union.size;
     }
 
     
