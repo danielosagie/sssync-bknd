@@ -275,11 +275,10 @@ export class AIServerService {
     } catch (error) {
       this.logger.warn('AI server unavailable, falling back to local embedding service');
       // Fallback to local service
-      const embeddings = [];
+      const embeddings: number[][] = [];
       for (const text of texts) {
         const embedding = await this.embeddingService.generateTextEmbedding({
           title: text,
-          instruction,
         });
         embeddings.push(embedding);
       }
