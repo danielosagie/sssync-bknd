@@ -541,7 +541,7 @@ export class EmbeddingService {
         embedding: searchEmbedding,
         businessTemplate: params.businessTemplate,
         threshold: threshold,
-        limit: 15, // Show top 15 as requested
+        limit: 100, // Show top 15 as requested
       });
 
       // 🎯 Step 3: Calculate confidence and determine action
@@ -1038,33 +1038,33 @@ export class EmbeddingService {
       this.logger.log(`[PgVectorSearch] Using PostgreSQL vector similarity search`);
       this.logger.log(`[PgVectorSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
 
-      // 🎯 Use PostgreSQL's vector similarity search with pgvector
-      const { data, error } = await supabase.rpc('search_products_by_vector', {
+      // Try the multi-channel search first
+      const { data, error } = await supabase.rpc('search_products_by_vector_multi', {
         query_embedding: params.embedding,
         match_threshold: params.threshold,
-        match_count: 50, // Increased from 15 to get more results
+        match_count: params.limit,
         p_business_template: params.businessTemplate
       });
 
       if (error) {
-        this.logger.warn(`[PgVectorSearch] PostgreSQL function failed, falling back to manual search:`, error.message);
+        this.logger.warn(`[MultiChannelSearch] Failed, falling back to manual:`, error.message);
         return this.manualVectorSearch(params);
       }
-
+  
       if (!data || data.length === 0) {
-        this.logger.log(`[PgVectorSearch] No results from PostgreSQL function, trying manual search`);
+        this.logger.log(`[MultiChannelSearch] No results, trying manual search`);
         return this.manualVectorSearch(params);
       }
-
-      this.logger.log(`[PgVectorSearch] Found ${data.length} matches using PostgreSQL vector search`);
-
-      // Log all results with [PRODUCT] vs [SCAN] markers
+  
+      this.logger.log(`[MultiChannelSearch] Found ${data.length} matches across channels`);
+  
+      // Log results with channel info
       data.forEach((item: any, index: number) => {
         const isProduct = !!item.variant_id && item.variant_id !== 'scan';
-        this.logger.log(`[PgVectorResult ${index + 1}] "${item.title?.substring(0, 50) || 'No title'}..." - Similarity: ${item.similarity?.toFixed(4) || 'N/A'} ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
+        this.logger.log(`[MultiChannelResult ${index + 1}] "${item.title?.substring(0, 50)}..." - Similarity: ${item.similarity?.toFixed(4)} Channels: ${item.source_channels} ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
       });
 
-      // Convert PostgreSQL results to ProductMatch format
+      // Convert to ProductMatch format
       return data.map((item: any) => ({
         productId: item.product_id || '',
         ProductVariantId: item.variant_id || null,
@@ -1082,7 +1082,7 @@ export class EmbeddingService {
       }));
 
     } catch (error) {
-      this.logger.error('Failed PostgreSQL vector search, falling back to manual:', error);
+      this.logger.error('Failed multi-channel search, falling back to manual:', error);
       return this.manualVectorSearch(params);
     }
   }

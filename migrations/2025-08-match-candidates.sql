@@ -28,3 +28,5 @@ create policy "Users can access their own match candidates" on public."MatchCand
 grant all on public."MatchCandidates" to authenticated;
 
 
+
+
