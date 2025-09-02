@@ -134,6 +134,8 @@ export class EmbeddingService {
         throw new Error('Either imageUrl or imageBase64 must be provided');
       }
 
+      
+
       // Log request details for debugging
       const instruction = input.instruction || 'Encode this product image for visual similarity search';
       const base64Length = imageData.length;
@@ -1097,7 +1099,7 @@ export class EmbeddingService {
   }
 
   /**
-   * Enhanced manual search with better deduplication and multi-channel simulation
+   * SUPERCHARGED manual search with multi-channel fusion, smart scoring, and premium deduplication
    */
   private async enhancedManualVectorSearch(params: {
     embedding: number[];
@@ -1106,18 +1108,138 @@ export class EmbeddingService {
     limit: number;
   }): Promise<ProductMatch[]> {
     try {
-      // First run the regular manual search to get all results
-      const allResults = await this.manualVectorSearch(params);
+      const supabase = this.supabaseService.getClient();
       
-      // Enhanced deduplication by product ID and title similarity
-      const deduplicatedResults = this.deduplicateProductMatches(allResults);
+      this.logger.log(`[SuperchargedManualSearch] Starting multi-channel fusion search`);
       
-      this.logger.log(`[EnhancedManualSearch] Deduplicated ${allResults.length} -> ${deduplicatedResults.length} results`);
+      // Get expanded dataset with all embedding types
+      let query = supabase
+        .from('ProductEmbeddings')
+        .select(`
+          ProductId,
+          ProductVariantId,
+          ImageUrl,
+          ProductText,
+          SourceType,
+          BusinessTemplate,
+          CombinedEmbedding,
+          ImageEmbedding,
+          TextEmbedding,
+          ProductVariants(
+            Id,
+            Title,
+            Description,
+            Price,
+            Sku
+          )
+        `)
+        .neq('SourceType', 'quick_scan')
+        .limit(1500); // Wider net for better recall
+
+      if (params.businessTemplate && params.businessTemplate !== 'general') {
+        query = query.eq('BusinessTemplate', params.businessTemplate);
+      }
+
+      const { data, error } = await query;
+      if (error) throw error;
+
+      this.logger.log(`[SuperchargedManualSearch] Processing ${data?.length || 0} candidates`);
+
+      // Multi-channel similarity calculation with intelligent fusion
+      const scoredResults = (data || []).map((item, index) => {
+        const title = (item as any).ProductVariants?.Title || item.ProductText || 'Scanned Product';
+        const description = (item as any).ProductVariants?.Description || `Scanned product (${item.SourceType})`;
+        const isActualProduct = !!(item as any).ProductVariants?.Title;
+        
+        // Calculate similarities across all available channels
+        let imageSim = 0;
+        let combinedSim = 0;
+        let textSim = 0;
+        let channelsUsed: string[] = [];
+
+        // Image embedding similarity (768-dim)
+        if (item.ImageEmbedding) {
+          const imageEmb = this.parseVectorMaybeString(item.ImageEmbedding);
+          if (imageEmb && imageEmb.length === params.embedding.length) {
+            imageSim = this.calculateEmbeddingSimilarity(params.embedding, imageEmb);
+            channelsUsed.push('image');
+          }
+        }
+
+        // Combined embedding similarity (1024-dim, use first 768)
+        if (item.CombinedEmbedding) {
+          const combinedEmb = this.parseVectorMaybeString(item.CombinedEmbedding);
+          if (combinedEmb && combinedEmb.length >= params.embedding.length) {
+            // Use first 768 dimensions for image queries
+            const truncatedCombined = combinedEmb.slice(0, params.embedding.length);
+            combinedSim = this.calculateEmbeddingSimilarity(params.embedding, truncatedCombined) * 0.95; // slight penalty for indirect match
+            channelsUsed.push('combined');
+          }
+        }
+
+        // Text embedding similarity (if available and same dimensions)
+        if (item.TextEmbedding) {
+          const textEmb = this.parseVectorMaybeString(item.TextEmbedding);
+          if (textEmb && textEmb.length === params.embedding.length) {
+            textSim = this.calculateEmbeddingSimilarity(params.embedding, textEmb) * 0.7; // lower weight for text in image queries
+            channelsUsed.push('text');
+          }
+        }
+
+        // Intelligent fusion: pick the best similarity but boost if multiple channels agree
+        const bestSim = Math.max(imageSim, combinedSim, textSim);
+        const channelAgreement = channelsUsed.length > 1 ? 1.05 : 1.0; // 5% boost for multi-channel agreement
+        
+        // Quality bonuses
+        const productBonus = isActualProduct ? 1.02 : 1.0; // 2% boost for actual products
+        const titleQualityBonus = this.calculateTitleQuality(title);
+        
+        // Final fused score
+        const fusedScore = bestSim * channelAgreement * productBonus * titleQualityBonus;
+        
+        return {
+          productId: (item as any).ProductVariants?.Id || item.ProductId || '',
+          ProductVariantId: item.ProductVariantId || 'scan',
+          title,
+          description,
+          imageUrl: item.ImageUrl,
+          businessTemplate: item.BusinessTemplate,
+          price: (item as any).ProductVariants?.Price || 0,
+          productUrl: (item as any).ProductVariants?.Id 
+            ? `https://sssync.app/products/${(item as any).ProductVariants.Id}`
+            : item.ImageUrl || '#',
+          imageSimilarity: imageSim,
+          textSimilarity: textSim,
+          combinedScore: fusedScore,
+          rawSimilarity: bestSim,
+          channelsUsed: channelsUsed.join(','),
+          isActualProduct
+        };
+      });
+
+      // Sort by fused score (highest first)
+      scoredResults.sort((a, b) => b.combinedScore - a.combinedScore);
       
-      return deduplicatedResults.slice(0, params.limit);
+      // Log top results
+      this.logger.log(`[SuperchargedManualSearch] Top 10 fused scores:`);
+      scoredResults.slice(0, 10).forEach((result, index) => {
+        this.logger.log(`  ${index + 1}. "${result.title.substring(0, 50)}..." - Score: ${result.combinedScore.toFixed(4)} (${result.channelsUsed}) ${result.isActualProduct ? '[PRODUCT]' : '[SCAN]'}`);
+      });
+      
+      // Advanced deduplication with similarity clustering
+      const clusteredResults = this.advancedDeduplication(scoredResults);
+      
+      // Filter by threshold and limit
+      const finalResults = clusteredResults
+        .filter(m => m.combinedScore >= params.threshold)
+        .slice(0, params.limit);
+      
+      this.logger.log(`[SuperchargedManualSearch] ${scoredResults.length} -> ${clusteredResults.length} -> ${finalResults.length} (scored -> deduplicated -> final)`);
+      
+      return finalResults;
       
     } catch (error) {
-      this.logger.error('Enhanced manual search failed, falling back to regular manual search:', error);
+      this.logger.error('Supercharged manual search failed, falling back to basic manual search:', error);
       return this.manualVectorSearch(params);
     }
   }
@@ -1192,6 +1314,125 @@ export class EmbeddingService {
     const union = new Set([...words1, ...words2]);
     
     return union.size > 0 ? intersection.size / union.size : 0;
+  }
+
+  /**
+   * Calculate title quality bonus based on cleanliness and informativeness
+   */
+  private calculateTitleQuality(title: string): number {
+    if (!title || title.length < 3) return 0.8;
+    
+    const cleanTitle = title.toLowerCase();
+    let qualityScore = 1.0;
+    
+    // Penalties for low-quality indicators
+    const spamWords = ['scanned', 'untitled', 'unknown', 'test', 'temp'];
+    if (spamWords.some(word => cleanTitle.includes(word))) {
+      qualityScore -= 0.1;
+    }
+    
+    // Bonus for informative length (sweet spot: 20-80 chars)
+    if (title.length >= 20 && title.length <= 80) {
+      qualityScore += 0.05;
+    } else if (title.length < 10) {
+      qualityScore -= 0.05;
+    }
+    
+    // Penalty for excessive punctuation
+    const punctuationRatio = (title.match(/[!@#$%^&*()_+=\[\]{};:'",<>/?\\|`~]/g) || []).length / title.length;
+    if (punctuationRatio > 0.15) {
+      qualityScore -= 0.08;
+    }
+    
+    // Bonus for product-like patterns (brands, models, numbers)
+    if (/\b\d{1,4}[a-zA-Z]{1,3}\b/.test(title) || /\b[A-Z]{2,}\b/.test(title)) {
+      qualityScore += 0.03;
+    }
+    
+    return Math.max(0.7, Math.min(1.1, qualityScore));
+  }
+
+  /**
+   * Advanced deduplication using similarity clustering and quality ranking
+   */
+  private advancedDeduplication(matches: any[]): any[] {
+    if (!matches || matches.length === 0) return matches;
+
+    const clusters: any[][] = [];
+    const processed = new Set<number>();
+
+    // Group similar items into clusters
+    for (let i = 0; i < matches.length; i++) {
+      if (processed.has(i)) continue;
+
+      const cluster = [matches[i]];
+      processed.add(i);
+
+      // Find all similar items for this cluster
+      for (let j = i + 1; j < matches.length; j++) {
+        if (processed.has(j)) continue;
+
+        const similarity = this.calculateAdvancedSimilarity(matches[i], matches[j]);
+        if (similarity > 0.8) { // High similarity threshold
+          cluster.push(matches[j]);
+          processed.add(j);
+        }
+      }
+
+      clusters.push(cluster);
+    }
+
+    // Select best representative from each cluster
+    const representatives = clusters.map(cluster => {
+      if (cluster.length === 1) return cluster[0];
+
+      // Sort cluster by quality and score
+      cluster.sort((a, b) => {
+        // Prioritize: actual products > higher scores > better titles
+        if (a.isActualProduct !== b.isActualProduct) {
+          return b.isActualProduct ? 1 : -1;
+        }
+        if (Math.abs(a.combinedScore - b.combinedScore) > 0.01) {
+          return b.combinedScore - a.combinedScore;
+        }
+        return this.calculateTitleQuality(b.title) - this.calculateTitleQuality(a.title);
+      });
+
+      return cluster[0]; // Best representative
+    });
+
+    this.logger.log(`[AdvancedDeduplication] Clustered ${matches.length} items into ${clusters.length} groups`);
+    
+    return representatives;
+  }
+
+  /**
+   * Calculate advanced similarity considering title, product ID, and visual similarity
+   */
+  private calculateAdvancedSimilarity(item1: any, item2: any): number {
+    // Exact product match
+    if (item1.productId && item2.productId && item1.productId === item2.productId) {
+      return 1.0;
+    }
+
+    // Title similarity (weighted heavily)
+    const titleSim = this.calculateSimpleSimilarity(
+      item1.title?.toLowerCase() || '',
+      item2.title?.toLowerCase() || ''
+    );
+
+    // Visual similarity from embeddings (if available)
+    const visualSim = Math.abs((item1.rawSimilarity || 0) - (item2.rawSimilarity || 0)) < 0.05 ? 0.8 : 0.0;
+
+    // Price similarity (for products with prices)
+    let priceSim = 0;
+    if (item1.price > 0 && item2.price > 0) {
+      const priceDiff = Math.abs(item1.price - item2.price) / Math.max(item1.price, item2.price);
+      priceSim = priceDiff < 0.1 ? 0.3 : 0.0; // Similar if within 10%
+    }
+
+    // Weighted combination
+    return titleSim * 0.6 + visualSim * 0.3 + priceSim * 0.1;
   }
   
   /**
