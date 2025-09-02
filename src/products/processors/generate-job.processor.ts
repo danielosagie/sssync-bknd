@@ -7,12 +7,17 @@ import { AiGenerationService } from '../ai-generation/ai-generation.service';
 import { FirecrawlService } from '../firecrawl.service';
 import { GenerateJobData, GenerateJobStatus, GenerateJobResult } from '../types/generate-job.types';
 import { AiUsageTrackerService } from '../../common/ai-usage-tracker.service';
+import { SupabaseClient } from '@supabase/supabase-js';
 
 
 @Injectable()
 export class GenerateJobProcessor {
   private readonly logger = new Logger(GenerateJobProcessor.name);
   private jobStatuses = new Map<string, GenerateJobStatus>();
+
+  private getSupabaseClient(): SupabaseClient {
+    return this.supabaseService.getClient();
+  }
 
   private readonly stages = [
     'Preparing',
@@ -156,7 +161,7 @@ export class GenerateJobProcessor {
                 // Use authenticated client if JWT provided, otherwise fallback to service client
                 const svc = userJwtToken 
                   ? this.supabaseService.getAuthenticatedClient(userJwtToken)
-                  : this.supabaseService.getServiceClient();
+                  : this.getSupabaseClient();
                 await svc.from('AiGeneratedContent').insert({
                   UserId: userId,
                   ContentType: 'scrape',
@@ -165,7 +170,11 @@ export class GenerateJobProcessor {
                   GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: scrapedDataArray.length }),
                   Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
                   IsActive: false,
-                });
+                })
+                .select()
+                .single();
+
+                
 
                 // Log result
                 await this.aiUsageTracker.trackUsage({
@@ -247,28 +256,28 @@ export class GenerateJobProcessor {
 
          // Log generate event
          try {
-          const svc = userJwtToken 
-          ? this.supabaseService.getAuthenticatedClient(userJwtToken)
-          : this.supabaseService.getServiceClient();
-          await svc.from('AiGeneratedContent').insert({
-             UserId: userId,
-             ProductId: p.productId || null,
-             ContentType: 'generate',
-             SourceApi: scrapedDataArray && scrapedDataArray.length > 0 ? 'groq+scrape' : 'groq',
-             Prompt: `generate_job:${jobId}:product_${i+1}`,
-             GeneratedText: JSON.stringify({ platforms: result.platforms }),
-             Metadata: {
-               productIndex: p.productIndex,
-               variantId: p.variantId || null,
-               platforms: platformKeys,
-               source: result.source,
-               processingTimeMs,
-               sources: (p.selectedMatches || []).map((m: any) => ({ url: m?.link })).filter(Boolean)
-             },
-             IsActive: false,
-           });
-
-
+           const svc = userJwtToken 
+           ? this.supabaseService.getAuthenticatedClient(userJwtToken)
+           : this.getSupabaseClient();
+           await svc.from('AiGeneratedContent').insert({
+            UserId: userId,
+            ProductId: p.productId || null,
+            ContentType: 'generate',
+            SourceApi: scrapedDataArray && scrapedDataArray.length > 0 ? 'groq+scrape' : 'groq',
+            Prompt: `generate_job:${jobId}:product_${i+1}`,
+            GeneratedText: JSON.stringify({ platforms: result.platforms }),
+            Metadata: {
+              productIndex: p.productIndex,
+              variantId: p.variantId || null,
+              platforms: platformKeys,
+              source: result.source,
+              processingTimeMs,
+              sources: (p.selectedMatches || []).map((m: any) => ({ url: m?.link })).filter(Boolean)
+            },
+            IsActive: false,
+           })
+           .select()
+           .single();
 
            // Log result
            await this.aiUsageTracker.trackUsage({
