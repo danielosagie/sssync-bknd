@@ -1041,8 +1041,13 @@ export class EmbeddingService {
 
       // Try the multi-channel search first
       this.logger.log(`[PgVectorSearch] Attempting multi-channel search with function: search_products_by_vector_multi`);
-      const { data, error } = await supabase.rpc('search_products_by_vector_multi', {
-        query_embedding: params.embedding,
+      const qImage = params.embedding; // 768
+      const qCombined = params.embedding.concat(new Array(1024 - params.embedding.length).fill(0));
+
+      const { data, error } = await supabase.rpc('search_products_by_vector_multi_v2', {
+        q_image: qImage,
+        q_combined: qCombined,
+        q_text: null,
         match_threshold: params.threshold,
         match_count: params.limit,
         p_business_template: null
