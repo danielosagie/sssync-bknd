@@ -2217,7 +2217,7 @@ Return JSON format:
                         });
 
                         // 🎯 Deduplicate matches before sending to reranker 
-                        const uniqueMatches = this.deduplicateMatchesByTitle(result.matches.slice(0, 15));
+                        const uniqueMatches = this.deduplicateMatchesByTitle(result.matches);
                         this.logger.log(`[RerankerDebug] Deduplicated ${result.matches.length} -> ${uniqueMatches.length} matches before reranker`);
 
                         const rerankerCandidates = uniqueMatches.map((match: any, index: number) => ({
@@ -2252,15 +2252,15 @@ Return JSON format:
                             candidates: rerankerCandidates,
                             userId: req.user?.id,
                             businessTemplate: 'general',
-                            maxCandidates: 3 // Return top 3 as requested
+                            maxCandidates: rerankerCandidates.length // send all to get full ordering
                         });
 
-                        this.logger.log(`[RerankerResults] Top 3 reranked results:`);
-                        rerankerResponse.rankedCandidates.forEach((candidate: any, index: number) => {
+                        this.logger.log(`[RerankerResults] Top reranked results:`);
+                        rerankerResponse.rankedCandidates.slice(0, 10).forEach((candidate: any, index: number) => {
                             this.logger.log(`  ${index + 1}. "${candidate.title?.substring(0, 50)}..." - Reranker Score: ${candidate.score?.toFixed(4)} (Rank: ${candidate.rank})`);
                         });
 
-                        // Replace matches with reranked results (top 3)
+                        // Replace matches with full reranked results
                         result.matches = rerankerResponse.rankedCandidates;
                         result.confidence = rerankerResponse.confidenceTier;
                         
