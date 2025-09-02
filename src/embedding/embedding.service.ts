@@ -1045,21 +1045,21 @@ export class EmbeddingService {
         query_embedding: params.embedding,
         match_threshold: params.threshold,
         match_count: params.limit,
-        p_business_template: params.businessTemplate
+        p_business_template: null
       });
 
       if (error) {
         this.logger.error(`[MultiChannelSearch] FAILED with error: ${error.message}`, error);
         this.logger.warn(`[MultiChannelSearch] Error details:`, error);
-        this.logger.warn(`[MultiChannelSearch] Falling back to manual search...`);
-        return this.manualVectorSearch(params);
+        this.logger.warn(`[MultiChannelSearch] Falling back to enhanced manual search...`);
+        return this.enhancedManualVectorSearch(params);
       }
-  
+
       if (!data || data.length === 0) {
-        this.logger.log(`[MultiChannelSearch] No results, trying manual search`);
-        return this.manualVectorSearch(params);
+        this.logger.log(`[MultiChannelSearch] No results, trying enhanced manual search`);
+        return this.enhancedManualVectorSearch(params);
       }
-  
+
       this.logger.log(`[MultiChannelSearch] Found ${data.length} matches across channels`);
   
       // Log results with channel info
@@ -1068,21 +1068,8 @@ export class EmbeddingService {
         this.logger.log(`[MultiChannelResult ${index + 1}] "${item.title?.substring(0, 50)}..." - Similarity: ${item.similarity?.toFixed(4)} Channels: ${item.source_channels} ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
       });
 
-      // Convert to ProductMatch format and deduplicate by productId + variantId
-      const seenIds = new Set<string>();
-      const deduplicatedResults = data.filter((item: any) => {
-        const uniqueKey = `${item.product_id || 'null'}_${item.variant_id || 'null'}`;
-        if (seenIds.has(uniqueKey)) {
-          this.logger.warn(`[MultiChannelSearch] Skipping duplicate: ${item.title?.substring(0, 30)}... (${uniqueKey})`);
-          return false;
-        }
-        seenIds.add(uniqueKey);
-        return true;
-      });
-
-      this.logger.log(`[MultiChannelSearch] Deduplicated ${data.length} -> ${deduplicatedResults.length} results`);
-
-      return deduplicatedResults.map((item: any) => ({
+      // Convert to ProductMatch format
+      return data.map((item: any) => ({
         productId: item.product_id || '',
         ProductVariantId: item.variant_id || null,
         title: item.title || 'Unknown Product',
@@ -1099,11 +1086,109 @@ export class EmbeddingService {
       }));
 
     } catch (error) {
-      this.logger.error('Failed multi-channel search, falling back to manual:', error);
+      this.logger.error('Failed multi-channel search, falling back to enhanced manual:', error);
+      return this.enhancedManualVectorSearch(params);
+    }
+  }
+
+  /**
+   * Enhanced manual search with better deduplication and multi-channel simulation
+   */
+  private async enhancedManualVectorSearch(params: {
+    embedding: number[];
+    businessTemplate?: string;
+    threshold: number;
+    limit: number;
+  }): Promise<ProductMatch[]> {
+    try {
+      // First run the regular manual search to get all results
+      const allResults = await this.manualVectorSearch(params);
+      
+      // Enhanced deduplication by product ID and title similarity
+      const deduplicatedResults = this.deduplicateProductMatches(allResults);
+      
+      this.logger.log(`[EnhancedManualSearch] Deduplicated ${allResults.length} -> ${deduplicatedResults.length} results`);
+      
+      return deduplicatedResults.slice(0, params.limit);
+      
+    } catch (error) {
+      this.logger.error('Enhanced manual search failed, falling back to regular manual search:', error);
       return this.manualVectorSearch(params);
     }
   }
 
+  /**
+   * Deduplicate ProductMatch results by ID and title similarity
+   */
+  private deduplicateProductMatches(matches: ProductMatch[]): ProductMatch[] {
+    if (!matches || matches.length === 0) return matches;
+
+    const uniqueMatches: ProductMatch[] = [];
+    const seenProductIds = new Set<string>();
+    const seenTitles = new Map<string, number>(); // title -> index in uniqueMatches
+
+    for (const match of matches) {
+      let shouldAdd = true;
+      const productKey = `${match.productId}_${match.ProductVariantId}`;
+
+      // Skip if we've seen this exact product ID + variant ID
+      if (seenProductIds.has(productKey)) {
+        this.logger.debug(`[DeduplicateProducts] Skipping duplicate product: ${productKey}`);
+        shouldAdd = false;
+      } else if (match.title) {
+        // Check for title similarity
+        const normalizedTitle = match.title
+          .toLowerCase()
+          .replace(/[^\w\s]/g, '')
+          .replace(/\s+/g, ' ')
+          .trim();
+
+        for (const [seenTitle, existingIndex] of seenTitles.entries()) {
+          const similarity = this.calculateSimpleSimilarity(normalizedTitle, seenTitle);
+          if (similarity > 0.85) {
+            // Keep the one with higher score
+            if (match.combinedScore > uniqueMatches[existingIndex].combinedScore) {
+              this.logger.debug(`[DeduplicateProducts] Replacing lower-scoring duplicate: "${match.title.substring(0, 30)}..."`);
+              const oldMatch = uniqueMatches[existingIndex];
+              const oldProductKey = `${oldMatch.productId}_${oldMatch.ProductVariantId}`;
+              uniqueMatches[existingIndex] = match;
+              seenProductIds.delete(oldProductKey);
+              seenProductIds.add(productKey);
+            } else {
+              this.logger.debug(`[DeduplicateProducts] Skipping lower-scoring duplicate: "${match.title.substring(0, 30)}..."`);
+            }
+            shouldAdd = false;
+            break;
+          }
+        }
+
+        if (shouldAdd) {
+          seenTitles.set(normalizedTitle, uniqueMatches.length);
+        }
+      }
+
+      if (shouldAdd) {
+        seenProductIds.add(productKey);
+        uniqueMatches.push(match);
+      }
+    }
+
+    return uniqueMatches;
+  }
+
+  /**
+   * Simple Jaccard similarity calculation for title comparison
+   */
+  private calculateSimpleSimilarity(title1: string, title2: string): number {
+    const words1 = new Set(title1.split(/\s+/));
+    const words2 = new Set(title2.split(/\s+/));
+    
+    const intersection = new Set([...words1].filter(x => words2.has(x)));
+    const union = new Set([...words1, ...words2]);
+    
+    return union.size > 0 ? intersection.size / union.size : 0;
+  }
+  
   /**
    * Fallback manual vector search when PostgreSQL function is not available
    */
