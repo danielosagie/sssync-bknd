@@ -164,7 +164,23 @@ export class RerankerService {
         const priceBonus = pricePresent ? dynamicPriceBoost : 0;
         const sourceBonus = isReputable ? dynamicHostBoost : 0;
 
-        const adjusted = Math.min(1, base + cleanTitleBonus * 0.03 + priceBonus + sourceBonus);
+        // Hybridize with vector similarity from upstream (if present)
+        const vecCombined = Math.max(0, Math.min(1, Number(((originalCandidate as any)?.metadata?.combinedScore) ?? 0)));
+        const imgSim = Math.max(0, Number(((originalCandidate as any)?.metadata?.imageSimilarity) ?? 0));
+        const txtSim = Math.max(0, Number(((originalCandidate as any)?.metadata?.textSimilarity) ?? 0));
+        const vecHybrid = Math.max(vecCombined, (0.6 * imgSim + 0.4 * txtSim));
+
+        // Token overlap bonus between query and candidate text
+        const candidateText = `${title} ${originalCandidate?.description || ''}`;
+        const tokenOverlap = this.calculateBasicSimilarity(searchQuery, candidateText); // reuse simple overlap
+        const tokenBonus = Math.min(0.10, tokenOverlap * 0.20);
+
+        // Weighted fusion: text reranker score + vector score
+        const aiWeight = 0.70;
+        const vecWeight = 0.30;
+        const fused = Math.min(1, (aiWeight * base) + (vecWeight * vecHybrid));
+
+        const adjusted = Math.min(1, fused + (cleanTitleBonus * 0.03) + priceBonus + sourceBonus + tokenBonus);
 
         return {
           ...originalCandidate,
@@ -173,11 +189,16 @@ export class RerankerService {
           explanation: this.generateScoreExplanation(adjusted)
         } as RankedCandidate;
       })
-      // resort after adjustment
-      .sort((a, b) => b.score - a.score)
+      // resort after adjustment with tie-break on vector score if available
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        const bVec = Math.max(0, Number(((b as any)?.metadata?.combinedScore) ?? 0));
+        const aVec = Math.max(0, Number(((a as any)?.metadata?.combinedScore) ?? 0));
+        return bVec - aVec;
+      })
       .map((c, i) => ({ ...c, rank: i + 1 }));
 
-      const topScore = data.scores[0] || 0;
+      const topScore = rankedCandidates[0]?.score || 0;
       const confidenceTier = this.determineConfidenceTier(topScore);
       const systemAction = this.determineSystemAction(confidenceTier, rankedCandidates.length);
 
