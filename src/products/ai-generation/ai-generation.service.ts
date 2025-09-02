@@ -511,12 +511,31 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
       // Parse JSON response with sanitizer (handles <think>...</think> and fenced code)
       try {
         const sanitized = this.sanitizeJsonLikeResponse(responseText);
+        this.logger.debug(`Sanitized JSON length: ${sanitized.length}`);
+        
+        if (!sanitized || sanitized === '{}') {
+          this.logger.warn('Sanitization returned empty JSON, using fallback');
+          return null;
+        }
+        
         const generatedDetails = JSON.parse(sanitized) as GeneratedDetails;
         this.logger.log('Successfully generated product details using AI');
         return generatedDetails;
       } catch (parseError) {
         this.logger.error(`Failed to parse AI response as JSON: ${parseError.message}`);
-        this.logger.debug(`Raw AI response: ${responseText}`);
+        this.logger.debug(`Raw AI response (first 1000 chars): ${responseText.substring(0, 1000)}`);
+        
+        // Try a more aggressive cleanup for malformed JSON
+        try {
+          const lastDitchAttempt = this.tryFixMalformedJSON(responseText);
+          if (lastDitchAttempt) {
+            this.logger.log('Recovered from malformed JSON using aggressive cleanup');
+            return lastDitchAttempt;
+          }
+        } catch (secondError) {
+          this.logger.error(`Even aggressive cleanup failed: ${secondError.message}`);
+        }
+        
         return null;
       }
     } catch (error) {
@@ -530,20 +549,109 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
    */
   private sanitizeJsonLikeResponse(text: string): string {
     if (!text) return '{}';
-    // 1) Strip <think>...</think> blocks
+    
+    this.logger.debug(`Sanitizing AI response, length: ${text.length}`);
+    
+    // 1) Strip <think>...</think> blocks first
     let out = text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
-    // 2) Prefer fenced ```json ... ``` if present
-    const fencedMatch = out.match(/```json[\r\n]+([\s\S]*?)```/i);
-    if (fencedMatch && fencedMatch[1]) {
-      return fencedMatch[1].trim();
+    
+    // 2) Look for fenced code blocks with json
+    const fencedPatterns = [
+      /```json[\r\n]+([\s\S]*?)```/i,
+      /```[\r\n]+([\s\S]*?)```/i,  // Sometimes json isn't specified
+    ];
+    
+    for (const pattern of fencedPatterns) {
+      const match = out.match(pattern);
+      if (match && match[1]) {
+        const extracted = match[1].trim();
+        this.logger.debug(`Found fenced code block, length: ${extracted.length}`);
+        // Validate it looks like JSON before returning
+        if (this.looksLikeJSON(extracted)) {
+          return extracted;
+        }
+      }
     }
-    // 3) If output is pure JSON, return as is
-    const starts = out.indexOf('{');
-    const ends = out.lastIndexOf('}');
-    if (starts !== -1 && ends !== -1 && ends > starts) {
-      return out.substring(starts, ends + 1);
+    
+    // 3) Try to find JSON object boundaries
+    const jsonStart = out.indexOf('{');
+    const jsonEnd = out.lastIndexOf('}');
+    
+    if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd > jsonStart) {
+      const extracted = out.substring(jsonStart, jsonEnd + 1);
+      this.logger.debug(`Extracted JSON by boundaries, length: ${extracted.length}`);
+      return extracted;
     }
-    return out;
+    
+    // 4) Last resort: try to clean up common issues
+    out = out.replace(/^[^{]*/, '').replace(/[^}]*$/, '');
+    if (out.startsWith('{') && out.endsWith('}')) {
+      return out;
+    }
+    
+    this.logger.warn('Could not extract valid JSON from response');
+    return '{}';
+  }
+  
+  /**
+   * Quick check if text looks like JSON
+   */
+  private looksLikeJSON(text: string): boolean {
+    const trimmed = text.trim();
+    return (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+           (trimmed.startsWith('[') && trimmed.endsWith(']'));
+  }
+  
+  /**
+   * Aggressive attempt to fix malformed JSON responses
+   */
+  private tryFixMalformedJSON(responseText: string): GeneratedDetails | null {
+    try {
+      // Remove thinking blocks more aggressively
+      let cleaned = responseText
+        .replace(/<think>[\s\S]*?<\/think>/gi, '')
+        .replace(/```json\s*/gi, '')
+        .replace(/```\s*/gi, '')
+        .trim();
+      
+      // Find the main JSON object
+      const jsonStart = cleaned.indexOf('{');
+      if (jsonStart === -1) return null;
+      
+      // Count braces to find the end
+      let braceCount = 0;
+      let jsonEnd = -1;
+      
+      for (let i = jsonStart; i < cleaned.length; i++) {
+        if (cleaned[i] === '{') braceCount++;
+        if (cleaned[i] === '}') braceCount--;
+        if (braceCount === 0) {
+          jsonEnd = i;
+          break;
+        }
+      }
+      
+      if (jsonEnd === -1) {
+        // JSON is incomplete, try to find the last complete object
+        this.logger.warn('JSON appears incomplete, attempting partial recovery');
+        return null;
+      }
+      
+      const potentialJSON = cleaned.substring(jsonStart, jsonEnd + 1);
+      
+      // Try to fix common JSON issues
+      const fixed = potentialJSON
+        .replace(/,\s*}/g, '}')  // Remove trailing commas
+        .replace(/,\s*]/g, ']')  // Remove trailing commas in arrays
+        .replace(/(['"])?([a-zA-Z0-9_]+)(['"])?:/g, '"$2":')  // Ensure property names are quoted
+        .replace(/:\s*'([^']*)'/g, ': "$1"')  // Convert single quotes to double quotes
+        .replace(/\\'/g, "'");  // Fix escaped single quotes
+      
+      return JSON.parse(fixed) as GeneratedDetails;
+    } catch (error) {
+      this.logger.debug(`Aggressive cleanup failed: ${error.message}`);
+      return null;
+    }
   }
 
   async generateProductDetailsFromScrapedData(
