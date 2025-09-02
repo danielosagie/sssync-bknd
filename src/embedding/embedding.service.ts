@@ -1003,7 +1003,7 @@ export class EmbeddingService {
   /**
    * Calculates the cosine similarity between two vectors.
    * Assumes vectors are normalized.
-   */
+   
   calculateEmbeddingSimilarity(vecA: number[], vecB: number[]): number {
     if (!vecA || !vecB || vecA.length !== vecB.length) {
       this.logger.debug(`[CosineSimilarity] Dimension mismatch or null vectors: A=${vecA?.length || 0}, B=${vecB?.length || 0}`);
@@ -1024,6 +1024,22 @@ export class EmbeddingService {
     // For normalized vectors, the dot product is the cosine similarity.
     return dotProduct;
   }
+   */
+
+  calculateEmbeddingSimilarity(vecA: number[], vecB: number[]): number {
+    if (!vecA || !vecB || vecA.length !== vecB.length) {
+      this.logger.debug(`[CosineSimilarity] Dimension mismatch or null vectors: A=${vecA?.length || 0}, B=${vecB?.length || 0}`);
+      return 0;
+    }
+
+    // inside calculateEmbeddingSimilarity:
+    const dot = vecA.reduce((s, a, i) => s + a * vecB[i], 0);
+    const magA = Math.sqrt(vecA.reduce((s, a) => s + a*a, 0));
+    const magB = Math.sqrt(vecB.reduce((s, b) => s + b*b, 0));
+    const cos = magA > 0 && magB > 0 ? dot / (magA * magB) : 0;
+    return Math.max(0, Math.min(1, cos));
+
+  }
 
   /**
    * Enhanced database search using embedding similarity
@@ -1043,6 +1059,7 @@ export class EmbeddingService {
 
       // Try the multi-channel search first
       this.logger.log(`[PgVectorSearch] Attempting multi-channel search with function: search_products_by_vector_multi`);
+      
       const qImage = params.embedding; // 768
       const qCombined = params.embedding.concat(new Array(1024 - params.embedding.length).fill(0));
 
