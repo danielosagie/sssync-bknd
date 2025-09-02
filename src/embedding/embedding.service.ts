@@ -1035,14 +1035,29 @@ export class EmbeddingService {
     try {
       const supabase = this.supabaseService.getClient();
 
+      function padToLength(vec: number[], target: number): number[] {
+        if (!Array.isArray(vec)) return [];
+        if (vec.length >= target) return vec.slice(0, target);
+        const out = new Array(target).fill(0);
+        for (let i = 0; i < vec.length; i++) out[i] = vec[i];
+        return out;
+      }
+
       this.logger.log(`[PgVectorSearch] Using PostgreSQL vector similarity search`);
       this.logger.log(`[PgVectorSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
       this.logger.log(`[PgVectorSearch] Query embedding first 5 values: [${params.embedding?.slice(0, 5).map(v => v.toFixed(4)).join(', ')}...]`);
 
       // Try the multi-channel search first
       this.logger.log(`[PgVectorSearch] Attempting multi-channel search with function: search_products_by_vector_multi`);
-      const { data, error } = await supabase.rpc('search_products_by_vector_multi', {
-        query_embedding: params.embedding,
+      
+      const qImage = params.embedding; // 768
+      const qCombined = padToLength(params.embedding, 1024); // [image768, zeros256]
+      const qText = null; // for now
+
+      const { data, error } = await supabase.rpc('search_products_by_vector_multi_v2', {
+        q_image: qImage,
+        q_combined: qCombined,
+        q_text: qText,
         match_threshold: params.threshold,
         match_count: params.limit,
         p_business_template: null
