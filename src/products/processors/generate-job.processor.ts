@@ -161,12 +161,9 @@ export class GenerateJobProcessor {
               // Log scrape event for training/analytics
               try {
                 // Use authenticated client if JWT provided, otherwise fallback to service client
-                const svc = userJwtToken 
-                  ? this.supabaseService.getAuthenticatedClient(userJwtToken)
-                  : this.getSupabaseClient();
-                await svc.from('AiGeneratedContent').insert({
+                const supabase = this.supabaseService.getServiceClient();
+                const { error } = await supabase.from('AiGeneratedContent').insert({
                   UserId: userId,
-                  ProductId: null,
                   ContentType: 'scrape',
                   SourceApi: 'firecrawl',
                   Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
@@ -206,14 +203,14 @@ export class GenerateJobProcessor {
                   metadata: { scrapedDataArray }
                 });
 
-              } catch (e) {
-                this.logger.warn(`[GenerateJob] Failed to log scrape event: ${e?.message || e}`);
+              } catch (error) {
+                this.logger.warn(`[GenerateJob] Failed to log scrape event: ${error?.message || error}`);
               }
             } else {
               scrapedDataArray = null;
             }
-          } catch (err) {
-            this.logger.warn(`[GenerateJob] Scrape pipeline failed for product ${i + 1}: ${err.message}`);
+          } catch (error) {
+            this.logger.warn(`[GenerateJob] Scrape pipeline failed for product ${i + 1}: ${error.message}`);
             scrapedDataArray = null;
           }
         }
@@ -276,10 +273,8 @@ export class GenerateJobProcessor {
 
          // Log generate event
          try {
-           const svc = userJwtToken 
-           ? this.supabaseService.getAuthenticatedClient(userJwtToken)
-           : this.getSupabaseClient();
-           await svc.from('AiGeneratedContent').insert({
+          const supabase = this.supabaseService.getServiceClient();
+          const { error } = await supabase.from('AiGeneratedContent').insert({
             UserId: userId,
             ProductId: p.productId || null,
             ContentType: 'generate',
@@ -308,8 +303,8 @@ export class GenerateJobProcessor {
             requestCount: 1,
             metadata: { generated }
           });
-         } catch (e) {
-           this.logger.warn(`[GenerateJob] Failed to log generate event: ${e?.message || e}`);
+         } catch (error) {
+           this.logger.warn(`[GenerateJob] Failed to log generate event: ${error?.message || error}`);
          }
 
         results.push(result);

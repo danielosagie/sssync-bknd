@@ -85,7 +85,7 @@ export class RerankerService {
 
     // Create a proper search query from the target URL or use a generic query
     const searchQuery = request.targetUrl 
-      ? `product shown in image: ${request.targetUrl} make sure to pick the most official looking post considering title and price if available, we are ranking based on what looks like an offical professional product for sale with the best title/image that looks the most similar to our image. Avoid anything that looks like a forum or youtube video or pinterest in the title. Priorize for sale posts`
+      ? `product shown in image: ${request.targetUrl} make sure to pick the most official looking post considering title and price if available, we are ranking based on what looks like an offical professional product for sale with the best title/image that looks the most similar to our image. DO NOT PICK anything that looks like a forum title or youtube video or pinterest in the title. Priorize for sale posts but over that obviously listings that have product details in the title are the HIGHEST PRIORITY`
       : request.query || 'product recognition and matching';
     
     this.logger.log(`[RerankerDebug] Using search query: "${searchQuery}"`);

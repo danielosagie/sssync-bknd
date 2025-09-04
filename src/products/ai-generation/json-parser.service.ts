@@ -140,11 +140,11 @@ export class JsonParserService {
   }
 
   /**
-   * Attempt to recover malformed JSON
+   * Attempt to recover malformed JSON with multiple strategies
    */
   private attemptJSONRecovery(malformedJson: string): any | null {
+    // Strategy 1: Basic cleanup and fixes
     try {
-      // Common JSON fixes
       let fixed = malformedJson
         .replace(/,(\s*[}\]])/g, '$1')  // Remove trailing commas
         .replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":')  // Quote unquoted keys
@@ -154,12 +154,68 @@ export class JsonParserService {
         .replace(/\t/g, ' ')  // Remove tabs
         .replace(/\s+/g, ' ');  // Normalize whitespace
 
-      // Try parsing the fixed version
       return JSON.parse(fixed);
     } catch (error) {
-      this.logger.debug(`JSON recovery failed: ${error.message}`);
-      return null;
+      this.logger.debug(`Strategy 1 failed: ${error.message}`);
     }
+
+    // Strategy 2: Find the largest valid JSON object by truncating at error position
+    try {
+      const errorMatch = malformedJson.match(/at position (\d+)/);
+      if (errorMatch) {
+        const errorPos = parseInt(errorMatch[1], 10);
+        let truncated = malformedJson.substring(0, errorPos);
+        
+        // Try to close the JSON properly
+        const openBraces = (truncated.match(/\{/g) || []).length;
+        const closeBraces = (truncated.match(/\}/g) || []).length;
+        const missingBraces = openBraces - closeBraces;
+        
+        if (missingBraces > 0) {
+          truncated += '}'.repeat(missingBraces);
+        }
+        
+        // Clean up any incomplete properties
+        truncated = truncated.replace(/,\s*$/, '').replace(/:\s*$/, ': ""');
+        
+        return JSON.parse(truncated);
+      }
+    } catch (error) {
+      this.logger.debug(`Strategy 2 failed: ${error.message}`);
+    }
+
+    // Strategy 3: Extract individual platform objects and rebuild
+    try {
+      const platformObjects: any = {};
+      const platformNames = ['shopify', 'amazon', 'ebay', 'whatnot', 'square', 'facebook', 'clover'];
+      
+      for (const platform of platformNames) {
+        const platformRegex = new RegExp(`"${platform}"\\s*:\\s*\\{([^}]+(?:\\{[^}]*\\}[^}]*)*)\\}`, 'i');
+        const match = malformedJson.match(platformRegex);
+        
+        if (match) {
+          try {
+            const platformJson = `{"${platform}": {${match[1]}}}`;
+            const parsed = JSON.parse(platformJson);
+            platformObjects[platform] = parsed[platform];
+          } catch (e) {
+            // Skip this platform if it can't be parsed
+            this.logger.debug(`Failed to extract ${platform}: ${e.message}`);
+          }
+        }
+      }
+      
+      if (Object.keys(platformObjects).length > 0) {
+        this.logger.debug(`Strategy 3 recovered ${Object.keys(platformObjects).length} platforms`);
+        return platformObjects;
+      }
+    } catch (error) {
+      this.logger.debug(`Strategy 3 failed: ${error.message}`);
+    }
+
+    // Strategy 4: Create minimal valid structure
+    this.logger.warn('All JSON recovery strategies failed, returning minimal structure');
+    return null;
   }
 
   /**
