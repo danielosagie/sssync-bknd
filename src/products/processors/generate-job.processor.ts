@@ -97,7 +97,7 @@ export class GenerateJobProcessor {
 
                 this.logger.log('Search Result: ' + searchResult);
                 
-                // Log result
+                // Log result NOT WORKING YET
                 await this.aiUsageTracker.trackUsage({
                   userId: userId,
                   serviceType: 'firecrawl_search',
@@ -141,16 +141,19 @@ export class GenerateJobProcessor {
                   const searchResult = await this.firecrawlService.scrape(link);
                   return Array.isArray(searchResult?.data) ? searchResult.data : [];
                 });
+                this.logger.log("URls to be scraped" + scrapePromises);
                 
+
+    
                 const scrapeResults = await Promise.all(scrapePromises);
-                this.logger.debug(scrapeResults);
+                this.logger.log("Total returned response from firecrawl" + scrapeResults);
 
                 const extracted = scrapeResults.flat().map((r: any) => r.url).filter((u: any) => typeof u === 'string');
-
-                this.logger.log('Scrape Results: ' + extracted);
+                this.logger.log('Scrape Results (extracted): ' + extracted);
                 
                 // Adapt to AI service expectation (objects with data.markdown)
                 scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
+                this.logger.log("Scraped Data Array Stage" + scrapedDataArray);
                 
               } catch (searchErr) {
                 this.logger.warn(`[GenerateJob] Firecrawl search phase failed: ${searchErr?.message || searchErr}`);
