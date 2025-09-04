@@ -306,6 +306,8 @@ export class FirecrawlService {
         }]
       });
 
+      this.logger.log("From firecrawl service:" + res);
+
       return res;
 
     } catch (error) {

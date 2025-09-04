@@ -511,7 +511,10 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
         max_tokens: 2000,
       });
 
+   
+
       const responseText = completion.choices[0]?.message?.content;
+      this.logger.log(responseText);
       if (!responseText) {
         this.logger.warn('No response content from Groq API');
         return null;
@@ -743,6 +746,7 @@ ${corporateDescription} or ${longerCorporateDescription} will do fine
       3. No trailing commas
       4. All brackets must be properly closed
       5. Return a JSON object with platform-specific data only if that platform was requested
+      
 
       **OUTPUT FORMAT:**
       {
@@ -1008,6 +1012,8 @@ ${corporateDescription} or ${longerCorporateDescription} will do fine
       });
 
       const responseText = chatCompletion.choices[0]?.message?.content;
+      this.logger.log(responseText);
+
       if (!responseText) {
         this.logger.warn('No response content from Groq API in scraped data generation');
         throw new Error('Empty response from AI');

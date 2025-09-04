@@ -88,6 +88,7 @@ export class GenerateJobProcessor {
             // If a template is provided, perform a Firecrawl search to find additional sources
             let templateSearchUrls: string[] = [];
             if (templateName) {
+
               try {
                 const titleForQuery = (p.selectedMatches && p.selectedMatches[0]?.title) ? p.selectedMatches[0].title : 'product';
                 const prompt = `Find the product data for this product: (${titleForQuery})` +
@@ -96,6 +97,28 @@ export class GenerateJobProcessor {
                 const searchResult = await this.firecrawlService.search(prompt); 
 
                 this.logger.log('Search Result: ' + searchResult);
+
+                try {
+                   const supabase = this.supabaseService.getServiceClient();
+                   const { data, error } = await supabase.from('AiGeneratedContent').insert({
+                     UserId: userId,
+                     ContentType: 'search',
+                     SourceApi: 'firecrawl',
+                     Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
+                     GeneratedText: JSON.stringify({ searchResult }),
+                     Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
+                     IsActive: false,
+                   });
+
+                   if (error) {
+                     this.logger.error(`Failed to save search results to DB: ${error.message}`);
+                   } else {
+                     this.logger.log(`Successfully saved search results to DB: ${data || 0} records`);
+                   }
+                 } catch (error) {
+                   this.logger.error(`Exception saving search results: ${error.message}`);
+                 }
+                
                 
                 // Log result NOT WORKING YET
                 await this.aiUsageTracker.trackUsage({
@@ -140,20 +163,21 @@ export class GenerateJobProcessor {
                 const scrapePromises = urlsToScrape.map(async link => {
                   const searchResult = await this.firecrawlService.scrape(link);
                   return Array.isArray(searchResult?.data) ? searchResult.data : [];
+                  
                 });
-                this.logger.log("URls to be scraped" + scrapePromises);
+                this.logger.log(`URLs to be scraped: ${urlsToScrape.length} URLs`);
                 
 
     
                 const scrapeResults = await Promise.all(scrapePromises);
-                this.logger.log("Total returned response from firecrawl" + scrapeResults);
+                this.logger.log(`Total returned response from firecrawl: ${scrapeResults.length} results, ${scrapeResults.flat().length} total items`);
 
                 const extracted = scrapeResults.flat().map((r: any) => r.url).filter((u: any) => typeof u === 'string');
                 this.logger.log('Scrape Results (extracted): ' + extracted);
                 
                 // Adapt to AI service expectation (objects with data.markdown)
                 scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
-                this.logger.log("Scraped Data Array Stage" + scrapedDataArray);
+                this.logger.log(`Scraped Data Array Stage: ${scrapedDataArray.length} items prepared for AI`);
                 
               } catch (searchErr) {
                 this.logger.warn(`[GenerateJob] Firecrawl search phase failed: ${searchErr?.message || searchErr}`);
@@ -163,39 +187,35 @@ export class GenerateJobProcessor {
 
               // Log scrape event for training/analytics
               try {
-                // Use authenticated client if JWT provided, otherwise fallback to service client
-                const supabase = this.supabaseService.getServiceClient();
-                const { error } = await supabase.from('AiGeneratedContent').insert({
-                  UserId: userId,
-                  ContentType: 'scrape',
-                  SourceApi: 'firecrawl',
-                  Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
-                  GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: scrapedDataArray.length }, scrapedDataArray),
-                  Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
-                  IsActive: false,
-                })
-                .select()
-                .single();
-              
-
-                {/*
-                const { data: aiData, error: aiError } = await supabase
-                .from('AiGeneratedContent') // Use DB table name
-                .insert({
-                    ProductId: null, // Ensure column names match DB
-                    ContentType: 'scrape',
-                    SourceApi: 'firecrawl',
-                    Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
-                    GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: scrapedDataArray.length }), // Store JSON string
-                    Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined }, // Ensure DB column type is jsonb
-                    IsActive: false,
-                })
-                .select()
-                .single();
-                */}
-
+                
                 this.logger.log(scrapedDataArray);
 
+                try {
+                   // Storing Scrape Job
+                   const supabase = this.supabaseService.getServiceClient();
+                   const { data, error } = await supabase.from('AiGeneratedContent').insert({
+                     UserId: userId,
+                     ProductId: null,
+                     ContentType: 'scrape',
+                     SourceApi: 'firecrawl',
+                     Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
+                     GeneratedText: JSON.stringify({ 
+                       urls: urlsToScrape, 
+                       extractedCount: scrapedDataArray.length,
+                       scrapedData: scrapedDataArray 
+                     }),
+                     Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
+                     IsActive: false,
+                   });
+
+                   if (error) {
+                     this.logger.error(`Failed to save scrape results to DB: ${error.message}`);
+                   } else {
+                     this.logger.log(`Successfully saved scrape results to DB: ${data || 0} records with ${scrapedDataArray.length} scraped items`);
+                   }
+                 } catch (error) {
+                   this.logger.error(`Exception saving scrape results: ${error.message}`);
+                 }
 
                 // Log result
                 await this.aiUsageTracker.trackUsage({
@@ -277,8 +297,8 @@ export class GenerateJobProcessor {
 
          // Log generate event
          try {
-          const supabase = this.supabaseService.getServiceClient();
-          const { error } = await supabase.from('AiGeneratedContent').insert({
+           const supabase = this.supabaseService.getServiceClient();
+           const { data, error } = await supabase.from('AiGeneratedContent').insert({
             UserId: userId,
             ProductId: p.productId || null,
             ContentType: 'generate',
@@ -294,11 +314,15 @@ export class GenerateJobProcessor {
               sources: (p.selectedMatches || []).map((m: any) => ({ url: m?.link })).filter(Boolean)
             },
             IsActive: false,
-           })
-           .select()
-           .single();
+           });
 
-           this.logger.log(result);
+           if (error) {
+             this.logger.error(`Failed to save generate results to DB: ${error.message}`);
+           } else {
+             this.logger.log(`Successfully saved generate results to DB: ${data || 0} records for ${platformKeys.length} platforms`);
+           }
+
+           this.logger.log(`Generation result for product ${i+1}: ${platformKeys.join(', ')} platforms generated`);
 
           
            // Log result
