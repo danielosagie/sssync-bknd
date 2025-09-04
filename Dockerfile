@@ -14,8 +14,8 @@ RUN apk add --no-cache \
 COPY package*.json ./
 COPY tsconfig*.json ./
 
-# Install dependencies with platform-specific flags for Sharp
-RUN npm ci --only=production --platform=linux --arch=x64
+# Install ALL dependencies (including dev) needed for build
+RUN npm ci
 
 # Copy source code
 COPY . .
@@ -23,9 +23,9 @@ COPY . .
 # Build the application
 RUN npm run build
 
-# Remove dev dependencies and ensure Sharp is properly installed for Linux
-RUN npm prune --production && \
-    npm install --platform=linux --arch=x64 sharp
+# Now install only production dependencies for runtime
+# This will automatically install the correct Sharp binary for Linux
+RUN rm -rf node_modules && npm ci --only=production
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
