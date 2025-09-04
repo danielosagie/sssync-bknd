@@ -385,8 +385,8 @@ export class ProductsService {
      Object.entries(generatedDetails).forEach(([platform, details], index) => {
          aiContentInserts.push({
              ProductId: productId,
-             ContentType: 'groq_maverick_details',
-             SourceApi: 'groq-maverick',
+             ContentType: 'groq-qwen3',
+             SourceApi: 'groq-qwen3',
              GeneratedText: JSON.stringify(details),
              Metadata: { platform: platform.toLowerCase(), selectedMatch: selectedMatch ?? null },
              IsActive: true,

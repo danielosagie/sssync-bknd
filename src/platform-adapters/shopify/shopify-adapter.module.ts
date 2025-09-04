@@ -5,6 +5,7 @@ import { ShopifyMapper } from './shopify.mapper';
 import { ShopifyAdapter } from './shopify.adapter';
 import { ShopifyProductManagerService } from './shopify-product-manager.service';
 import { ShopifyProductsController } from './shopify-products.controller';
+import { JsonParserService } from './../../products/ai-generation/json-parser.service';
 import { ConfigModule } from '@nestjs/config'; // Needed by API client
 import { PlatformConnectionsModule } from '../../platform-connections/platform-connections.module';
 import { CanonicalDataModule } from '../../canonical-data/canonical-data.module';
@@ -23,7 +24,7 @@ import { SyncEventsService } from '../../sync-engine/sync-events.service';
     PlatformProductMappingsModule,
   ],
   controllers: [ShopifyProductsController],
-  providers: [ShopifyApiClient, ShopifyMapper, ShopifyAdapter, ShopifyProductManagerService, AiGenerationService, SyncEventsService],
+  providers: [ShopifyApiClient, ShopifyMapper, JsonParserService, ShopifyAdapter, ShopifyProductManagerService, AiGenerationService, SyncEventsService],
   exports: [ShopifyAdapter, ShopifyApiClient, ShopifyProductManagerService], // Export the main adapter facade AND ShopifyApiClient
 })
 export class ShopifyAdapterModule {} 

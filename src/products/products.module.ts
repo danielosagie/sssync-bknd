@@ -9,6 +9,7 @@ import { PlatformConnectionsModule } from '../platform-connections/platform-conn
 import { PlatformAdaptersModule } from '../platform-adapters/platform-adapters.module';
 import { ImageRecognitionService } from './image-recognition/image-recognition.service';
 import { AiGenerationService } from './ai-generation/ai-generation.service';
+import { JsonParserService } from './ai-generation/json-parser.service';
 import { CrossAccountSyncService } from './cross-account-sync.service';
 import { ActivityLogService } from '../common/activity-log.service';
 import { FirecrawlService } from './firecrawl.service';
@@ -34,7 +35,8 @@ import { GenerateJobProcessor } from './processors/generate-job.processor';
   providers: [
     ProductsService, 
     ImageRecognitionService, 
-    AiGenerationService, 
+    AiGenerationService,
+    JsonParserService,
     CrossAccountSyncService, 
     ActivityLogService, 
     FirecrawlService,

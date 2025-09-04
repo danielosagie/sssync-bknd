@@ -143,6 +143,8 @@ export class GenerateJobProcessor {
                 });
                 
                 const scrapeResults = await Promise.all(scrapePromises);
+                this.logger.debug(scrapeResults);
+
                 const extracted = scrapeResults.flat().map((r: any) => r.url).filter((u: any) => typeof u === 'string');
 
                 this.logger.log('Scrape Results: ' + extracted);
@@ -164,6 +166,7 @@ export class GenerateJobProcessor {
                   : this.getSupabaseClient();
                 await svc.from('AiGeneratedContent').insert({
                   UserId: userId,
+                  ProductId: null,
                   ContentType: 'scrape',
                   SourceApi: 'firecrawl',
                   Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
@@ -173,6 +176,23 @@ export class GenerateJobProcessor {
                 })
                 .select()
                 .single();
+              
+
+                {/*
+                const { data: aiData, error: aiError } = await supabase
+                .from('AiGeneratedContent') // Use DB table name
+                .insert({
+                    ProductId: null, // Ensure column names match DB
+                    ContentType: 'scrape',
+                    SourceApi: 'firecrawl',
+                    Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
+                    GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: scrapedDataArray.length }), // Store JSON string
+                    Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined }, // Ensure DB column type is jsonb
+                    IsActive: false,
+                })
+                .select()
+                .single();
+                */}
 
                 
 

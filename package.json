@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",
-    "@mendable/firecrawl-js": "^1.29.3",
+    "@mendable/firecrawl-js": "^3.3.0",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/bullmq": "^11.0.3",
     "@nestjs/common": "^11.1.5",
