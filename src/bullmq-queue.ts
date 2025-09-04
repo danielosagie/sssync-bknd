@@ -61,9 +61,9 @@ export const BullMQQueue: SimpleQueue = {
     // TODO: Replace this with your actual job processing logic for BullMQ jobs.
     // This current implementation only moves the job to completed.
     // You might want to call a specific service method based on job.data.type, for example.
-    await job.moveToCompleted('processed on-demand', true, true);
-    // The `true, true` above are `remove` and `includeReturnValue` which might not be what you want.
-    // `job.remove()` might be cleaner if you just want to remove after processing.
+    await job.moveToCompleted('processed on-demand', 'completed', true);
+    // The parameters are: returnValue, token, fetchNext
+    // Using 'completed' as the token and true for fetchNext
     console.log(`[BullMQQueue] Moved job ${job.id} to completed.`);
     return job.data; // Return the job data as per SimpleQueue interface
   },
