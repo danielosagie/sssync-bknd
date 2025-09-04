@@ -167,7 +167,7 @@ export class GenerateJobProcessor {
                   ContentType: 'scrape',
                   SourceApi: 'firecrawl',
                   Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
-                  GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: scrapedDataArray.length }),
+                  GeneratedText: JSON.stringify({ urls: urlsToScrape, extractedCount: scrapedDataArray.length }, scrapedDataArray),
                   Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
                   IsActive: false,
                 })
@@ -191,7 +191,8 @@ export class GenerateJobProcessor {
                 .single();
                 */}
 
-                
+                this.logger.log(scrapedDataArray);
+
 
                 // Log result
                 await this.aiUsageTracker.trackUsage({
@@ -294,6 +295,9 @@ export class GenerateJobProcessor {
            .select()
            .single();
 
+           this.logger.log(result);
+
+          
            // Log result
            await this.aiUsageTracker.trackUsage({
             userId: userId,
