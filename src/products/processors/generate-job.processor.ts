@@ -101,12 +101,12 @@ export class GenerateJobProcessor {
                 try {
                    const supabase = this.supabaseService.getServiceClient();
                    const { data, error } = await supabase.from('AiGeneratedContent').insert({
-                     UserId: userId,
+                     ProductId: p.productId || null, // Use ProductId instead of UserId
                      ContentType: 'search',
                      SourceApi: 'firecrawl',
                      Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
                      GeneratedText: JSON.stringify({ searchResult }),
-                     Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
+                     Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined, userId },
                      IsActive: false,
                    });
 
@@ -161,22 +161,43 @@ export class GenerateJobProcessor {
                 
                 // Use Promise.all for proper async handling
                 const scrapePromises = urlsToScrape.map(async link => {
-                  const searchResult = await this.firecrawlService.scrape(link);
-                  return Array.isArray(searchResult?.data) ? searchResult.data : [];
-                  
+                  try {
+                    const searchResult = await this.firecrawlService.scrape(link);
+                    const data = searchResult?.data || searchResult || {};
+                    return {
+                      url: link,
+                      json: data.json || {},
+                      markdown: data.markdown || '',
+                      data: data
+                    };
+                  } catch (error) {
+                    this.logger.warn(`Scrape failed for ${link}: ${error?.message || error}`);
+                    return { url: link, json: {}, markdown: '', data: {} };
+                  }
                 });
                 this.logger.log(`URLs to be scraped: ${urlsToScrape.length} URLs`);
                 
 
     
                 const scrapeResults = await Promise.all(scrapePromises);
-                this.logger.log(`Total returned response from firecrawl: ${scrapeResults.length} results, ${scrapeResults.flat().length} total items`);
+                this.logger.log(`Total returned response from firecrawl: ${scrapeResults.length} results, extracted content from ${scrapeResults.filter(r => r.json || r.markdown).length} URLs`);
 
-                const extracted = scrapeResults.flat().map((r: any) => r.url).filter((u: any) => typeof u === 'string');
-                this.logger.log('Scrape Results (extracted): ' + extracted);
+                // Filter out empty results and format for AI consumption
+                const validResults = scrapeResults.filter(r => 
+                  (r.json && Object.keys(r.json).length > 0) || 
+                  (r.markdown && r.markdown.trim().length > 0)
+                );
+                
+                this.logger.log(`Scrape Results: ${validResults.length} valid results with content`);
                 
                 // Adapt to AI service expectation (objects with data.markdown)
-                scrapedDataArray = extracted.map((e: any) => ({ data: { markdown: JSON.stringify(e) } }));
+                scrapedDataArray = validResults.map((result: any) => ({
+                  data: {
+                    markdown: result.markdown || JSON.stringify(result.json),
+                    url: result.url,
+                    extractedData: result.json
+                  }
+                }));
                 this.logger.log(`Scraped Data Array Stage: ${scrapedDataArray.length} items prepared for AI`);
                 
               } catch (searchErr) {
@@ -194,8 +215,7 @@ export class GenerateJobProcessor {
                    // Storing Scrape Job
                    const supabase = this.supabaseService.getServiceClient();
                    const { data, error } = await supabase.from('AiGeneratedContent').insert({
-                     UserId: userId,
-                     ProductId: null,
+                     ProductId: p.productId || null, // Use ProductId and populate if available
                      ContentType: 'scrape',
                      SourceApi: 'firecrawl',
                      Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
@@ -204,7 +224,7 @@ export class GenerateJobProcessor {
                        extractedCount: scrapedDataArray.length,
                        scrapedData: scrapedDataArray 
                      }),
-                     Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined },
+                     Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined, userId },
                      IsActive: false,
                    });
 
@@ -299,10 +319,9 @@ export class GenerateJobProcessor {
          try {
            const supabase = this.supabaseService.getServiceClient();
            const { data, error } = await supabase.from('AiGeneratedContent').insert({
-            UserId: userId,
             ProductId: p.productId || null,
             ContentType: 'generate',
-            SourceApi: scrapedDataArray && scrapedDataArray.length > 0 ? 'groq+scrape' : 'groq',
+            SourceApi: scrapedDataArray && scrapedDataArray.length > 0 ? 'firecrawl+groq' : 'groq',
             Prompt: `generate_job:${jobId}:product_${i+1}`,
             GeneratedText: JSON.stringify({ platforms: result.platforms }),
             Metadata: {

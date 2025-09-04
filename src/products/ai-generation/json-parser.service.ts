@@ -16,7 +16,7 @@ export class JsonParserService {
       const cleanedJson = this.extractCleanJSON(rawResponse);
       if (!cleanedJson) {
         this.logger.warn('Failed to extract valid JSON from AI response');
-        return this.createFallbackResponse(requestedPlatforms);
+        return this.createFallbackResponse(requestedPlatforms, rawResponse);
       }
 
       // Step 2: Parse JSON safely
@@ -27,7 +27,7 @@ export class JsonParserService {
         this.logger.warn(`JSON parse failed: ${parseError.message}, attempting recovery`);
         const recovered = this.attemptJSONRecovery(cleanedJson);
         if (!recovered) {
-          return this.createFallbackResponse(requestedPlatforms);
+          return this.createFallbackResponse(requestedPlatforms, rawResponse);
         }
         parsedData = recovered;
       }
@@ -40,7 +40,7 @@ export class JsonParserService {
 
     } catch (error) {
       this.logger.error(`Error parsing AI response: ${error.message}`, error.stack);
-      return this.createFallbackResponse(requestedPlatforms);
+      return this.createFallbackResponse(requestedPlatforms, rawResponse);
     }
   }
 
@@ -227,7 +227,7 @@ export class JsonParserService {
     // Handle case where data is not an object
     if (!data || typeof data !== 'object') {
       this.logger.warn('Parsed data is not an object, creating fallback');
-      return this.createFallbackResponse(requestedPlatforms);
+      return this.createFallbackResponse(requestedPlatforms, '');
     }
 
     // Process each requested platform
@@ -529,12 +529,22 @@ export class JsonParserService {
   /**
    * Create fallback response when parsing completely fails
    */
-  private createFallbackResponse(requestedPlatforms: string[]): TypedGeneratedDetails {
+  private createFallbackResponse(requestedPlatforms: string[], rawResponse: string = ''): TypedGeneratedDetails {
     const result: TypedGeneratedDetails = {};
     
     for (const platform of requestedPlatforms) {
       const platformKey = platform.toLowerCase() as PlatformKey;
-      result[platformKey] = this.createEmptyPlatformData(platformKey);
+      const fallbackData = this.createEmptyPlatformData(platformKey);
+      
+      // Add raw response for debugging and manual extraction
+      if (rawResponse) {
+        (fallbackData as any)._rawResponse = rawResponse;
+        (fallbackData as any)._parseError = 'Failed to parse AI response';
+        (fallbackData as any).title = 'Generated Product (Parse Failed)';
+        (fallbackData as any).description = 'AI response could not be parsed - raw data preserved for debugging';
+      }
+      
+      result[platformKey] = fallbackData;
     }
     
     return result;
