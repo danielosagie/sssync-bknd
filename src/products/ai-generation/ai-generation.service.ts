@@ -687,16 +687,16 @@ ${corporateDescription} or ${longerCorporateDescription} will do fine
       ${targetSitesContext}
       ${platformRequirements}
 
-      **SCRAPED CONTENT FROM FIRECRAWL:**
-      ${contentString}
+      SCRAPED CONTENT FROM FIRECRAWL: 
+      (${contentString})
 
-      **ENHANCED INSTRUCTIONS:**
-      1.  **Prioritize User Selections:** Use the user's selected SerpAPI result as the foundation, then enhance with scraped data.
-      2.  **Respect Field Sources:** When platform-specific field sources are specified, prioritize data from those URLs for those fields.
-      3.  **Platform Optimization:** Generate platform-specific content following each platform's requirements and custom prompts.
-      4.  **Synthesize Intelligently:** Combine user selections + scraped data to create compelling, accurate listings.
-      5.  **Extract Complete Data:** BE UNIQUE, DO NOT REINVENT THE WHEEL BUT DONT COPY AND PASTE THE SCRAPED DATA DOWN. YOU MUST INCLUDE WHAT IS EXPECTED OF YOU. 
-      6.  **Multi-Platform Support:** Generate for all requested platforms with appropriate formatting and optimization.
+      ENHANCED INSTRUCTIONS:
+      1.  Prioritize User Selections: Use the user's selected SerpAPI result as the foundation, then enhance with scraped data.
+      2.  Respect Field Sources: When platform-specific field sources are specified, prioritize data from those URLs for those fields.
+      3.  Platform Optimization: Generate platform-specific content following each platform's requirements and custom prompts.
+      4.  Synthesize Intelligently: Combine user selections + scraped data to create compelling, accurate listings.
+      5.  Extract Complete Data: BE UNIQUE, DO NOT REINVENT THE WHEEL BUT DONT COPY AND PASTE THE SCRAPED DATA DOWN. YOU MUST INCLUDE WHAT IS EXPECTED OF YOU. 
+      6.  Multi-Platform Support: Generate for all requested platforms with appropriate formatting and optimization.
 
       PLATFORM-SPECIFIC NOTES:
 
@@ -738,7 +738,7 @@ ${corporateDescription} or ${longerCorporateDescription} will do fine
         brand: The brand name
         availability: "in stock"
 
-      ${constraintsText}
+    
 
       **CRITICAL OUTPUT REQUIREMENTS:**
       1. Return ONLY valid JSON - no <think> blocks, no explanations, no markdown
@@ -746,9 +746,11 @@ ${corporateDescription} or ${longerCorporateDescription} will do fine
       3. No trailing commas
       4. All brackets must be properly closed
       5. Return a JSON object with platform-specific data only if that platform was requested
+      6. ONLY GENERATE OUTPUTS FOR THE REQUESTED PLATFORMS: ${constraintsText}
+
       
 
-      **OUTPUT FORMAT:**
+      **OUTPUT FORMAT :**
       {
         "shopify": {
           "title": "...",

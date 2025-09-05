@@ -5,7 +5,7 @@ export interface GenerateJobData {
   userJwtToken?: string; // Store JWT token for authenticated operations
   products: Array<{
     productIndex: number;
-    productId?: string;
+    productId: string;
     variantId?: string;
     imageUrls: string[];
     coverImageIndex: number;

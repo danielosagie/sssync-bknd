@@ -100,20 +100,25 @@ export class GenerateJobProcessor {
 
                 try {
                    const supabase = this.supabaseService.getServiceClient();
-                   const { data, error } = await supabase.from('AiGeneratedContent').insert({
-                     ProductId: p.productId || null, // Use ProductId instead of UserId
-                     ContentType: 'search',
-                     SourceApi: 'firecrawl',
-                     Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
-                     GeneratedText: JSON.stringify({ searchResult }),
-                     Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined, userId },
-                     IsActive: false,
-                   });
+                   // Skip database logging if no productId (happens when generate called without match first)
+                   if (p.productId) {
+                     const { data, error } = await supabase.from('AiGeneratedContent').insert({
+                       ProductId: p.productId, // Use ProductId from match processor
+                       ContentType: 'search', 
+                       SourceApi: 'firecrawl',
+                       Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
+                       GeneratedText: JSON.stringify({ searchResult }),
+                       Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined, userId },
+                       IsActive: false,
+                     });
 
-                   if (error) {
-                     this.logger.error(`Failed to save search results to DB: ${error.message}`);
+                     if (error) {
+                       this.logger.error(`Failed to save search results to DB: ${error.message}`);
+                     } else {
+                       this.logger.log(`Successfully saved search results to DB: ${data || 0} records`);
+                     }
                    } else {
-                     this.logger.log(`Successfully saved search results to DB: ${data || 0} records`);
+                     this.logger.warn(`Skipping search results DB save - no productId available for product ${i+1}`);
                    }
                  } catch (error) {
                    this.logger.error(`Exception saving search results: ${error.message}`);
@@ -212,26 +217,30 @@ export class GenerateJobProcessor {
                 this.logger.log(scrapedDataArray);
 
                 try {
-                   // Storing Scrape Job
-                   const supabase = this.supabaseService.getServiceClient();
-                   const { data, error } = await supabase.from('AiGeneratedContent').insert({
-                     ProductId: p.productId || null, // Use ProductId and populate if available
-                     ContentType: 'scrape',
-                     SourceApi: 'firecrawl',
-                     Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
-                     GeneratedText: JSON.stringify({ 
-                       urls: urlsToScrape, 
-                       extractedCount: scrapedDataArray.length,
-                       scrapedData: scrapedDataArray 
-                     }),
-                     Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined, userId },
-                     IsActive: false,
-                   });
+                   // Storing Scrape Job - only if productId available
+                   if (p.productId) {
+                     const supabase = this.supabaseService.getServiceClient();
+                     const { data, error } = await supabase.from('AiGeneratedContent').insert({
+                       ProductId: p.productId, // Use ProductId from match processor
+                       ContentType: 'scrape',
+                       SourceApi: 'firecrawl',
+                       Prompt: `generate_job_scrape:${jobId}:product_${i+1}`,
+                       GeneratedText: JSON.stringify({ 
+                         urls: urlsToScrape, 
+                         extractedCount: scrapedDataArray.length,
+                         scrapedData: scrapedDataArray 
+                       }),
+                       Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined, userId },
+                       IsActive: false,
+                     });
 
-                   if (error) {
-                     this.logger.error(`Failed to save scrape results to DB: ${error.message}`);
+                     if (error) {
+                       this.logger.error(`Failed to save scrape results to DB: ${error.message}`);
+                     } else {
+                       this.logger.log(`Successfully saved scrape results to DB: ${data || 0} records with ${scrapedDataArray.length} scraped items`);
+                     }
                    } else {
-                     this.logger.log(`Successfully saved scrape results to DB: ${data || 0} records with ${scrapedDataArray.length} scraped items`);
+                     this.logger.warn(`Skipping scrape results DB save - no productId available for product ${i+1}`);
                    }
                  } catch (error) {
                    this.logger.error(`Exception saving scrape results: ${error.message}`);
@@ -315,30 +324,34 @@ export class GenerateJobProcessor {
          const platformKeys = Object.keys(result.platforms || {});
         this.logger.log(`[GenerateJob] Generated platform data for product ${i + 1}: ${platformKeys.join(', ') || 'none'}`);
 
-         // Log generate event
+         // Log generate event - only if productId available
          try {
-           const supabase = this.supabaseService.getServiceClient();
-           const { data, error } = await supabase.from('AiGeneratedContent').insert({
-            ProductId: p.productId || null,
-            ContentType: 'generate',
-            SourceApi: scrapedDataArray && scrapedDataArray.length > 0 ? 'firecrawl+groq' : 'groq',
-            Prompt: `generate_job:${jobId}:product_${i+1}`,
-            GeneratedText: JSON.stringify({ platforms: result.platforms }),
-            Metadata: {
-              productIndex: p.productIndex,
-              variantId: p.variantId || null,
-              platforms: platformKeys,
-              source: result.source,
-              processingTimeMs,
-              sources: (p.selectedMatches || []).map((m: any) => ({ url: m?.link })).filter(Boolean)
-            },
-            IsActive: false,
-           });
+           if (p.productId) {
+             const supabase = this.supabaseService.getServiceClient();
+             const { data, error } = await supabase.from('AiGeneratedContent').insert({
+              ProductId: p.productId, // Use ProductId from match processor
+              ContentType: 'generate',
+              SourceApi: scrapedDataArray && scrapedDataArray.length > 0 ? 'firecrawl+groq' : 'groq',
+              Prompt: `generate_job:${jobId}:product_${i+1}`,
+              GeneratedText: JSON.stringify({ platforms: result.platforms }),
+              Metadata: {
+                productIndex: p.productIndex,
+                variantId: p.variantId || null,
+                platforms: platformKeys,
+                source: result.source,
+                processingTimeMs,
+                sources: (p.selectedMatches || []).map((m: any) => ({ url: m?.link })).filter(Boolean)
+              },
+              IsActive: false,
+             });
 
-           if (error) {
-             this.logger.error(`Failed to save generate results to DB: ${error.message}`);
+             if (error) {
+               this.logger.error(`Failed to save generate results to DB: ${error.message}`);
+             } else {
+               this.logger.log(`Successfully saved generate results to DB: ${data || 0} records for ${platformKeys.length} platforms`);
+             }
            } else {
-             this.logger.log(`Successfully saved generate results to DB: ${data || 0} records for ${platformKeys.length} platforms`);
+             this.logger.warn(`Skipping generate results DB save - no productId available for product ${i+1}`);
            }
 
            this.logger.log(`Generation result for product ${i+1}: ${platformKeys.join(', ')} platforms generated`);
