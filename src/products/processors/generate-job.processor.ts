@@ -64,6 +64,7 @@ export class GenerateJobProcessor {
       const results: GenerateJobResult[] = [];
       let totalProcessingTime = 0;
 
+
       for (let i = 0; i < products.length; i++) {
         const p = products[i];
         const productStart = Date.now();

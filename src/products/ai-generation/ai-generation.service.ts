@@ -86,6 +86,8 @@ export class AiGenerationService {
 
     try {
 
+      this.logger.log("|* Generating Without Scraped Data *|")
+
   
 
       this.logger.log(`Generating product details for platforms: ${targetPlatforms.join(', ')}`);
@@ -560,6 +562,8 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
   ): Promise<GeneratedDetails | null> {
     const groq = this.getGroqClient();
     if (!groq) return null;
+
+    this.logger.log("|* Generating W/ Scraped Data *|")
 
     const shorterCasualDescription = "(THIS IS AN EXAMPLE DO NOT GENERATE CONTENT FOR THIS TAKE INSPIRATION ON THE STYLE OF WRITING THIS CAR IS NOT THE PRODUCT: (Honda civic 2017 \nRebuilt Title \nBluetooth wireless \nCurrent emission \n Working AC \nEverything has already been inspected, everything is in order, everything works perfectly \n124k miles))";
     const casualDescription = "(THIS IS AN EXAMPLE DO NOT GENERATE CONTENT FOR THIS TAKE INSPIRATION ON THE STYLE OF WRITING THIS CAR IS NOT THE PRODUCT: (Great running SUV good engine and transmission good condition current emissions good for everyday driving to work and school cold ac and heat very reliable excellent family vehicle)) ￼";
