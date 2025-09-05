@@ -3798,7 +3798,7 @@ Return JSON format:
         @Body() generateRequest: {
             products: Array<{
                 productIndex: number;
-                productId?: string;
+                productId: string;
                 variantId?: string;
                 imageUrls: string[];
                 coverImageIndex: number;
