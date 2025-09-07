@@ -1054,25 +1054,28 @@ export class EmbeddingService {
     limit: number;
     searchQuery?: string; // Optional text query for FTS
   }): Promise<ProductMatch[]> {
+    const searchStartTime = Date.now();
+    
     try {
       const supabase = this.supabaseService.getClient();
 
-      this.logger.log(`[HybridSearch] Using hybrid dense+sparse retrieval`);
+      this.logger.log(`[HybridSearch] 🚀 Starting hybrid dense+sparse retrieval`);
       this.logger.log(`[HybridSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
       this.logger.log(`[HybridSearch] Query embedding first 5 values: [${params.embedding?.slice(0, 5).map(v => v.toFixed(4)).join(', ')}...]`);
       
       // Generate search query for FTS if not provided
+      const queryGenStartTime = Date.now();
       let searchQuery = params.searchQuery;
       if (!searchQuery) {
-        // Extract potential keywords from context or use generic terms
-        // This could be improved by analyzing the image content or using OCR
         searchQuery = this.generateSearchQueryFromContext(params);
       }
+      const queryGenTime = Date.now() - queryGenStartTime;
       
-      this.logger.log(`[HybridSearch] FTS search query: "${searchQuery || 'none'}"`);
+      this.logger.log(`[HybridSearch] FTS search query: "${searchQuery || 'none'}" (generated in ${queryGenTime}ms)`);
 
       // Try the hybrid search function
-      this.logger.log(`[HybridSearch] Attempting hybrid search with function: search_products_hybrid_image`);
+      this.logger.log(`[HybridSearch] 🔍 Executing hybrid SQL function: search_products_hybrid_image`);
+      const sqlStartTime = Date.now();
       
       const qImage = params.embedding; // 768 dimensions
 
@@ -1084,36 +1087,81 @@ export class EmbeddingService {
         sparse_limit: 80,   // Candidates from FTS search
         final_limit: Math.max(params.limit * 2, 150) // More candidates for reranker
       });
+      
+      const sqlTime = Date.now() - sqlStartTime;
 
       if (error) {
-        this.logger.error(`[HybridSearch] FAILED with error: ${error.message}`, error);
-        this.logger.warn(`[HybridSearch] Error details:`, error);
+        this.logger.error(`[HybridSearch] FAILED with error: ${error.message}`);
+        this.logger.error(`[HybridSearch] Full error object:`, JSON.stringify(error, null, 2));
+        this.logger.error(`[HybridSearch] SQL function parameters sent:`, {
+          q_image_dimensions: qImage?.length,
+          search_query: searchQuery,
+          p_business_template: params.businessTemplate,
+          dense_limit: 80,
+          sparse_limit: 80,
+          final_limit: Math.max(params.limit * 2, 150)
+        });
         this.logger.warn(`[HybridSearch] Falling back to legacy multi-channel search...`);
         return this.legacyMultiChannelSearch(params);
       }
 
       if (!data || data.length === 0) {
-        this.logger.log(`[HybridSearch] No results, trying legacy search`);
+        this.logger.log(`[HybridSearch] No results returned from SQL function, trying legacy search`);
+        this.logger.log(`[HybridSearch] This could indicate: 1) FTS query found no matches, 2) Vector similarity too low, 3) SQL function error`);
         return this.legacyMultiChannelSearch(params);
       }
 
-      this.logger.log(`[HybridSearch] Found ${data.length} hybrid matches`);
+      this.logger.log(`[HybridSearch] SUCCESS! Found ${data.length} hybrid matches`);
       
-      // Log distribution of retrieval channels
+      // 🎯 Enhanced channel analysis
       const channelCounts = data.reduce((acc: any, item: any) => {
         acc[item.retrieval_channels] = (acc[item.retrieval_channels] || 0) + 1;
         return acc;
       }, {});
-      this.logger.log(`[HybridSearch] Channel distribution:`, channelCounts);
+      this.logger.log(`[HybridSearch] Channel breakdown:`, channelCounts);
+      
+      // 🎯 Separate dense vs sparse results for analysis
+      const denseOnly = data.filter((item: any) => item.retrieval_channels === 'dense');
+      const sparseOnly = data.filter((item: any) => item.retrieval_channels === 'sparse');
+      const hybrid = data.filter((item: any) => item.retrieval_channels === 'dense+sparse');
+      
+      this.logger.log(`[HybridAnalysis] Dense-only: ${denseOnly.length}, Sparse-only: ${sparseOnly.length}, Hybrid: ${hybrid.length}`);
+      
+      // 🎯 Log top results from each channel
+      if (denseOnly.length > 0) {
+        this.logger.log(`[DenseTop3] Vector similarity results:`);
+        denseOnly.slice(0, 3).forEach((item: any, index: number) => {
+          this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - VecSim: ${item.vector_similarity?.toFixed(4)} FinalScore: ${item.retrieval_score?.toFixed(4)}`);
+        });
+      }
+      
+      if (sparseOnly.length > 0) {
+        this.logger.log(`[SparseTop3] FTS keyword results:`);
+        sparseOnly.slice(0, 3).forEach((item: any, index: number) => {
+          this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - FTSRank: ${item.search_vector_rank?.toFixed(4)} FinalScore: ${item.retrieval_score?.toFixed(4)}`);
+        });
+      }
+      
+      if (hybrid.length > 0) {
+        this.logger.log(`[HybridTop3] Combined dense+sparse results:`);
+        hybrid.slice(0, 3).forEach((item: any, index: number) => {
+          this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - VecSim: ${item.vector_similarity?.toFixed(4)} FTSRank: ${item.search_vector_rank?.toFixed(4)} FinalScore: ${item.retrieval_score?.toFixed(4)}`);
+        });
+      }
   
-      // Log top results with channel info
+      // 🎯 Overall top 10 with detailed scores
+      this.logger.log(`[HybridTop10] Final ranked results:`);
       data.slice(0, 10).forEach((item: any, index: number) => {
         const isProduct = !!item.variant_id && item.variant_id !== 'scan';
-        this.logger.log(`[HybridResult ${index + 1}] "${item.title?.substring(0, 50)}..." - Score: ${item.retrieval_score?.toFixed(4)} Channels: ${item.retrieval_channels} ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
+        this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - Score: ${item.retrieval_score?.toFixed(4)} (Vec:${item.vector_similarity?.toFixed(3)}, FTS:${item.search_vector_rank?.toFixed(3)}) [${item.retrieval_channels}] ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
       });
 
+      // 🎯 Performance summary
+      const totalTime = Date.now() - searchStartTime;
+      const mappingStartTime = Date.now();
+      
       // Convert to ProductMatch format
-      return data.map((item: any) => ({
+      const results = data.map((item: any) => ({
         productId: item.product_id || '',
         ProductVariantId: item.variant_id || null,
         title: item.title || 'Unknown Product',
@@ -1129,6 +1177,13 @@ export class EmbeddingService {
         combinedScore: item.retrieval_score || 0,
         retrievalChannels: item.retrieval_channels, // New field for debugging
       }));
+      
+      const mappingTime = Date.now() - mappingStartTime;
+      
+      this.logger.log(`[HybridPerformance] 📊 COMPLETE - Total: ${totalTime}ms (SQL: ${sqlTime}ms, Mapping: ${mappingTime}ms, Other: ${totalTime - sqlTime - mappingTime}ms)`);
+      this.logger.log(`[HybridPerformance] 📈 Efficiency: ${data.length} results, ${(data.length / totalTime * 1000).toFixed(1)} results/sec`);
+      
+      return results;
 
     } catch (error) {
       this.logger.error('Failed hybrid search, falling back to legacy:', error);

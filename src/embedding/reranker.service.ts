@@ -85,6 +85,10 @@ export class RerankerService {
   async rerankCandidates(request: RerankerRequest): Promise<RerankerResponse> {
     const startTime = Date.now();
 
+    // 🎯 Enhanced performance logging
+    this.logger.log(`[RerankerDebug] 🚀 Starting rerank of ${request.candidates.length} candidates`);
+    this.logger.log(`[RerankerDebug] Target image: ${request.targetUrl ? 'PROVIDED ✅' : 'MISSING ❌'}`);
+
     // Create a proper search query from the target URL or use a generic query
     const searchQuery = request.targetUrl 
       ? `Find the EXACT MATCHING product shown in this image: ${request.targetUrl}. Look for the same device/item, NOT similar products. Prioritize: 1) Exact product matches 2) Official retail listings 3) Clear product names in title 4) Reasonable prices. AVOID: forum posts, YouTube videos, Pinterest pins, unrelated products, accessories only.`
@@ -109,6 +113,7 @@ export class RerankerService {
       this.logger.log(`[RerankerDebug] Sending ${candidatesForReranker.length} candidates to AI server`);
 
       // Call the AI server reranker endpoint
+      const aiStartTime = Date.now();
       const response = await fetch(`${this.aiServerUrl}/rerank`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -128,7 +133,8 @@ export class RerankerService {
       }
 
       const data = await response.json();
-      this.logger.log(`[RerankerDebug] AI Server response received successfully`);
+      const aiTime = Date.now() - aiStartTime;
+      this.logger.log(`[RerankerDebug] AI Server response received successfully (${aiTime}ms)`);
       const processingTime = Date.now() - startTime;
 
       // Build ranked candidates with original data
@@ -178,14 +184,16 @@ export class RerankerService {
         const tokenOverlap = this.calculateBasicSimilarity(searchQuery, candidateText); // reuse simple overlap
         const tokenBonus = Math.min(0.10, tokenOverlap * 0.20);
 
-        // 🎯 ENHANCED: Vector search is working well, give it more weight
-        const aiWeight = 0.50;  // Reduced AI weight since it's making poor decisions
-        const vecWeight = 0.50; // Equal weight to vector search which is more reliable
+        // 🎯 CRITICAL: Vector search is clearly working, AI reranker is unreliable
+        const aiWeight = 0.35;  // Further reduced AI weight - it's making bad decisions
+        const vecWeight = 0.65; // Vector search gets majority weight - it's more accurate
         
-        // Extra boost for high vector scores (these are likely correct matches)
-        const highVectorBonus = vecHybrid >= 0.60 ? 0.15 : 0; // Big boost for strong vector matches
+        // 🎯 MAJOR boost for strong vector matches (these are almost always correct)
+        const strongVectorBonus = vecHybrid >= 0.65 ? 0.20 : 0; // Huge boost for very strong matches
+        const goodVectorBonus = vecHybrid >= 0.60 ? 0.12 : 0;   // Good boost for decent matches
+        const vectorBonus = Math.max(strongVectorBonus, goodVectorBonus);
         
-        const fused = Math.min(1, (aiWeight * base) + (vecWeight * vecHybrid) + highVectorBonus);
+        const fused = Math.min(1, (aiWeight * base) + (vecWeight * vecHybrid) + vectorBonus);
 
         const adjusted = Math.min(1, fused + (cleanTitleBonus * 0.03) + priceBonus + sourceBonus + tokenBonus);
 
