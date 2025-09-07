@@ -2205,7 +2205,7 @@ Return JSON format:
                 if (result.matches.length > 0) {
                     try {
                         // Log top 15 raw vector results as requested
-                        this.logger.log(`[VectorResults] Top ${Math.min(15, result.matches.length)} raw vector search results:`);
+                        this.logger.log(`[VectorResults] Top ${Math.min(25, result.matches.length)} raw vector search results:`);
                         result.matches.slice(0, 15).forEach((match: any, index: number) => {
                             this.logger.log(`  ${index + 1}. "${match.title?.substring(0, 50) || 'No title'}..." - Score: ${match.combinedScore?.toFixed(4) || 'N/A'}`);
                         });

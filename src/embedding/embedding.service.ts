@@ -1124,52 +1124,98 @@ export class EmbeddingService {
       
       this.logger.log(`[HybridSearch] FTS search query: "${searchQuery || 'none'}" (generated in ${queryGenTime}ms)`);
 
-      // Try the hybrid search function
-      this.logger.log(`[HybridSearch] 🔍 Executing hybrid SQL function: search_products_hybrid_image`);
-      const sqlStartTime = Date.now();
+      // 🎯 STEP 1: Test individual components first for debugging
+      this.logger.log(`[HybridSearch] 🔍 Testing individual components before hybrid`);
       
       const qImage = params.embedding; // 768 dimensions
+
+      // Test dense vector search alone
+      const denseTestTime = Date.now();
+      const { data: denseTest, error: denseError } = await supabase.rpc('search_products_by_vector_multi_v2', {
+        q_image: qImage,
+        q_combined: qImage,
+        q_text: null,
+        match_threshold: 0.0,
+        match_count: 50,
+        p_business_template: params.businessTemplate || null
+      });
+      const denseTestTime2 = Date.now() - denseTestTime;
+      
+      this.logger.log(`[DenseTest] Found ${denseTest?.length || 0} results in ${denseTestTime2}ms`);
+      if (denseTest && denseTest.length > 0) {
+        this.logger.log(`[DenseTest] Top 3 results:`);
+        denseTest.slice(0, 3).forEach((item: any, index: number) => {
+          this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - Score: ${item.similarity?.toFixed(4)}`);
+        });
+      }
+
+      // Test FTS search alone
+      const ftsTestTime = Date.now();
+      const { data: ftsTest, error: ftsError } = await supabase
+        .from('ProductEmbeddings')
+        .select(`
+          ProductId, ProductVariantId, ProductText, SearchVector,
+          ProductVariants(Title, Description, Price)
+        `)
+        .textSearch('SearchVector', searchQuery, { type: 'plain', config: 'english' })
+        .limit(50);
+      const ftsTestTime2 = Date.now() - ftsTestTime;
+      
+      this.logger.log(`[FTSTest] Found ${ftsTest?.length || 0} results in ${ftsTestTime2}ms`);
+      if (ftsTest && ftsTest.length > 0) {
+        this.logger.log(`[FTSTest] Top 3 results:`);
+        ftsTest.slice(0, 3).forEach((item: any, index: number) => {
+          this.logger.log(`  ${index + 1}. "${item.ProductVariants?.Title || item.ProductText}"`);
+        });
+      }
+
+      // Now try the hybrid search function
+      this.logger.log(`[HybridSearch] 🔍 Now testing hybrid SQL function: search_products_hybrid_image`);
+      const sqlStartTime = Date.now();
 
       const { data, error } = await supabase.rpc('search_products_hybrid_image', {
         q_image: qImage,
         search_query: searchQuery,
         p_business_template: params.businessTemplate || null,
-        dense_limit: 80,    // Candidates from vector search
-        sparse_limit: 80,   // Candidates from FTS search
-        final_limit: Math.max(params.limit * 2, 150) // More candidates for reranker
+        dense_limit: 50,    // Candidates from vector search
+        sparse_limit: 50,   // Candidates from FTS search
+        final_limit: 100 // More candidates for reranker
       });
       
       const sqlTime = Date.now() - sqlStartTime;
 
       if (error) {
-        this.logger.error(`[HybridSearch] FAILED with error: ${error.message}`);
+        this.logger.error(`[HybridSearch] ❌ SQL FUNCTION FAILED with error: ${error.message}`);
         this.logger.error(`[HybridSearch] Error code: ${error.code}, details: ${error.details}, hint: ${error.hint}`);
         this.logger.error(`[HybridSearch] SQL function parameters sent:`, {
           q_image_dimensions: qImage?.length,
           search_query: searchQuery,
           p_business_template: params.businessTemplate,
-          dense_limit: 80,
-          sparse_limit: 80,
-          final_limit: Math.max(params.limit * 2, 150)
+          dense_limit: 50,
+          sparse_limit: 50,
+          final_limit: 100
         });
         
         // 🎯 Check specific error types
         if (error.code === '42883') {
-          this.logger.error(`[HybridSearch] Function does not exist - deploy the hybrid search SQL function`);
+          this.logger.error(`[HybridSearch] Function does not exist - deploy the hybrid search SQL function first!`);
         } else if (error.code === '42P01') {
           this.logger.error(`[HybridSearch] Table/column does not exist - check if SearchVector column exists`);
         } else if (error.code === '42804') {
           this.logger.error(`[HybridSearch] Type mismatch - check SQL function return types`);
         }
         
-        this.logger.warn(`[HybridSearch] Falling back to legacy multi-channel search...`);
-        return this.legacyMultiChannelSearch(params);
+        this.logger.error(`[HybridSearch] ❌ HYBRID SEARCH FAILED - stopping here (no fallback)`);
+        throw new Error(`Hybrid search failed: ${error.message}`);
       }
 
       if (!data || data.length === 0) {
-        this.logger.log(`[HybridSearch] No results returned from SQL function, trying legacy search`);
-        this.logger.log(`[HybridSearch] This could indicate: 1) FTS query found no matches, 2) Vector similarity too low, 3) SQL function error`);
-        return this.legacyMultiChannelSearch(params);
+        this.logger.warn(`[HybridSearch] ⚠️ Hybrid function returned ZERO results`);
+        this.logger.warn(`[HybridSearch] Dense found: ${denseTest?.length || 0}, FTS found: ${ftsTest?.length || 0}, Hybrid found: 0`);
+        this.logger.warn(`[HybridSearch] This indicates a problem with the SQL function logic`);
+        
+        // Don't fall back - fail explicitly so we can debug
+        throw new Error(`Hybrid search returned no results despite individual components working`);
       }
 
       this.logger.log(`[HybridSearch] SUCCESS! Found ${data.length} hybrid matches`);

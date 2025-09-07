@@ -36,11 +36,14 @@ export class OcrService {
         }
       });
       
-      // Optimize for cards: single column, preserve whitespace
+      // 🎯 OPTIMIZED for Trading Cards: Better accuracy
       await this.tesseractWorker.setParameters({
-        tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 -/.,',
-        tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK,
+        tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK, // Single uniform block of text
+        tessedit_ocr_engine_mode: Tesseract.OEM.LSTM_ONLY, // Use LSTM neural network
+        tessedit_char_blacklist: '|@#$%^&*()_+=[]{}\\<>?/~`', // Remove symbols that cause noise
         preserve_interword_spaces: '1',
+        user_defined_dpi: '300', // High DPI for better recognition
+        textord_heavy_nr: '1', // Better noise reduction
       });
       
       this.logger.log('[OCR] Tesseract worker initialized successfully');
@@ -125,25 +128,42 @@ export class OcrService {
   }
 
   /**
-   * 🎯 PREPROCESSING: Enhance image quality for perfect OCR
+   * 🎯 AGGRESSIVE PREPROCESSING: Make text crystal clear for OCR
    */
   private async preprocessImageForOcr(imageBuffer: Buffer): Promise<Buffer> {
     try {
+      // 🎯 MULTI-STAGE PREPROCESSING for trading cards
       return await sharp(imageBuffer)
-        // Resize to optimal size for OCR (300 DPI equivalent)
-        .resize({ width: 1200, height: 1600, fit: 'inside', withoutEnlargement: true })
-        // Convert to grayscale for better text recognition
+        // Scale up for better text recognition (bigger = better for OCR)
+        .resize({ width: 2000, height: 2800, fit: 'inside', withoutEnlargement: true })
+        // Convert to grayscale first
         .grayscale()
-        // Enhance contrast
+        // AGGRESSIVE contrast enhancement
+        .linear(1.5, -(128 * 0.5)) // Increase contrast dramatically
+        // Normalize to full dynamic range
         .normalize()
-        // Sharpen text
-        .sharpen({ sigma: 1.0 })
-        // Convert to high-quality PNG
-        .png({ quality: 100, compressionLevel: 0 })
+        // Heavy sharpening for text clarity
+        .sharpen({ sigma: 2.0, x1: 2, y2: 0.5, y3: 4 })
+        // Convert to high-contrast black/white if needed
+        .threshold(128, { greyscale: false })
+        // Final format optimized for OCR
+        .png({ quality: 100, compressionLevel: 0, palette: false })
         .toBuffer();
     } catch (error) {
-      this.logger.warn(`[OCR] Image preprocessing failed, using original: ${error.message}`);
-      return imageBuffer;
+      this.logger.warn(`[OCR] Aggressive preprocessing failed, trying basic: ${error.message}`);
+      
+      // Fallback to basic preprocessing
+      try {
+        return await sharp(imageBuffer)
+          .resize({ width: 1200, height: 1600, fit: 'inside', withoutEnlargement: true })
+          .grayscale()
+          .normalize()
+          .png()
+          .toBuffer();
+      } catch (fallbackError) {
+        this.logger.warn(`[OCR] Basic preprocessing also failed, using original: ${fallbackError.message}`);
+        return imageBuffer;
+      }
     }
   }
 
