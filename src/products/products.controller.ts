@@ -2237,8 +2237,9 @@ Return JSON format:
                             }
                         }));
 
-                        const best = result.matches[0];
-                        const rerankQuery = (best?.title || '') + ' ' + (best?.description || '');
+                        // 🎯 FIXED: Use generic product search query instead of biasing toward first match
+                        // Using the first match's description biases the reranker toward that specific item
+                        const rerankQuery = 'Find the most relevant product match based on visual and contextual similarity';
 
                         this.logger.log(`[RerankerDebug] Mapped candidates for reranker:`);
                         rerankerCandidates.slice(0, 5).forEach((candidate, index) => {

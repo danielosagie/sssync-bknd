@@ -51,6 +51,7 @@ export interface ProductMatch {
   businessTemplate?: string;
   price?: number; // Add price
   productUrl?: string; // Add productUrl
+  searchKeywords?: String[];
   imageSimilarity: number;
   textSimilarity: number;
   combinedScore: number;

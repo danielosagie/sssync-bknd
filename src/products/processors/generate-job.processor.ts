@@ -345,6 +345,7 @@ export class GenerateJobProcessor {
                 sources: (p.selectedMatches || []).map((m: any) => ({ url: m?.link })).filter(Boolean)
               },
               IsActive: false,
+              job_Id: jobId,
              });
 
              if (error) {
