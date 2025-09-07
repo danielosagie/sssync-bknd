@@ -1129,44 +1129,72 @@ export class EmbeddingService {
       
       const qImage = params.embedding; // 768 dimensions
 
-      // Test dense vector search alone
+      // Test dense vector search alone (using same logic as legacy that works)
       const denseTestTime = Date.now();
-      const { data: denseTest, error: denseError } = await supabase.rpc('search_products_by_vector_multi_v2', {
-        q_image: qImage,
-        q_combined: qImage,
-        q_text: null,
-        match_threshold: 0.0,
-        match_count: 50,
-        p_business_template: params.businessTemplate || null
-      });
+      const { data: denseTest, error: denseError } = await supabase
+        .from('ProductEmbeddings')
+        .select(`
+          ProductId, ProductVariantId, ImageUrl, ProductText, SourceType, BusinessTemplate,
+          CombinedEmbedding, ImageEmbedding,
+          ProductVariants(Id, Title, Description, Price, Sku)
+        `)
+        .not('CombinedEmbedding', 'is', null)
+        .neq('SourceType', 'quick_scan')
+        .limit(50);
       const denseTestTime2 = Date.now() - denseTestTime;
       
       this.logger.log(`[DenseTest] Found ${denseTest?.length || 0} results in ${denseTestTime2}ms`);
       if (denseTest && denseTest.length > 0) {
-        this.logger.log(`[DenseTest] Top 3 results:`);
+        this.logger.log(`[DenseTest] Top 3 results (raw data check):`);
         denseTest.slice(0, 3).forEach((item: any, index: number) => {
-          this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - Score: ${item.similarity?.toFixed(4)}`);
+          const title = item.ProductVariants?.Title || item.ProductText || 'No title';
+          this.logger.log(`  ${index + 1}. "${title.substring(0, 40)}..." - HasCombinedEmb: ${!!item.CombinedEmbedding} HasImageEmb: ${!!item.ImageEmbedding}`);
         });
       }
 
-      // Test FTS search alone
+      // Test FTS search alone with multiple approaches
       const ftsTestTime = Date.now();
-      const { data: ftsTest, error: ftsError } = await supabase
+      
+      // 🎯 TRY MULTIPLE FTS APPROACHES
+      this.logger.log(`[FTSTest] Testing query: "${searchQuery}"`);
+      
+      // Approach 1: textSearch with plainto
+      const { data: ftsTest1, error: ftsError1 } = await supabase
         .from('ProductEmbeddings')
-        .select(`
-          ProductId, ProductVariantId, ProductText, SearchVector,
-          ProductVariants(Title, Description, Price)
-        `)
+        .select(`ProductId, ProductVariantId, ProductText, SearchVector, ProductVariants(Title, Description, Price)`)
         .textSearch('SearchVector', searchQuery, { type: 'plain', config: 'english' })
-        .limit(50);
+        .limit(20);
+      
+      // Approach 2: Try with generic single keyword 
+      const { data: ftsTest2, error: ftsError2 } = await supabase
+        .from('ProductEmbeddings')
+        .select(`ProductId, ProductVariantId, ProductText, SearchVector, ProductVariants(Title, Description, Price)`)
+        .textSearch('SearchVector', 'product', { type: 'plain', config: 'english' })
+        .limit(20);
+        
+      // Approach 3: Try with another generic term
+      const { data: ftsTest3, error: ftsError3 } = await supabase
+        .from('ProductEmbeddings')
+        .select(`ProductId, ProductVariantId, ProductText, SearchVector, ProductVariants(Title, Description, Price)`)
+        .textSearch('SearchVector', 'item', { type: 'plain', config: 'english' })
+        .limit(20);
+      
       const ftsTestTime2 = Date.now() - ftsTestTime;
       
-      this.logger.log(`[FTSTest] Found ${ftsTest?.length || 0} results in ${ftsTestTime2}ms`);
+      this.logger.log(`[FTSTest] Complex query "${searchQuery}": ${ftsTest1?.length || 0} results`);
+      this.logger.log(`[FTSTest] Simple query "product": ${ftsTest2?.length || 0} results`);
+      this.logger.log(`[FTSTest] Simple query "item": ${ftsTest3?.length || 0} results`);
+      
+      // Use the best result
+      const ftsTest = (ftsTest3?.length || 0) > 0 ? ftsTest3 : (ftsTest2?.length || 0) > 0 ? ftsTest2 : ftsTest1;
+      
       if (ftsTest && ftsTest.length > 0) {
-        this.logger.log(`[FTSTest] Top 3 results:`);
+        this.logger.log(`[FTSTest] Top 3 FTS results:`);
         ftsTest.slice(0, 3).forEach((item: any, index: number) => {
           this.logger.log(`  ${index + 1}. "${item.ProductVariants?.Title || item.ProductText}"`);
         });
+      } else {
+        this.logger.warn(`[FTSTest] ❌ NO FTS RESULTS with any approach!`);
       }
 
       // Now try the hybrid search function
@@ -1300,26 +1328,24 @@ export class EmbeddingService {
 
   /**
    * Generate FTS search query from embedding context
-   * 🎯 ENHANCED: Now tries to use OCR data for better FTS queries
+   * 🎯 TRULY GENERIC: Broad terms that work across all product types
    */
   private generateSearchQueryFromContext(params: any): string {
-    // Try to get OCR data from recently stored embeddings for this user
-    // This is a best-effort attempt - if it fails, fall back to template-based
-    
     const template = params.businessTemplate?.toLowerCase();
     
-    // Template-specific keywords
+    // 🎯 GENERIC APPROACH: Use broad terms that appear across many products
+    // This avoids bias toward any specific category
     if (template?.includes('pokemon') || template?.includes('cards')) {
-      return 'pokemon card trading collectible holo rare stage basic';
+      return 'card game collectible trading rare common';
     } else if (template?.includes('electronics') || template?.includes('tech')) {
-      return 'electronics device technology gadget digital';
+      return 'device electronics technology digital gadget';
     } else if (template?.includes('fashion') || template?.includes('clothing')) {
-      return 'clothing fashion apparel wear style';
+      return 'clothing fashion apparel style brand';
     } else if (template?.includes('books')) {
-      return 'book literature novel textbook author';
+      return 'book literature novel author title';
     } else {
-      // Generic fallback - broader terms for better recall
-      return 'product item brand name model number';
+      // 🎯 COMPLETELY GENERIC fallback - basic product terms that exist everywhere
+      return 'product item brand new used condition description title';
     }
   }
 

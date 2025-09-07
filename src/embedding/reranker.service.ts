@@ -185,13 +185,22 @@ export class RerankerService {
         const tokenBonus = Math.min(0.10, tokenOverlap * 0.20);
 
         // 🎯 CRITICAL: Vector search is clearly working, AI reranker is unreliable
-        const aiWeight = 0.35;  // Further reduced AI weight - it's making bad decisions
-        const vecWeight = 0.65; // Vector search gets majority weight - it's more accurate
+        const aiWeight = 0.25;  // Massively reduced AI weight - it keeps making bad decisions
+        const vecWeight = 0.75; // Vector search gets massive weight - it's the only reliable component
         
-        // 🎯 MAJOR boost for strong vector matches (these are almost always correct)
-        const strongVectorBonus = vecHybrid >= 0.65 ? 0.20 : 0; // Huge boost for very strong matches
-        const goodVectorBonus = vecHybrid >= 0.60 ? 0.12 : 0;   // Good boost for decent matches
-        const vectorBonus = Math.max(strongVectorBonus, goodVectorBonus);
+        // 🎯 MASSIVE boost for top vector search results (these are almost always correct)
+        let vectorBonus = 0;
+        if (index === 0) {
+          // FIRST result in vector search gets HUGE boost to stay #1
+          vectorBonus = 0.35; // +35% boost for #1 vector search result
+        } else if (index <= 2) {
+          // Top 3 get significant boost
+          vectorBonus = 0.25; // +25% boost for top 3 vector search results
+        } else if (vecHybrid >= 0.65) {
+          vectorBonus = 0.20; // +20% for very strong vector matches
+        } else if (vecHybrid >= 0.60) {
+          vectorBonus = 0.12; // +12% for decent vector matches
+        }
         
         const fused = Math.min(1, (aiWeight * base) + (vecWeight * vecHybrid) + vectorBonus);
 
