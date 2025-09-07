@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { SupabaseService } from '../common/supabase.service';
 import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
+import { OcrService, OcrResult } from '../common/ocr.service';
 import sharp from 'sharp';
 import { randomUUID } from 'crypto';
 
@@ -66,7 +67,8 @@ export class EmbeddingService {
   constructor(
     private readonly configService: ConfigService,
     private readonly supabaseService: SupabaseService,
-    private readonly aiUsageTracker: AiUsageTrackerService
+    private readonly aiUsageTracker: AiUsageTrackerService,
+    private readonly ocrService: OcrService
   ) {
     this.aiServerUrl = this.configService.get<string>('AI_SERVER_URL') || 'http://localhost:8000';
     
@@ -318,12 +320,25 @@ export class EmbeddingService {
     scrapedData?: any;
     searchKeywords?: string[];
     userId?: string; // Add userId for RLS
+    ocrResult?: OcrResult; // 🎯 NEW: Include OCR data
   }, userJwtToken?: string): Promise<void> {
     try {
       // Use authenticated client if JWT token provided, otherwise fallback to service client
       const supabase = userJwtToken 
         ? this.supabaseService.getAuthenticatedClient(userJwtToken)
         : this.supabaseService.getServiceClient();
+
+      // 🎯 Enhanced ScrapedData with OCR information
+      const enhancedScrapedData = {
+        ...params.scrapedData,
+        ocr: params.ocrResult ? {
+          text: params.ocrResult.text,
+          confidence: params.ocrResult.confidence,
+          processingTime: params.ocrResult.processingTimeMs,
+          cardInfo: params.ocrResult.text ? this.ocrService.extractCardInfo(params.ocrResult.text) : null,
+          extractedAt: new Date().toISOString()
+        } : null
+      };
 
       const { error } = await supabase
         .from('ProductEmbeddings')
@@ -340,7 +355,7 @@ export class EmbeddingService {
           SourceType: params.sourceType,
           SourceUrl: params.sourceUrl,
           BusinessTemplate: params.businessTemplate,
-          ScrapedData: params.scrapedData,
+          ScrapedData: enhancedScrapedData, // 🎯 Now includes OCR data
           SearchKeywords: params.searchKeywords,
           UpdatedAt: new Date().toISOString()
         });
@@ -615,10 +630,23 @@ export class EmbeddingService {
         userId: params.userId,
       });
 
-      // 🎯 Store the generated embedding for future searches
+      // 🎯 Store the generated embedding for future searches with OCR data
       // This creates a "scanned product" entry that can be found in future searches
       if (searchResult.searchEmbedding && (params.images?.length || params.textQuery)) {
         try {
+          // 🎯 Extract OCR from the scanned image
+          let ocrResult: OcrResult | undefined;
+          if (params.images?.length) {
+            try {
+              ocrResult = await this.ocrService.extractTextFromImage({ 
+                imageUrl: params.images[0] 
+              });
+              this.logger.log(`[EnhancedQuickScan] OCR extracted: "${ocrResult.text.substring(0, 50)}..." (conf: ${ocrResult.confidence.toFixed(2)})`);
+            } catch (ocrError) {
+              this.logger.warn(`[EnhancedQuickScan] OCR failed: ${ocrError.message}`);
+            }
+          }
+
           const productData = {
             title: params.textQuery || 'Scanned Product',
             description: `Product scanned by user on ${new Date().toISOString()}`,
@@ -629,6 +657,12 @@ export class EmbeddingService {
           // Generate a unique SKU for this scanned product
           const scanSku = `SCAN_${params.userId.slice(0,8)}_${Date.now()}`;
           
+          // 🎯 Enhanced product text with OCR
+          const enhancedProductText = [
+            params.textQuery || 'Scanned Product',
+            ocrResult?.text || ''
+          ].filter(Boolean).join(' ');
+          
                      // Store as a "scanned product" embedding (no real Product record needed)
            await this.storeProductEmbedding({
             productId: null, // No real product - this is a scan embedding
@@ -637,13 +671,14 @@ export class EmbeddingService {
             textEmbedding: params.textQuery ? searchResult.searchEmbedding : undefined,
             combinedEmbedding: searchResult.searchEmbedding,
             imageUrl: params.images?.[0],
-            productText: params.textQuery || 'Scanned Product', // Fix: handle undefined
+            productText: enhancedProductText, // 🎯 Now includes OCR text
             sourceType: 'quick_scan',
             businessTemplate: params.businessTemplate || 'General Products',
             userId: params.userId, // Add userId for RLS
+            ocrResult, // 🎯 Store OCR data in ScrapedData
           }, userJwtToken);
           
-          this.logger.log(`[EnhancedQuickScan] Stored embedding for future searches`);
+          this.logger.log(`[EnhancedQuickScan] Stored embedding with OCR for future searches`);
         } catch (error) {
           this.logger.warn(`[EnhancedQuickScan] Failed to store embedding:`, error.message);
           // Don't fail the whole scan if storage fails
@@ -867,36 +902,52 @@ export class EmbeddingService {
     description?: string;
     imageWeight?: number;
     textWeight?: number;
+    includeOcr?: boolean; // 🎯 NEW: Enable OCR extraction
   }): Promise<number[]> {
-    const { images, title, description, imageWeight = 0.7, textWeight = 0.3 } = productData;
+    const { images, title, description, imageWeight = 0.7, textWeight = 0.3, includeOcr = true } = productData;
     
     let finalImageEmbedding: number[] | null = null;
     let finalTextEmbedding: number[] | null = null;
+    let ocrText = '';
 
     // Process images if provided
     if (images && images.length > 0) {
       const imageEmbeddings: number[][] = [];
       
              for (const imageUrl of images) {
-         try {
-           const embedding = await this.generateImageEmbedding({ imageUrl }, 'system');
-           imageEmbeddings.push(embedding);
-         } catch (error) {
-           this.logger.warn(`Failed to process image ${imageUrl}: ${error.message}`);
-           // Continue with other images
-         }
-       }
+        try {
+          const embedding = await this.generateImageEmbedding({ imageUrl }, 'system');
+          imageEmbeddings.push(embedding);
+          
+          // 🎯 NEW: Extract OCR text from each image
+          if (includeOcr) {
+            try {
+              const ocrResult = await this.ocrService.extractTextFromImage({ imageUrl });
+              if (ocrResult.text && ocrResult.confidence > 0.3) {
+                ocrText += ` ${ocrResult.text}`;
+                this.logger.log(`[OCR] Extracted from ${imageUrl}: "${ocrResult.text.substring(0, 50)}..." (conf: ${ocrResult.confidence.toFixed(2)})`);
+              }
+            } catch (ocrError) {
+              this.logger.warn(`[OCR] Failed for ${imageUrl}: ${ocrError.message}`);
+            }
+          }
+        } catch (error) {
+          this.logger.warn(`Failed to process image ${imageUrl}: ${error.message}`);
+          // Continue with other images
+        }
+      }
 
       if (imageEmbeddings.length > 0) {
         finalImageEmbedding = this.combineMultipleImages(imageEmbeddings);
       }
     }
 
-    // Process text if provided
-    if (title || description) {
+    // Process text if provided (now including OCR text)
+    if (title || description || ocrText) {
+      const combinedText = [title || '', description || '', ocrText.trim()].filter(Boolean).join(' ');
       const textContent = {
         title: title || '',
-        description: description || ''
+        description: combinedText // 🎯 Combined with OCR text
       };
       finalTextEmbedding = await this.generateTextEmbedding(textContent, 'system');
     }
@@ -1092,7 +1143,7 @@ export class EmbeddingService {
 
       if (error) {
         this.logger.error(`[HybridSearch] FAILED with error: ${error.message}`);
-        this.logger.error(`[HybridSearch] Full error object:`, JSON.stringify(error, null, 2));
+        this.logger.error(`[HybridSearch] Error code: ${error.code}, details: ${error.details}, hint: ${error.hint}`);
         this.logger.error(`[HybridSearch] SQL function parameters sent:`, {
           q_image_dimensions: qImage?.length,
           search_query: searchQuery,
@@ -1101,6 +1152,16 @@ export class EmbeddingService {
           sparse_limit: 80,
           final_limit: Math.max(params.limit * 2, 150)
         });
+        
+        // 🎯 Check specific error types
+        if (error.code === '42883') {
+          this.logger.error(`[HybridSearch] Function does not exist - deploy the hybrid search SQL function`);
+        } else if (error.code === '42P01') {
+          this.logger.error(`[HybridSearch] Table/column does not exist - check if SearchVector column exists`);
+        } else if (error.code === '42804') {
+          this.logger.error(`[HybridSearch] Type mismatch - check SQL function return types`);
+        }
+        
         this.logger.warn(`[HybridSearch] Falling back to legacy multi-channel search...`);
         return this.legacyMultiChannelSearch(params);
       }
@@ -1193,26 +1254,26 @@ export class EmbeddingService {
 
   /**
    * Generate FTS search query from embedding context
+   * 🎯 ENHANCED: Now tries to use OCR data for better FTS queries
    */
   private generateSearchQueryFromContext(params: any): string {
-    // This is a simple implementation - could be enhanced with:
-    // - Image OCR to extract text
-    // - Business template-specific keywords
-    // - User context or recent searches
+    // Try to get OCR data from recently stored embeddings for this user
+    // This is a best-effort attempt - if it fails, fall back to template-based
     
     const template = params.businessTemplate?.toLowerCase();
     
+    // Template-specific keywords
     if (template?.includes('pokemon') || template?.includes('cards')) {
-      return 'pokemon card trading collectible';
+      return 'pokemon card trading collectible holo rare stage basic';
     } else if (template?.includes('electronics') || template?.includes('tech')) {
-      return 'electronics device technology gadget';
+      return 'electronics device technology gadget digital';
     } else if (template?.includes('fashion') || template?.includes('clothing')) {
-      return 'clothing fashion apparel wear';
+      return 'clothing fashion apparel wear style';
     } else if (template?.includes('books')) {
-      return 'book literature novel textbook';
+      return 'book literature novel textbook author';
     } else {
-      // Generic fallback - common product terms
-      return 'product item brand new used';
+      // Generic fallback - broader terms for better recall
+      return 'product item brand name model number';
     }
   }
 

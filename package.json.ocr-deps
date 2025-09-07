@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "tesseract.js": "^5.0.4"
+  },
+  "note": "Add this to your main package.json dependencies"
+}
