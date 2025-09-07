@@ -305,3 +305,5 @@ export type PlatformKey = keyof TypedGeneratedDetails;
 // Helper type to get platform data type by key
 export type PlatformDataByKey<K extends PlatformKey> = TypedGeneratedDetails[K];
 
+
+

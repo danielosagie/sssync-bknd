@@ -54,6 +54,7 @@ export interface ProductMatch {
   imageSimilarity: number;
   textSimilarity: number;
   combinedScore: number;
+  retrievalChannels?: string; // Track which search channels found this result
 }
 
 @Injectable()
@@ -1042,9 +1043,127 @@ export class EmbeddingService {
   }
 
   /**
-   * Enhanced database search using embedding similarity
+   * 🎯 HYBRID SEARCH: Dense Vector + Sparse FTS + Intelligent Fusion
+   * Combines semantic embeddings with keyword search for superior recall and precision
    */
   private async searchByEmbedding(params: {
+    embedding: number[];
+    businessTemplate?: string;
+    threshold: number;
+    limit: number;
+    searchQuery?: string; // Optional text query for FTS
+  }): Promise<ProductMatch[]> {
+    try {
+      const supabase = this.supabaseService.getClient();
+
+      this.logger.log(`[HybridSearch] Using hybrid dense+sparse retrieval`);
+      this.logger.log(`[HybridSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
+      this.logger.log(`[HybridSearch] Query embedding first 5 values: [${params.embedding?.slice(0, 5).map(v => v.toFixed(4)).join(', ')}...]`);
+      
+      // Generate search query for FTS if not provided
+      let searchQuery = params.searchQuery;
+      if (!searchQuery) {
+        // Extract potential keywords from context or use generic terms
+        // This could be improved by analyzing the image content or using OCR
+        searchQuery = this.generateSearchQueryFromContext(params);
+      }
+      
+      this.logger.log(`[HybridSearch] FTS search query: "${searchQuery || 'none'}"`);
+
+      // Try the hybrid search function
+      this.logger.log(`[HybridSearch] Attempting hybrid search with function: search_products_hybrid_image`);
+      
+      const qImage = params.embedding; // 768 dimensions
+
+      const { data, error } = await supabase.rpc('search_products_hybrid_image', {
+        q_image: qImage,
+        search_query: searchQuery,
+        p_business_template: params.businessTemplate || null,
+        dense_limit: 80,    // Candidates from vector search
+        sparse_limit: 80,   // Candidates from FTS search
+        final_limit: Math.max(params.limit * 2, 150) // More candidates for reranker
+      });
+
+      if (error) {
+        this.logger.error(`[HybridSearch] FAILED with error: ${error.message}`, error);
+        this.logger.warn(`[HybridSearch] Error details:`, error);
+        this.logger.warn(`[HybridSearch] Falling back to legacy multi-channel search...`);
+        return this.legacyMultiChannelSearch(params);
+      }
+
+      if (!data || data.length === 0) {
+        this.logger.log(`[HybridSearch] No results, trying legacy search`);
+        return this.legacyMultiChannelSearch(params);
+      }
+
+      this.logger.log(`[HybridSearch] Found ${data.length} hybrid matches`);
+      
+      // Log distribution of retrieval channels
+      const channelCounts = data.reduce((acc: any, item: any) => {
+        acc[item.retrieval_channels] = (acc[item.retrieval_channels] || 0) + 1;
+        return acc;
+      }, {});
+      this.logger.log(`[HybridSearch] Channel distribution:`, channelCounts);
+  
+      // Log top results with channel info
+      data.slice(0, 10).forEach((item: any, index: number) => {
+        const isProduct = !!item.variant_id && item.variant_id !== 'scan';
+        this.logger.log(`[HybridResult ${index + 1}] "${item.title?.substring(0, 50)}..." - Score: ${item.retrieval_score?.toFixed(4)} Channels: ${item.retrieval_channels} ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
+      });
+
+      // Convert to ProductMatch format
+      return data.map((item: any) => ({
+        productId: item.product_id || '',
+        ProductVariantId: item.variant_id || null,
+        title: item.title || 'Unknown Product',
+        description: item.description || 'No description',
+        imageUrl: item.image_url,
+        businessTemplate: item.business_template,
+        price: item.price || 0,
+        productUrl: item.product_id 
+          ? `https://sssync.app/products/${item.product_id}`
+          : item.image_url || '#',
+        imageSimilarity: item.vector_similarity || 0,
+        textSimilarity: item.search_vector_rank || 0,
+        combinedScore: item.retrieval_score || 0,
+        retrievalChannels: item.retrieval_channels, // New field for debugging
+      }));
+
+    } catch (error) {
+      this.logger.error('Failed hybrid search, falling back to legacy:', error);
+      return this.legacyMultiChannelSearch(params);
+    }
+  }
+
+  /**
+   * Generate FTS search query from embedding context
+   */
+  private generateSearchQueryFromContext(params: any): string {
+    // This is a simple implementation - could be enhanced with:
+    // - Image OCR to extract text
+    // - Business template-specific keywords
+    // - User context or recent searches
+    
+    const template = params.businessTemplate?.toLowerCase();
+    
+    if (template?.includes('pokemon') || template?.includes('cards')) {
+      return 'pokemon card trading collectible';
+    } else if (template?.includes('electronics') || template?.includes('tech')) {
+      return 'electronics device technology gadget';
+    } else if (template?.includes('fashion') || template?.includes('clothing')) {
+      return 'clothing fashion apparel wear';
+    } else if (template?.includes('books')) {
+      return 'book literature novel textbook';
+    } else {
+      // Generic fallback - common product terms
+      return 'product item brand new used';
+    }
+  }
+
+  /**
+   * Legacy fallback to the old multi-channel search
+   */
+  private async legacyMultiChannelSearch(params: {
     embedding: number[];
     businessTemplate?: string;
     threshold: number;
@@ -1052,16 +1171,9 @@ export class EmbeddingService {
   }): Promise<ProductMatch[]> {
     try {
       const supabase = this.supabaseService.getClient();
-
-      this.logger.log(`[PgVectorSearch] Using PostgreSQL vector similarity search`);
-      this.logger.log(`[PgVectorSearch] Query embedding dimensions: ${params.embedding?.length || 0}`);
-      this.logger.log(`[PgVectorSearch] Query embedding first 5 values: [${params.embedding?.slice(0, 5).map(v => v.toFixed(4)).join(', ')}...]`);
-
-      // Try the multi-channel search first
-      this.logger.log(`[PgVectorSearch] Attempting multi-channel search with function: search_products_by_vector_multi`);
       
       const qImage = params.embedding; // 768
-      const qCombined = params.embedding.concat(new Array(1024 - params.embedding.length).fill(0));
+      const qCombined = params.embedding; // Use same embedding since CombinedEmbedding is 768-dim
 
       const { data, error } = await supabase.rpc('search_products_by_vector_multi_v2', {
         q_image: qImage,
@@ -1073,24 +1185,17 @@ export class EmbeddingService {
       });
 
       if (error) {
-        this.logger.error(`[MultiChannelSearch] FAILED with error: ${error.message}`, error);
-        this.logger.warn(`[MultiChannelSearch] Error details:`, error);
-        this.logger.warn(`[MultiChannelSearch] Falling back to enhanced manual search...`);
+        this.logger.error(`[LegacySearch] FAILED with error: ${error.message}`, error);
+        this.logger.warn(`[LegacySearch] Falling back to enhanced manual search...`);
         return this.enhancedManualVectorSearch(params);
       }
 
       if (!data || data.length === 0) {
-        this.logger.log(`[MultiChannelSearch] No results, trying enhanced manual search`);
+        this.logger.log(`[LegacySearch] No results, trying enhanced manual search`);
         return this.enhancedManualVectorSearch(params);
       }
 
-      this.logger.log(`[MultiChannelSearch] Found ${data.length} matches across channels`);
-  
-      // Log results with channel info
-      data.forEach((item: any, index: number) => {
-        const isProduct = !!item.variant_id && item.variant_id !== 'scan';
-        this.logger.log(`[MultiChannelResult ${index + 1}] "${item.title?.substring(0, 50)}..." - Similarity: ${item.similarity?.toFixed(4)} Channels: ${item.source_channels} ${isProduct ? '[PRODUCT]' : '[SCAN]'}`);
-      });
+      this.logger.log(`[LegacySearch] Found ${data.length} matches via legacy function`);
 
       // Convert to ProductMatch format
       return data.map((item: any) => ({
@@ -1110,7 +1215,7 @@ export class EmbeddingService {
       }));
 
     } catch (error) {
-      this.logger.error('Failed multi-channel search, falling back to enhanced manual:', error);
+      this.logger.error('Failed legacy search, falling back to manual:', error);
       return this.enhancedManualVectorSearch(params);
     }
   }

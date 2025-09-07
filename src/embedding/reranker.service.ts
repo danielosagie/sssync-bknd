@@ -62,9 +62,10 @@ export class RerankerService {
   private readonly aiServerUrl: string;
   private readonly reputableHosts: string[];
 
-  // Confidence thresholds for tier classification
-  private readonly HIGH_CONFIDENCE_THRESHOLD = 0.95;
-  private readonly MEDIUM_CONFIDENCE_THRESHOLD = 0.60;
+  // Confidence thresholds for tier classification (adjusted for hybrid search)
+  private readonly HIGH_CONFIDENCE_THRESHOLD = 0.80;  // Lowered from 0.95
+  private readonly MEDIUM_CONFIDENCE_THRESHOLD = 0.50; // Lowered from 0.60
+  private readonly NO_MATCH_THRESHOLD = 0.35;          // New: below this = no good matches
   
   constructor(
     private readonly configService: ConfigService,
@@ -405,7 +406,10 @@ export class RerankerService {
    * Private helper methods
    */
   private determineConfidenceTier(score: number): 'high' | 'medium' | 'low' {
-    if (score >= this.HIGH_CONFIDENCE_THRESHOLD) {
+    // 🎯 UPDATED: Better no-match detection
+    if (score < this.NO_MATCH_THRESHOLD) {
+      return 'low'; // Force low confidence for poor matches
+    } else if (score >= this.HIGH_CONFIDENCE_THRESHOLD) {
       return 'high';
     } else if (score >= this.MEDIUM_CONFIDENCE_THRESHOLD) {
       return 'medium';
@@ -429,18 +433,39 @@ export class RerankerService {
     }
   }
 
-  private generateScoreExplanation(score: number): string {
-    if (score >= 0.95) {
-      return 'Excellent match with high confidence';
-    } else if (score >= 0.85) {
-      return 'Very good match with strong similarity';
-    } else if (score >= 0.70) {
-      return 'Good match with moderate similarity';
-    } else if (score >= 0.60) {
-      return 'Fair match with some similarity';
+  private generateScoreExplanation(
+    score: number, 
+    isActualProduct?: boolean, 
+    retrievalChannels?: string
+  ): string {
+    let explanation = '';
+    
+    if (score >= 0.80) {
+      explanation = 'Excellent match with high confidence';
+    } else if (score >= 0.65) {
+      explanation = 'Very good match with strong similarity';
+    } else if (score >= 0.50) {
+      explanation = 'Good match with moderate similarity';
+    } else if (score >= 0.35) {
+      explanation = 'Fair match with some similarity';
     } else {
-      return 'Low similarity match';
+      explanation = 'Low similarity match';
     }
+
+    // Add context about product type and retrieval method
+    if (isActualProduct) {
+      explanation += ' (Product listing)';
+    }
+    
+    if (retrievalChannels?.includes('dense+sparse')) {
+      explanation += ' (Multi-channel match)';
+    } else if (retrievalChannels?.includes('sparse')) {
+      explanation += ' (Keyword match)';
+    } else if (retrievalChannels?.includes('dense')) {
+      explanation += ' (Visual match)';
+    }
+
+    return explanation;
   }
 
   private createFallbackResponse(request: RerankerRequest, processingTime: number): RerankerResponse {

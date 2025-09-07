@@ -111,6 +111,7 @@ export class GenerateJobProcessor {
                        GeneratedText: JSON.stringify({ searchResult }),
                        Metadata: { jobId, productIndex: i, template: (job as any).data.template || undefined, userId },
                        IsActive: false,
+                       job_Id: jobId,
                      });
 
                      if (error) {
