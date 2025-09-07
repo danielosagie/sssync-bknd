@@ -1197,10 +1197,21 @@ export class EmbeddingService {
         this.logger.warn(`[FTSTest] ❌ NO FTS RESULTS with any approach!`);
       }
 
-      // Now try the hybrid search function
+      // Now try the hybrid search function with EXTENSIVE debugging
       this.logger.log(`[HybridSearch] 🔍 Now testing hybrid SQL function: search_products_hybrid_image`);
+      
+      // 🎯 STEP 1: Test the exact same parameters individually first
+      this.logger.log(`[HybridSearch] 📋 Testing SQL function parameters:`);
+      this.logger.log(`[HybridSearch]   - q_image: ${qImage?.length} dimensions`);
+      this.logger.log(`[HybridSearch]   - search_query: "${searchQuery}"`);
+      this.logger.log(`[HybridSearch]   - p_business_template: ${params.businessTemplate || 'null'}`);
+      this.logger.log(`[HybridSearch]   - dense_limit: 50`);
+      this.logger.log(`[HybridSearch]   - sparse_limit: 50`);
+      this.logger.log(`[HybridSearch]   - final_limit: 100`);
+      
       const sqlStartTime = Date.now();
 
+      // 🎯 STEP 2: Call the function with detailed error handling
       const { data, error } = await supabase.rpc('search_products_hybrid_image', {
         q_image: qImage,
         search_query: searchQuery,
@@ -1211,6 +1222,7 @@ export class EmbeddingService {
       });
       
       const sqlTime = Date.now() - sqlStartTime;
+      this.logger.log(`[HybridSearch] ⏱️ SQL function completed in ${sqlTime}ms`);
 
       if (error) {
         this.logger.error(`[HybridSearch] ❌ SQL FUNCTION FAILED with error: ${error.message}`);
@@ -1240,7 +1252,48 @@ export class EmbeddingService {
       if (!data || data.length === 0) {
         this.logger.warn(`[HybridSearch] ⚠️ Hybrid function returned ZERO results`);
         this.logger.warn(`[HybridSearch] Dense found: ${denseTest?.length || 0}, FTS found: ${ftsTest?.length || 0}, Hybrid found: 0`);
-        this.logger.warn(`[HybridSearch] This indicates a problem with the SQL function logic`);
+        
+        // 🎯 DETAILED ANALYSIS of why hybrid failed
+        this.logger.error(`[HybridSearch] 🔍 DEBUGGING ZERO RESULTS:`);
+        this.logger.error(`[HybridSearch] 1. SQL Function exists: ${!error ? 'YES' : 'NO'}`);
+        this.logger.error(`[HybridSearch] 2. Dense components work: ${(denseTest?.length || 0) > 0 ? 'YES' : 'NO'}`);
+        this.logger.error(`[HybridSearch] 3. FTS components work: ${(ftsTest?.length || 0) > 0 ? 'YES' : 'NO'}`);
+        this.logger.error(`[HybridSearch] 4. Parameters passed: q_image=${!!qImage}, search_query="${searchQuery}"`);
+        
+        // 🎯 LIKELY CAUSES:
+        this.logger.error(`[HybridSearch] 🔧 LIKELY CAUSES:`);
+        this.logger.error(`[HybridSearch]   A) SearchVector column missing/empty`);
+        this.logger.error(`[HybridSearch]   B) Vector embedding dimension mismatch in SQL`);
+        this.logger.error(`[HybridSearch]   C) FTS query syntax incompatible with plainto_tsquery`);
+        this.logger.error(`[HybridSearch]   D) Business template filtering too restrictive`);
+        this.logger.error(`[HybridSearch]   E) UNION logic combining dense+sparse incorrectly`);
+        
+        // 🎯 EMERGENCY DIAGNOSIS: Check SearchVector column population
+        try {
+          const { data: searchVectorCheck, error: svError } = await supabase
+            .from('ProductEmbeddings')
+            .select('ProductId, SearchVector, ProductText')
+            .not('SearchVector', 'is', null)
+            .limit(5);
+          
+          this.logger.error(`[HybridSearch] 🔍 SearchVector CHECK: Found ${searchVectorCheck?.length || 0} rows with populated SearchVector`);
+          if (searchVectorCheck?.length > 0) {
+            searchVectorCheck.slice(0, 2).forEach((row: any, i: number) => {
+              this.logger.error(`[HybridSearch]   Row ${i+1}: ProductText="${row.ProductText?.substring(0, 40)}..." HasSearchVector=${!!row.SearchVector}`);
+            });
+          } else {
+            this.logger.error(`[HybridSearch] ❌ PROBLEM FOUND: SearchVector column is EMPTY/NULL for all rows!`);
+          }
+        } catch (diagError) {
+          this.logger.error(`[HybridSearch] ❌ SearchVector diagnostic failed: ${diagError.message}`);
+        }
+        
+        // 🎯 RECOMMENDATION:
+        this.logger.error(`[HybridSearch] 💡 NEXT STEPS:`);
+        this.logger.error(`[HybridSearch]   1. If SearchVector is empty: Populate it with text data`);
+        this.logger.error(`[HybridSearch]   2. If SearchVector exists: Check SQL function vector dimensions`);
+        this.logger.error(`[HybridSearch]   3. Test hybrid function components individually`);
+        this.logger.error(`[HybridSearch]   4. Verify UNION logic combines results correctly`);
         
         // Don't fall back - fail explicitly so we can debug
         throw new Error(`Hybrid search returned no results despite individual components working`);
