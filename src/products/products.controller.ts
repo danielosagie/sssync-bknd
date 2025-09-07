@@ -2250,6 +2250,7 @@ Return JSON format:
 
                         const rerankerResponse = await this.rerankerService.rerankCandidates({
                             query: rerankQuery,
+                            targetUrl: scanInput.images[result.sourceIndex]?.url, // 🎯 CRITICAL: Pass the actual target image
                             candidates: rerankerCandidates,
                             userId: req.user?.id,
                             businessTemplate: 'general',

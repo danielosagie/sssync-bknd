@@ -178,10 +178,14 @@ export class RerankerService {
         const tokenOverlap = this.calculateBasicSimilarity(searchQuery, candidateText); // reuse simple overlap
         const tokenBonus = Math.min(0.10, tokenOverlap * 0.20);
 
-        // Weighted fusion: text reranker score + vector score
-        const aiWeight = 0.70;
-        const vecWeight = 0.30;
-        const fused = Math.min(1, (aiWeight * base) + (vecWeight * vecHybrid));
+        // 🎯 ENHANCED: Vector search is working well, give it more weight
+        const aiWeight = 0.50;  // Reduced AI weight since it's making poor decisions
+        const vecWeight = 0.50; // Equal weight to vector search which is more reliable
+        
+        // Extra boost for high vector scores (these are likely correct matches)
+        const highVectorBonus = vecHybrid >= 0.60 ? 0.15 : 0; // Big boost for strong vector matches
+        
+        const fused = Math.min(1, (aiWeight * base) + (vecWeight * vecHybrid) + highVectorBonus);
 
         const adjusted = Math.min(1, fused + (cleanTitleBonus * 0.03) + priceBonus + sourceBonus + tokenBonus);
 
