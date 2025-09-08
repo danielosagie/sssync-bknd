@@ -29,6 +29,7 @@ import { ActivityLogService } from '../common/activity-log.service';
 import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
 import { AiGenerationService } from './ai-generation/ai-generation.service';
 import { GroqSmartPickerService } from '../embedding/groq-smart-picker.service';
+import { FastTextRerankerService } from '../embedding/fast-text-reranker.service';
 // Add the orchestrator import
 import { ProductOrchestratorService, RecognizeStageInput, MatchStageInput, GenerateStageInput } from './product-orchestrator.service';
 import { ProductAnalysisJobData, ProductAnalysisJobStatus } from './types/product-analysis-job.types';
@@ -97,6 +98,7 @@ export class ProductsController {
         private readonly embeddingService: EmbeddingService,
         private readonly aiGenerationService: AiGenerationService,
         private readonly groqSmartPickerService: GroqSmartPickerService,
+        private readonly fastTextRerankerService: FastTextRerankerService,
         private readonly productOrchestratorService: ProductOrchestratorService,
         private readonly productAnalysisProcessor: ProductAnalysisProcessor,
         private readonly matchJobProcessor: MatchJobProcessor,
@@ -2131,7 +2133,7 @@ Return JSON format:
                 metadata?: any;
             }>;
             targetSites?: string[]; // For backward compatibility, will be ignored
-            reranker?: 'llama4-groq' | 'jina-modal' | 'none'; // 🎯 NEW: Choose reranker system
+            reranker?: 'llama4-groq' | 'jina-modal' | 'fast-text' | 'none'; // 🎯 NEW: Choose reranker system
         },
         @Req() req: AuthenticatedRequest,
     ): Promise<{
@@ -2142,12 +2144,13 @@ Return JSON format:
             confidence: 'high' | 'medium' | 'low';
             processingTimeMs: number;
             rerankerAnalysis?: {
-                type: 'llama4-groq' | 'jina-modal';
+                type: 'llama4-groq' | 'jina-modal' | 'fast-text';
                 selectedMatch?: any;
                 confidence?: number;
                 reasoning?: string;
                 alternatives?: any[];
                 processingTimeMs: number;
+                rankingMethod?: string; // For fast-text: exact_match, fuzzy_match, etc.
             };
         }>;
         totalProcessingTimeMs: number;
@@ -2218,13 +2221,13 @@ Return JSON format:
                     try {
                         // Log top 15 raw vector results as requested
                         this.logger.log(`[VectorResults] Top ${Math.min(25, result.matches.length)} raw vector search results:`);
-                        result.matches.slice(0, 15).forEach((match: any, index: number) => {
+                        result.matches.slice(0, 25).forEach((match: any, index: number) => {
                             this.logger.log(`  ${index + 1}. "${match.title?.substring(0, 50) || 'No title'}..." - Score: ${match.combinedScore?.toFixed(4) || 'N/A'}`);
                         });
 
-                        // 🎯 NEW: Handle reranker selection
+                        // 🎯 NEW: Optimized Pipeline A - Text-first, fast, scalable
                         if (scanInput.reranker === 'llama4-groq') {
-                            this.logger.log(`[GroqSmartPicker] Analyzing ${result.matches.length} vector search results`);
+                            this.logger.log(`[PipelineA-GroqPicker] Analyzing ${result.matches.length} vector search results with OCR-driven selection`);
                             
                             try {
                                 const groqCandidates = result.matches.slice(0, 10).map((match: any) => ({
@@ -2365,6 +2368,64 @@ Return JSON format:
                             };
                             
                             this.logger.log(`[RerankerFinal] Updated confidence from vector search to reranker: ${rerankerResponse.confidenceTier}`);
+                        
+                        } else if (scanInput.reranker === 'fast-text') {
+                            // 🚀 PIPELINE A: Fast text-only reranker (<100ms)
+                            this.logger.log(`[PipelineA-FastText] Running fast OCR-driven text reranker on ${result.matches.length} results`);
+                            
+                            try {
+                                // Extract OCR text from the image for ranking
+                                let ocrText: string = '';
+                                try {
+                                    const imageUrl = scanInput.images[result.sourceIndex]?.url!;
+                                    const ocrResult = await this.embeddingService.extractOcrText(imageUrl);
+                                    ocrText = ocrResult?.text || '';
+                                    this.logger.log(`[PipelineA-FastText] OCR extracted: "${ocrText.substring(0, 50)}..." (conf: ${ocrResult?.confidence || 0})`);
+                                } catch (ocrError) {
+                                    this.logger.warn(`[PipelineA-FastText] OCR failed: ${ocrError.message}, proceeding with title-only ranking`);
+                                }
+
+                                // Prepare candidates for fast text reranker
+                                const fastTextCandidates = result.matches.slice(0, 50).map((match: any) => ({
+                                    id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}`,
+                                    title: match.title || 'Unknown Product',
+                                    description: match.description || '',
+                                    vectorScore: match.combinedScore || 0,
+                                    metadata: match
+                                }));
+
+                                const fastRerankerResponse = await this.fastTextRerankerService.rerankCandidates({
+                                    ocrText,
+                                    textQuery: undefined, // Could add text query support later
+                                    candidates: fastTextCandidates,
+                                    maxResults: Math.min(20, result.matches.length)
+                                });
+
+                                this.logger.log(`[PipelineA-FastText] Fast reranker completed in ${fastRerankerResponse.processingTimeMs}ms, method: ${fastRerankerResponse.rankingMethod}`);
+                                this.logger.log(`[PipelineA-FastText] Top 5 reranked results:`);
+                                fastRerankerResponse.rankedCandidates.slice(0, 5).forEach((candidate: any, index: number) => {
+                                    this.logger.log(`  ${index + 1}. "${candidate.title.substring(0, 40)}..." - Method: ${fastRerankerResponse.rankingMethod}`);
+                                });
+
+                                // Update result with fast reranker output
+                                result.matches = fastRerankerResponse.rankedCandidates.map(candidate => candidate.metadata);
+                                result.confidence = fastRerankerResponse.confidenceTier;
+
+                                // Add fast text reranker analysis to result
+                                (result as any).rerankerAnalysis = {
+                                    type: 'fast-text',
+                                    confidence: fastRerankerResponse.topScore,
+                                    processingTimeMs: fastRerankerResponse.processingTimeMs,
+                                    rankingMethod: fastRerankerResponse.rankingMethod,
+                                    alternatives: fastRerankerResponse.rankedCandidates.slice(1, 4).map(c => c.metadata)
+                                };
+
+                                this.logger.log(`[PipelineA-FastText] Updated confidence from vector search to fast reranker: ${fastRerankerResponse.confidenceTier}`);
+                                
+                            } catch (fastRerankerError) {
+                                this.logger.error(`[PipelineA-FastText] Fast reranker failed: ${fastRerankerError.message}`);
+                                // Continue with original vector search results
+                            }
                         }
 
                     } catch (error) {

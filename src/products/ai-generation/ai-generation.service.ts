@@ -502,7 +502,7 @@ Clover:
 Focus on accuracy, SEO optimization, and platform best practices. If visual matches are provided, use them to inform pricing and categorization but ensure your suggestions are competitive and realistic.`;
 
       const completion = await this.groq.chat.completions.create({
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        model: 'qwen/qwen3-32b',
         messages: [
           {
             role: 'user',
@@ -1012,7 +1012,7 @@ ${corporateDescription} or ${longerCorporateDescription} will do fine
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        model: 'qwen/qwen3-32b',
         temperature: 0.2,
         response_format: { type: 'json_object' },
       });

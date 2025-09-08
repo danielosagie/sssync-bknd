@@ -915,9 +915,9 @@ export class EmbeddingService {
       const imageEmbeddings: number[][] = [];
       
              for (const imageUrl of images) {
-        try {
-          const embedding = await this.generateImageEmbedding({ imageUrl }, 'system');
-          imageEmbeddings.push(embedding);
+         try {
+           const embedding = await this.generateImageEmbedding({ imageUrl }, 'system');
+           imageEmbeddings.push(embedding);
           
           // 🎯 NEW: Extract OCR text from each image
           if (includeOcr) {
@@ -931,11 +931,11 @@ export class EmbeddingService {
               this.logger.warn(`[OCR] Failed for ${imageUrl}: ${ocrError.message}`);
             }
           }
-        } catch (error) {
-          this.logger.warn(`Failed to process image ${imageUrl}: ${error.message}`);
-          // Continue with other images
-        }
-      }
+         } catch (error) {
+           this.logger.warn(`Failed to process image ${imageUrl}: ${error.message}`);
+           // Continue with other images
+         }
+       }
 
       if (imageEmbeddings.length > 0) {
         finalImageEmbedding = this.combineMultipleImages(imageEmbeddings);
@@ -1251,7 +1251,7 @@ export class EmbeddingService {
       const { data, error } = await supabase.rpc('search_products_hybrid_image', {
         q_image: qImage,
         search_query: searchQuery,
-        p_business_template: params.businessTemplate || null,
+        p_business_template: (!params.businessTemplate || params.businessTemplate.toLowerCase() === 'general') ? null : params.businessTemplate,
         dense_limit: 50,    // Candidates from vector search
         sparse_limit: 50,   // Candidates from FTS search
         final_limit: 100 // More candidates for reranker
@@ -1881,7 +1881,7 @@ export class EmbeddingService {
     // Weighted combination
     return titleSim * 0.6 + visualSim * 0.3 + priceSim * 0.1;
   }
-  
+
   /**
    * Fallback manual vector search when PostgreSQL function is not available
    */
