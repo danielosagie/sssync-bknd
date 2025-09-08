@@ -2131,8 +2131,7 @@ Return JSON format:
                 metadata?: any;
             }>;
             targetSites?: string[]; // For backward compatibility, will be ignored
-            useReranker?: boolean; // Use AI reranker for better results  
-            useGroqSmartPicker?: boolean; // 🎯 NEW: Use Groq Llama-4 for intelligent picking
+            reranker?: 'llama4-groq' | 'jina-modal' | 'none'; // 🎯 NEW: Choose reranker system
         },
         @Req() req: AuthenticatedRequest,
     ): Promise<{
@@ -2142,11 +2141,12 @@ Return JSON format:
             matches: any[];
             confidence: 'high' | 'medium' | 'low';
             processingTimeMs: number;
-            groqAnalysis?: {
-                selectedMatch: any;
-                confidence: number;
-                reasoning: string;
-                alternatives: any[];
+            rerankerAnalysis?: {
+                type: 'llama4-groq' | 'jina-modal';
+                selectedMatch?: any;
+                confidence?: number;
+                reasoning?: string;
+                alternatives?: any[];
                 processingTimeMs: number;
             };
         }>;
@@ -2207,8 +2207,8 @@ Return JSON format:
                 }
             }
 
-            // 🎯 Force reranker to run even with low scores for debugging
-            this.logger.log(`[POST /orchestrate/quick-scan] Processing results with reranker (useReranker: ${scanInput.useReranker})`);
+            // 🎯 Process results with selected reranker system
+            this.logger.log(`[POST /orchestrate/quick-scan] Processing results with reranker: ${scanInput.reranker || 'none'}`);
             
             for (const result of results) {
                 this.logger.log(`[RerankerDebug] Image ${result.sourceIndex}: Found ${result.matches.length} vector matches, confidence: ${result.confidence}`);
@@ -2222,8 +2222,8 @@ Return JSON format:
                             this.logger.log(`  ${index + 1}. "${match.title?.substring(0, 50) || 'No title'}..." - Score: ${match.combinedScore?.toFixed(4) || 'N/A'}`);
                         });
 
-                        // 🎯 NEW: Try Groq Smart Picker first (if enabled)
-                        if (scanInput.useGroqSmartPicker) {
+                        // 🎯 NEW: Handle reranker selection
+                        if (scanInput.reranker === 'llama4-groq') {
                             this.logger.log(`[GroqSmartPicker] Analyzing ${result.matches.length} vector search results`);
                             
                             try {
@@ -2236,16 +2236,28 @@ Return JSON format:
                                     metadata: match
                                 }));
 
+                                // Extract OCR text from the image for better matching
+                                let ocrText: string | undefined;
+                                try {
+                                    const imageUrl = scanInput.images[result.sourceIndex]?.url!;
+                                    const ocrResult = await this.embeddingService.extractOcrText(imageUrl);
+                                    ocrText = ocrResult?.text;
+                                    this.logger.log(`[GroqSmartPicker] OCR extracted: "${ocrText?.substring(0, 50)}..." (conf: ${ocrResult?.confidence.toFixed(2)})`);
+                                } catch (ocrError) {
+                                    this.logger.warn(`[GroqSmartPicker] OCR failed: ${ocrError.message}`);
+                                }
+
                                 const smartPickerResult = await this.groqSmartPickerService.pickBestMatch({
                                     targetImage: scanInput.images[result.sourceIndex]?.url!,
-                                    ocrText: undefined, // Will extract OCR from embeddings if available
+                                    ocrText, // Pass extracted OCR text
                                     candidates: groqCandidates,
                                     maxCandidates: 10,
                                     userId: req.user?.id
                                 });
 
-                                // Add Groq analysis to result
-                                (result as any).groqAnalysis = {
+                                // Add reranker analysis to result
+                                (result as any).rerankerAnalysis = {
+                                    type: 'llama4-groq',
                                     selectedMatch: smartPickerResult.selectedCandidate.metadata,
                                     confidence: smartPickerResult.confidence,
                                     reasoning: smartPickerResult.reasoning,
@@ -2284,8 +2296,8 @@ Return JSON format:
                                 // Continue with regular reranker logic below
                             }
                             
-                        } else if (scanInput.useReranker) {
-                            // Always run traditional reranker if we have matches (not just when useReranker=true)
+                        } else if (scanInput.reranker === 'jina-modal') {
+                            // Use traditional Jina reranker on Modal
                             this.logger.log(`[RerankerDebug] Raw matches before mapping:`);
                             result.matches.slice(0, 5).forEach((match: any, index: number) => {
                                 this.logger.log(`  Raw Match ${index + 1}: "${match.title}" - URL: ${match.imageUrl} - ID: ${match.ProductVariantId || match.variantId}`);
@@ -2342,6 +2354,16 @@ Return JSON format:
                             result.matches = rerankerResponse.rankedCandidates;
                             result.confidence = rerankerResponse.confidenceTier;
                             
+                            // Add Jina reranker analysis to result
+                            (result as any).rerankerAnalysis = {
+                                type: 'jina-modal',
+                                selectedMatch: rerankerResponse.rankedCandidates[0],
+                                confidence: rerankerResponse.topScore,
+                                reasoning: `Jina reranker selected based on multimodal analysis. Top score: ${rerankerResponse.topScore.toFixed(3)}`,
+                                alternatives: rerankerResponse.rankedCandidates.slice(1, 4),
+                                processingTimeMs: 0 // We don't track this separately for Jina
+                            };
+                            
                             this.logger.log(`[RerankerFinal] Updated confidence from vector search to reranker: ${rerankerResponse.confidenceTier}`);
                         }
 
@@ -2384,7 +2406,7 @@ Return JSON format:
                     inputData: {
                         imageCount: scanInput.images.length,
                         overallConfidence,
-                        useReranker: scanInput.useReranker
+                        reranker: scanInput.reranker || 'none'
                     }
                 },
                 userId
@@ -2399,7 +2421,12 @@ Return JSON format:
                     SourceApi: 'serpapi+embeddings',
                     Prompt: 'quick-scan',
                     GeneratedText: JSON.stringify({ results }),
-                    Metadata: { overallConfidence, recommendedAction, imageCount: scanInput.images.length },
+                    Metadata: { 
+                        overallConfidence, 
+                        recommendedAction, 
+                        imageCount: scanInput.images.length,
+                        reranker: scanInput.reranker || 'none'
+                    },
                     IsActive: false,
                 });
             } catch (e) {

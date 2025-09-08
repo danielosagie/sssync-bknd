@@ -1095,6 +1095,22 @@ export class EmbeddingService {
   }
 
   /**
+   * 🎯 NEW: Extract OCR text from image for Groq Smart Picker
+   */
+  async extractOcrText(imageUrl: string): Promise<{ text: string; confidence: number } | null> {
+    try {
+      const ocrResult = await this.ocrService.extractTextFromImage({ imageUrl });
+      return {
+        text: ocrResult.text,
+        confidence: ocrResult.confidence
+      };
+    } catch (error) {
+      this.logger.warn(`[OCR] Failed to extract text from ${imageUrl}: ${error.message}`);
+      return null;
+    }
+  }
+
+  /**
    * 🎯 HYBRID SEARCH: Dense Vector + Sparse FTS + Intelligent Fusion
    * Combines semantic embeddings with keyword search for superior recall and precision
    */
