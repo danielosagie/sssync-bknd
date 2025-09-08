@@ -69,7 +69,7 @@ export class GroqSmartPickerService {
 
       // Call Groq Llama-4 with vision
       const response = await this.groqClient.chat.completions.create({
-        model: "llama-3.2-90b-vision-preview", // Use vision model
+        model: "meta-llama/llama-4-scout-17b-16e-instruct", // Use vision model
         messages: [
           {
             role: "user",
