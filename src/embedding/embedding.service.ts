@@ -560,7 +560,7 @@ export class EmbeddingService {
         embedding: searchEmbedding,
         businessTemplate: params.businessTemplate,
         threshold: threshold,
-        limit: 100, // Show top 15 as requested
+        limit: 125, // Show top 15 as requested
       });
 
       // 🎯 Step 3: Calculate confidence and determine action
@@ -626,7 +626,7 @@ export class EmbeddingService {
         businessTemplate: params.businessTemplate,
         useHybridEmbedding: false, // Standard quick scan
         threshold: params.threshold || 0.1, // Lower threshold to see more results
-        limit: 20, // More results for debugging
+        limit: 30, // More results for debugging
         userId: params.userId,
       });
 
@@ -1400,22 +1400,22 @@ export class EmbeddingService {
       
       // 🎯 Log top results from each channel
       if (denseOnly.length > 0) {
-        this.logger.log(`[DenseTop3] Vector similarity results:`);
-        denseOnly.slice(0, 3).forEach((item: any, index: number) => {
+        this.logger.log(`[DenseTop10] Vector similarity results:`);
+        denseOnly.slice(0, 10).forEach((item: any, index: number) => {
           this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - VecSim: ${item.vector_similarity?.toFixed(4)} FinalScore: ${item.retrieval_score?.toFixed(4)}`);
         });
       }
       
       if (sparseOnly.length > 0) {
-        this.logger.log(`[SparseTop3] FTS keyword results:`);
-        sparseOnly.slice(0, 3).forEach((item: any, index: number) => {
+        this.logger.log(`[SparseTop10] FTS keyword results:`);
+        sparseOnly.slice(0, 10).forEach((item: any, index: number) => {
           this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - FTSRank: ${item.search_vector_rank?.toFixed(4)} FinalScore: ${item.retrieval_score?.toFixed(4)}`);
         });
       }
       
       if (hybrid.length > 0) {
-        this.logger.log(`[HybridTop3] Combined dense+sparse results:`);
-        hybrid.slice(0, 3).forEach((item: any, index: number) => {
+        this.logger.log(`[HybridTop10] Combined dense+sparse results:`);
+        hybrid.slice(0, 10).forEach((item: any, index: number) => {
           this.logger.log(`  ${index + 1}. "${item.title?.substring(0, 40)}..." - VecSim: ${item.vector_similarity?.toFixed(4)} FTSRank: ${item.search_vector_rank?.toFixed(4)} FinalScore: ${item.retrieval_score?.toFixed(4)}`);
         });
       }

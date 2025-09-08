@@ -2230,7 +2230,7 @@ Return JSON format:
                             this.logger.log(`[PipelineA-GroqPicker] Analyzing ${result.matches.length} vector search results with OCR-driven selection`);
                             
                             try {
-                                const groqCandidates = result.matches.slice(0, 10).map((match: any) => ({
+                                const groqCandidates = result.matches.slice(0, 50).map((match: any) => ({
                                     id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}`,
                                     title: match.title || 'Unknown Product',
                                     description: match.description || 'No description',
@@ -2254,7 +2254,7 @@ Return JSON format:
                                     targetImage: scanInput.images[result.sourceIndex]?.url!,
                                     ocrText, // Pass extracted OCR text
                                     candidates: groqCandidates,
-                                    maxCandidates: 10,
+                                    maxCandidates: 20,
                                     userId: req.user?.id
                                 });
 
