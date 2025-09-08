@@ -28,6 +28,7 @@ import { ConflictException } from '@nestjs/common';
 import { ActivityLogService } from '../common/activity-log.service';
 import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
 import { AiGenerationService } from './ai-generation/ai-generation.service';
+import { GroqSmartPickerService } from '../embedding/groq-smart-picker.service';
 // Add the orchestrator import
 import { ProductOrchestratorService, RecognizeStageInput, MatchStageInput, GenerateStageInput } from './product-orchestrator.service';
 import { ProductAnalysisJobData, ProductAnalysisJobStatus } from './types/product-analysis-job.types';
@@ -95,6 +96,7 @@ export class ProductsController {
         private readonly rerankerService: RerankerService,
         private readonly embeddingService: EmbeddingService,
         private readonly aiGenerationService: AiGenerationService,
+        private readonly groqSmartPickerService: GroqSmartPickerService,
         private readonly productOrchestratorService: ProductOrchestratorService,
         private readonly productAnalysisProcessor: ProductAnalysisProcessor,
         private readonly matchJobProcessor: MatchJobProcessor,
@@ -2129,7 +2131,8 @@ Return JSON format:
                 metadata?: any;
             }>;
             targetSites?: string[]; // For backward compatibility, will be ignored
-            useReranker?: boolean; // Use AI reranker for better results
+            useReranker?: boolean; // Use AI reranker for better results  
+            useGroqSmartPicker?: boolean; // 🎯 NEW: Use Groq Llama-4 for intelligent picking
         },
         @Req() req: AuthenticatedRequest,
     ): Promise<{
@@ -2139,6 +2142,13 @@ Return JSON format:
             matches: any[];
             confidence: 'high' | 'medium' | 'low';
             processingTimeMs: number;
+            groqAnalysis?: {
+                selectedMatch: any;
+                confidence: number;
+                reasoning: string;
+                alternatives: any[];
+                processingTimeMs: number;
+            };
         }>;
         totalProcessingTimeMs: number;
         overallConfidence: 'high' | 'medium' | 'low';
@@ -2212,64 +2222,128 @@ Return JSON format:
                             this.logger.log(`  ${index + 1}. "${match.title?.substring(0, 50) || 'No title'}..." - Score: ${match.combinedScore?.toFixed(4) || 'N/A'}`);
                         });
 
-                        // Always run reranker if we have matches (not just when useReranker=true)
-                        this.logger.log(`[RerankerDebug] Raw matches before mapping:`);
-                        result.matches.slice(0, 5).forEach((match: any, index: number) => {
-                            this.logger.log(`  Raw Match ${index + 1}: "${match.title}" - URL: ${match.imageUrl} - ID: ${match.ProductVariantId || match.variantId}`);
-                        });
+                        // 🎯 NEW: Try Groq Smart Picker first (if enabled)
+                        if (scanInput.useGroqSmartPicker) {
+                            this.logger.log(`[GroqSmartPicker] Analyzing ${result.matches.length} vector search results`);
+                            
+                            try {
+                                const groqCandidates = result.matches.slice(0, 10).map((match: any) => ({
+                                    id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}`,
+                                    title: match.title || 'Unknown Product',
+                                    description: match.description || 'No description',
+                                    imageUrl: match.imageUrl,
+                                    vectorScore: match.combinedScore || 0,
+                                    metadata: match
+                                }));
 
-                        // 🎯 Deduplicate matches before sending to reranker 
-                        const uniqueMatches = this.deduplicateMatchesByTitle(result.matches);
-                        this.logger.log(`[RerankerDebug] Deduplicated ${result.matches.length} -> ${uniqueMatches.length} matches before reranker`);
+                                const smartPickerResult = await this.groqSmartPickerService.pickBestMatch({
+                                    targetImage: scanInput.images[result.sourceIndex]?.url!,
+                                    ocrText: undefined, // Will extract OCR from embeddings if available
+                                    candidates: groqCandidates,
+                                    maxCandidates: 10,
+                                    userId: req.user?.id
+                                });
 
-                        const rerankerCandidates = uniqueMatches.map((match: any, index: number) => ({
-                            id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}_${index}`,
-                            title: match.title || 'Unknown Product',
-                            description: match.description || 'No description',
-                            businessTemplate: match.businessTemplate || 'general',
-                            imageUrl: match.imageUrl,
-                            price: match.price,
-                            metadata: {
-                                sourceUrl: match.link || match.url || match.sourceUrl,
-                                source: match.source,
-                                productId: match.productId,
-                                imageSimilarity: match.imageSimilarity,
-                                textSimilarity: match.textSimilarity,
-                                combinedScore: match.combinedScore
+                                // Add Groq analysis to result
+                                (result as any).groqAnalysis = {
+                                    selectedMatch: smartPickerResult.selectedCandidate.metadata,
+                                    confidence: smartPickerResult.confidence,
+                                    reasoning: smartPickerResult.reasoning,
+                                    alternatives: smartPickerResult.alternativeOptions?.map(alt => alt.metadata) || [],
+                                    processingTimeMs: smartPickerResult.processingTimeMs
+                                };
+
+                                this.logger.log(`[GroqSmartPicker] ✅ Selected: "${smartPickerResult.selectedCandidate.title}" (confidence: ${smartPickerResult.confidence.toFixed(2)})`);
+                                this.logger.log(`[GroqSmartPicker] 🤖 Reasoning: ${smartPickerResult.reasoning}`);
+
+                                // Reorder matches to put selected candidate first
+                                const selectedId = smartPickerResult.selectedCandidate.id;
+                                const selectedMatch = result.matches.find((m: any) => 
+                                    (m.ProductVariantId || m.variantId) === selectedId
+                                );
+                                
+                                if (selectedMatch) {
+                                    const otherMatches = result.matches.filter((m: any) => 
+                                        (m.ProductVariantId || m.variantId) !== selectedId
+                                    );
+                                    result.matches = [selectedMatch, ...otherMatches];
+                                    this.logger.log(`[GroqSmartPicker] 🔄 Moved selected match to top of results`);
+
+                                    // Update confidence based on Groq's assessment
+                                    if (smartPickerResult.confidence >= 0.8) {
+                                        result.confidence = 'high';
+                                    } else if (smartPickerResult.confidence >= 0.6) {
+                                        result.confidence = 'medium';
+                                    }
+                                } else {
+                                    this.logger.warn(`[GroqSmartPicker] ⚠️ Selected match not found in original candidates`);
+                                }
+
+                            } catch (groqError) {
+                                this.logger.error(`[GroqSmartPicker] Failed: ${groqError.message}`);
+                                // Continue with regular reranker logic below
                             }
-                        }));
+                            
+                        } else if (scanInput.useReranker) {
+                            // Always run traditional reranker if we have matches (not just when useReranker=true)
+                            this.logger.log(`[RerankerDebug] Raw matches before mapping:`);
+                            result.matches.slice(0, 5).forEach((match: any, index: number) => {
+                                this.logger.log(`  Raw Match ${index + 1}: "${match.title}" - URL: ${match.imageUrl} - ID: ${match.ProductVariantId || match.variantId}`);
+                            });
 
-                        // 🎯 FIXED: Use generic product search query instead of biasing toward first match
-                        // Using the first match's description biases the reranker toward that specific item
-                        const rerankQuery = 'Find the most relevant product match based on visual and contextual similarity';
+                            // 🎯 Deduplicate matches before sending to reranker 
+                            const uniqueMatches = this.deduplicateMatchesByTitle(result.matches);
+                            this.logger.log(`[RerankerDebug] Deduplicated ${result.matches.length} -> ${uniqueMatches.length} matches before reranker`);
 
-                        this.logger.log(`[RerankerDebug] Mapped candidates for reranker:`);
-                        rerankerCandidates.slice(0, 5).forEach((candidate, index) => {
-                            this.logger.log(`  Candidate ${index + 1}: "${candidate.title}" - URL: ${candidate.imageUrl} - ID: ${candidate.id}`);
-                        });
+                            const rerankerCandidates = uniqueMatches.map((match: any, index: number) => ({
+                                id: match.ProductVariantId || match.variantId || `temp_${Date.now()}_${Math.random()}_${index}`,
+                                title: match.title || 'Unknown Product',
+                                description: match.description || 'No description',
+                                businessTemplate: match.businessTemplate || 'general',
+                                imageUrl: match.imageUrl,
+                                price: match.price,
+                                metadata: {
+                                    sourceUrl: match.link || match.url || match.sourceUrl,
+                                    source: match.source,
+                                    productId: match.productId,
+                                    imageSimilarity: match.imageSimilarity,
+                                    textSimilarity: match.textSimilarity,
+                                    combinedScore: match.combinedScore
+                                }
+                            }));
 
-                        this.logger.log(`[RerankerInput] Sending ${rerankerCandidates.length} candidates to reranker`);
+                            // 🎯 FIXED: Use generic product search query instead of biasing toward first match
+                            // Using the first match's description biases the reranker toward that specific item
+                            const rerankQuery = 'Find the most relevant product match based on visual and contextual similarity';
 
-                        const rerankerResponse = await this.rerankerService.rerankCandidates({
-                            query: rerankQuery,
-                            targetUrl: scanInput.images[result.sourceIndex]?.url, // 🎯 CRITICAL: Pass the actual target image
-                            candidates: rerankerCandidates,
-                            userId: req.user?.id,
-                            businessTemplate: 'general',
-                            maxCandidates: rerankerCandidates.length, // send all to get full ordering
-                            useVisualReranking: true // 🎯 NEW: Enable visual comparison!
-                        });
+                            this.logger.log(`[RerankerDebug] Mapped candidates for reranker:`);
+                            rerankerCandidates.slice(0, 5).forEach((candidate, index) => {
+                                this.logger.log(`  Candidate ${index + 1}: "${candidate.title}" - URL: ${candidate.imageUrl} - ID: ${candidate.id}`);
+                            });
 
-                        this.logger.log(`[RerankerResults] Top reranked results:`);
-                        rerankerResponse.rankedCandidates.slice(0, 10).forEach((candidate: any, index: number) => {
-                            this.logger.log(`  ${index + 1}. "${candidate.title?.substring(0, 50)}..." - Reranker Score: ${candidate.score?.toFixed(4)} (Rank: ${candidate.rank})`);
-                        });
+                            this.logger.log(`[RerankerInput] Sending ${rerankerCandidates.length} candidates to reranker`);
 
-                        // Replace matches with full reranked results
-                        result.matches = rerankerResponse.rankedCandidates;
-                        result.confidence = rerankerResponse.confidenceTier;
-                        
-                        this.logger.log(`[RerankerFinal] Updated confidence from vector search to reranker: ${rerankerResponse.confidenceTier}`);
+                            const rerankerResponse = await this.rerankerService.rerankCandidates({
+                                query: rerankQuery,
+                                targetUrl: scanInput.images[result.sourceIndex]?.url, // 🎯 CRITICAL: Pass the actual target image
+                                candidates: rerankerCandidates,
+                                userId: req.user?.id,
+                                businessTemplate: 'general',
+                                maxCandidates: rerankerCandidates.length, // send all to get full ordering
+                                useVisualReranking: true // 🎯 NEW: Enable visual comparison!
+                            });
+
+                            this.logger.log(`[RerankerResults] Top reranked results:`);
+                            rerankerResponse.rankedCandidates.slice(0, 10).forEach((candidate: any, index: number) => {
+                                this.logger.log(`  ${index + 1}. "${candidate.title?.substring(0, 50)}..." - Reranker Score: ${candidate.score?.toFixed(4)} (Rank: ${candidate.rank})`);
+                            });
+
+                            // Replace matches with full reranked results
+                            result.matches = rerankerResponse.rankedCandidates;
+                            result.confidence = rerankerResponse.confidenceTier;
+                            
+                            this.logger.log(`[RerankerFinal] Updated confidence from vector search to reranker: ${rerankerResponse.confidenceTier}`);
+                        }
 
                     } catch (error) {
                         this.logger.error(`Reranker failed for image ${result.sourceIndex}: ${error.message}`);
