@@ -1211,7 +1211,27 @@ export class EmbeddingService {
       
       const sqlStartTime = Date.now();
 
-      // 🎯 STEP 2: Call the function with detailed error handling
+      // 🎯 STEP 2: Test the exact same FTS approach that worked individually
+      this.logger.log(`[HybridSearch] 🧪 First, let's test the EXACT same FTS approach that worked:`);
+      try {
+        const { data: exactFtsTest, error: exactFtsError } = await supabase
+          .from('ProductEmbeddings')
+          .select(`ProductId, ProductVariantId, ProductText, SearchVector, ProductVariants(Title, Description, Price)`)
+          .textSearch('SearchVector', 'item', { type: 'plain', config: 'english' })
+          .limit(5);
+        
+        this.logger.log(`[HybridSearch] 🧪 Exact FTS Test Results: ${exactFtsTest?.length || 0} rows`);
+        if (exactFtsTest && exactFtsTest.length > 0) {
+          exactFtsTest.slice(0, 2).forEach((row: any, i: number) => {
+            this.logger.log(`[HybridSearch] 🧪   ${i+1}. "${row.ProductVariants?.Title || row.ProductText?.substring(0, 40)}..."`);
+          });
+        }
+      } catch (ftsTestError) {
+        this.logger.error(`[HybridSearch] 🧪 Exact FTS test failed: ${ftsTestError.message}`);
+      }
+
+      // 🎯 STEP 3: Call the function with detailed error handling
+      this.logger.log(`[HybridSearch] 🎯 Now calling hybrid function with same parameters...`);
       const { data, error } = await supabase.rpc('search_products_hybrid_image', {
         q_image: qImage,
         search_query: searchQuery,
@@ -1223,6 +1243,7 @@ export class EmbeddingService {
       
       const sqlTime = Date.now() - sqlStartTime;
       this.logger.log(`[HybridSearch] ⏱️ SQL function completed in ${sqlTime}ms`);
+      this.logger.log(`[HybridSearch] 📊 Raw result: data=${!!data}, length=${data?.length || 0}, error=${!!error}`);
 
       if (error) {
         this.logger.error(`[HybridSearch] ❌ SQL FUNCTION FAILED with error: ${error.message}`);
@@ -1277,7 +1298,7 @@ export class EmbeddingService {
             .limit(5);
           
           this.logger.error(`[HybridSearch] 🔍 SearchVector CHECK: Found ${searchVectorCheck?.length || 0} rows with populated SearchVector`);
-          if (searchVectorCheck?.length > 0) {
+          if (searchVectorCheck && searchVectorCheck.length > 0) {
             searchVectorCheck.slice(0, 2).forEach((row: any, i: number) => {
               this.logger.error(`[HybridSearch]   Row ${i+1}: ProductText="${row.ProductText?.substring(0, 40)}..." HasSearchVector=${!!row.SearchVector}`);
             });
@@ -1286,6 +1307,52 @@ export class EmbeddingService {
           }
         } catch (diagError) {
           this.logger.error(`[HybridSearch] ❌ SearchVector diagnostic failed: ${diagError.message}`);
+        }
+
+        // 🎯 STEP 4: Test individual SQL components manually
+        this.logger.error(`[HybridSearch] 🔧 Testing individual SQL components:`);
+        
+        // Test 1: Direct dense search SQL (similar to what works)
+        try {
+          const { data: denseManualTest, error: denseManualError } = await supabase.rpc('test_dense_only', {
+            q_image: qImage,
+            p_business_template: params.businessTemplate || null,
+            match_limit: 10
+          });
+          this.logger.error(`[HybridSearch] 🔧 Dense Manual Test: ${denseManualTest?.length || 0} results, error: ${!!denseManualError}`);
+        } catch (denseTestError) {
+          this.logger.error(`[HybridSearch] 🔧 Dense manual test failed (function may not exist): ${denseTestError.message}`);
+        }
+        
+        // Test 2: Direct FTS search using the exact working query
+        this.logger.error(`[HybridSearch] 🔧 Testing direct PostgreSQL FTS query simulation:`);
+        this.logger.error(`[HybridSearch] 🔧 Query would be: SELECT * FROM "ProductEmbeddings" WHERE "SearchVector" @@ plainto_tsquery('english', '${searchQuery}') LIMIT 5`);
+        
+        // Test 3: Simplified hybrid query
+        this.logger.error(`[HybridSearch] 🔧 Potential issues with hybrid function:`);
+        this.logger.error(`[HybridSearch] 🔧   A) Multi-word query '${searchQuery}' causing FTS to fail`);
+        this.logger.error(`[HybridSearch] 🔧   B) Vector dimensions mismatch (expecting ${qImage?.length})`);
+        this.logger.error(`[HybridSearch] 🔧   C) UNION ALL logic failing to combine results`);
+        this.logger.error(`[HybridSearch] 🔧   D) Business template filter too restrictive`);
+        this.logger.error(`[HybridSearch] 🔧   E) DISTINCT ON clause removing all results`);
+        
+        // Test 4: Try with single word that we know works
+        this.logger.error(`[HybridSearch] 💡 SUGGESTION: Try hybrid function with single word 'item' instead of '${searchQuery}'`);
+        try {
+          const { data: singleWordTest, error: singleWordError } = await supabase.rpc('search_products_hybrid_image', {
+            q_image: qImage,
+            search_query: 'item', // Single word that worked in FTS test
+            p_business_template: params.businessTemplate || null,
+            dense_limit: 50,
+            sparse_limit: 50,
+            final_limit: 100
+          });
+          this.logger.error(`[HybridSearch] 💡 Single word 'item' test: ${singleWordTest?.length || 0} results, error: ${!!singleWordError}`);
+          if (singleWordTest && singleWordTest.length > 0) {
+            this.logger.error(`[HybridSearch] 💡 SUCCESS! Single word works - problem is multi-word query parsing`);
+          }
+        } catch (singleWordError) {
+          this.logger.error(`[HybridSearch] 💡 Single word test also failed: ${singleWordError.message}`);
         }
         
         // 🎯 RECOMMENDATION:
