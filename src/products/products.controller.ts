@@ -1999,9 +1999,11 @@ Return JSON format:
 
                 const rerankerResponse = await this.rerankerService.rerankCandidates({
                     query: matchRequest.userContext || 'product match',
+                    targetUrl: matchRequest.imageUrl || matchRequest.imageBase64, // Pass target image
                     candidates: rerankerCandidates,
                     userId,
-                    businessTemplate: 'visual_matching'
+                    businessTemplate: 'visual_matching',
+                    useVisualReranking: true // 🎯 NEW: Enable visual comparison!
                 });
 
                 aiSuggestions = rerankerResponse.rankedCandidates.map((candidate: any, idx: number) => ({
@@ -2254,7 +2256,8 @@ Return JSON format:
                             candidates: rerankerCandidates,
                             userId: req.user?.id,
                             businessTemplate: 'general',
-                            maxCandidates: rerankerCandidates.length // send all to get full ordering
+                            maxCandidates: rerankerCandidates.length, // send all to get full ordering
+                            useVisualReranking: true // 🎯 NEW: Enable visual comparison!
                         });
 
                         this.logger.log(`[RerankerResults] Top reranked results:`);

@@ -24,6 +24,7 @@ export interface RerankerRequest {
   userId?: string;
   businessTemplate?: string;
   maxCandidates?: number;
+  useVisualReranking?: boolean; // Enable visual comparison
 }
 
 export interface RankedCandidate extends RerankerCandidate {
@@ -88,6 +89,7 @@ export class RerankerService {
     // 🎯 Enhanced performance logging
     this.logger.log(`[RerankerDebug] 🚀 Starting rerank of ${request.candidates.length} candidates`);
     this.logger.log(`[RerankerDebug] Target image: ${request.targetUrl ? 'PROVIDED ✅' : 'MISSING ❌'}`);
+    this.logger.log(`[RerankerDebug] Visual reranking: ${request.useVisualReranking ? 'ENABLED 🖼️' : 'DISABLED 📝'}`);
 
     // Create a proper search query from the target URL or use a generic query
     const searchQuery = request.targetUrl 
@@ -97,7 +99,20 @@ export class RerankerService {
     this.logger.log(`[RerankerDebug] Using search query: "${searchQuery}"`);
     
     try {
-      // Prepare candidates for reranking - fix metadata format issue
+      // 🎯 NEW: Convert target image to base64 if visual reranking is enabled
+      let targetImageBase64: string | undefined;
+      if (request.useVisualReranking && request.targetUrl) {
+        try {
+          this.logger.log(`[RerankerDebug] 🖼️ Converting target image to base64: ${request.targetUrl}`);
+          targetImageBase64 = await this.downloadImageAsBase64(request.targetUrl);
+          this.logger.log(`[RerankerDebug] ✅ Target image converted to base64 (${targetImageBase64.length} chars)`);
+        } catch (error) {
+          this.logger.warn(`[RerankerDebug] ⚠️ Failed to convert target image to base64: ${error.message}`);
+          // Continue without visual reranking
+        }
+      }
+      
+      // Prepare candidates for reranking - now include imageUrl for visual comparison
       const candidatesForReranker = request.candidates.map(candidate => ({
         id: candidate.id,
         title: candidate.title,
@@ -106,22 +121,33 @@ export class RerankerService {
         brand: candidate.brand || '',
         category: candidate.category || '',
         business_template: candidate.businessTemplate || '',
-        searchKeywords: candidate.searchKeywords || ''
-        // Remove metadata entirely to avoid validation errors
+        searchKeywords: candidate.searchKeywords || '',
+        imageUrl: candidate.imageUrl || candidate.metadata?.imageUrl // Include image URL for visual comparison
       }));
 
       this.logger.log(`[RerankerDebug] Sending ${candidatesForReranker.length} candidates to AI server`);
+      this.logger.log(`[RerankerDebug] Candidates with images: ${candidatesForReranker.filter(c => c.imageUrl).length}/${candidatesForReranker.length}`);
 
-      // Call the AI server reranker endpoint
+      // Call the AI server reranker endpoint with enhanced payload
       const aiStartTime = Date.now();
+      const rerankerPayload: any = {
+        query: searchQuery,
+        candidates: candidatesForReranker,
+        top_k: request.maxCandidates || 10,
+        use_visual_reranking: request.useVisualReranking && !!targetImageBase64,
+      };
+      
+      // Add target image if visual reranking is enabled
+      if (targetImageBase64) {
+        rerankerPayload.target_image = targetImageBase64;
+      }
+      
+      this.logger.log(`[RerankerDebug] 🚀 Calling reranker with visual_reranking=${rerankerPayload.use_visual_reranking}`);
+      
       const response = await fetch(`${this.aiServerUrl}/rerank`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query: searchQuery,
-          candidates: candidatesForReranker,
-          top_k: request.maxCandidates || 10
-        }),
+        body: JSON.stringify(rerankerPayload),
       });
 
       if (!response.ok) {
@@ -516,6 +542,38 @@ export class RerankerService {
         queryLength: request.query.length
       }
     };
+  }
+
+  /**
+   * Download image and convert to base64 for visual reranking
+   */
+  private async downloadImageAsBase64(imageUrl: string): Promise<string> {
+    try {
+      this.logger.debug(`[RerankerService] Downloading image: ${imageUrl}`);
+      
+      const response = await fetch(imageUrl, {
+        method: 'GET',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; reranker-service/1.0)',
+        },
+        // Note: Node.js fetch doesn't support timeout option, we'll handle it differently
+      });
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+      
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const base64 = buffer.toString('base64');
+      
+      this.logger.debug(`[RerankerService] Image downloaded: ${(buffer.length / 1024).toFixed(1)}KB`);
+      return base64;
+      
+    } catch (error) {
+      this.logger.error(`[RerankerService] Failed to download image ${imageUrl}: ${error.message}`);
+      throw error;
+    }
   }
 
   private calculateBasicSimilarity(query: string, title: string): number {
