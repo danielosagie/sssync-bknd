@@ -2268,6 +2268,36 @@ Return JSON format:
                                     processingTimeMs: smartPickerResult.processingTimeMs
                                 };
 
+                                // 🎯 Promote selected match to the top of results for clarity
+                                try {
+                                    const selected = smartPickerResult.selectedCandidate.metadata;
+                                    const normalize = (s: string) => (s || '').toLowerCase().replace(/[^\w\s]/g, '').replace(/\s+/g, ' ').trim();
+
+                                    let foundIndex = result.matches.findIndex((m: any) =>
+                                        (m.ProductVariantId && selected.ProductVariantId && m.ProductVariantId === selected.ProductVariantId) ||
+                                        (m.productId && selected.productId && m.productId === selected.productId) ||
+                                        (m.imageUrl && selected.imageUrl && m.imageUrl === selected.imageUrl) ||
+                                        (m.title && selected.title && normalize(m.title) === normalize(selected.title))
+                                    );
+
+                                    if (foundIndex === -1) {
+                                        // Not found — prepend the selected item
+                                        result.matches = [selected, ...result.matches];
+                                    } else if (foundIndex > 0) {
+                                        const [picked] = result.matches.splice(foundIndex, 1);
+                                        result.matches.unshift(picked);
+                                    }
+
+                                    // Adjust confidence tier based on Groq score
+                                    if (smartPickerResult.confidence >= 0.9) {
+                                        result.confidence = 'high';
+                                    } else if (smartPickerResult.confidence >= 0.7 && result.confidence !== 'high') {
+                                        result.confidence = 'medium';
+                                    }
+                                } catch (promoteErr) {
+                                    this.logger.warn(`[GroqSmartPicker] Failed to promote selected match: ${promoteErr.message}`);
+                                }
+
                                 this.logger.log(`[GroqSmartPicker] ✅ Selected: "${smartPickerResult.selectedCandidate.title}" (confidence: ${smartPickerResult.confidence.toFixed(2)})`);
                                 this.logger.log(`[GroqSmartPicker] 🤖 Reasoning: ${smartPickerResult.reasoning}`);
 

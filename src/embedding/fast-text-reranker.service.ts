@@ -58,6 +58,9 @@ export class FastTextRerankerService {
         // Method 1: Exact keyword matches (fastest, highest confidence)
         const exactMatches = this.countExactMatches(ocrKeywords, candidateText);
         const exactScore = exactMatches / Math.max(ocrKeywords.length, 1);
+
+        // Booster: if candidate text contains the exact OCR key entity tokens (e.g., card name like "machamp"), strong boost
+        const entityBoost = this.containsEntityToken(ocrKeywords, candidateText) ? 0.2 : 0.0;
         
         // Method 2: Fuzzy/substring matches (fast, medium confidence)
         const fuzzyScore = this.calculateFuzzyScore(ocrKeywords, candidateText);
@@ -74,7 +77,7 @@ export class FastTextRerankerService {
           fuzzyScore * 0.25 +       // Fuzzy matches second
           titleScore * 0.15 +       // Title similarity third
           vectorScore * 0.1         // Vector as baseline
-        );
+        ) + entityBoost;            // Add entity boost
         
         // Determine ranking method for transparency
         let rankingMethod: FastTextRerankerResult['rankingMethod'];
@@ -112,9 +115,9 @@ export class FastTextRerankerService {
       
       // 🎯 Step 4: Determine confidence tier
       let confidenceTier: 'high' | 'medium' | 'low';
-      if (topScore >= 0.7) {
+      if (topScore >= 0.6) {
         confidenceTier = 'high';
-      } else if (topScore >= 0.4) {
+      } else if (topScore >= 0.3) {
         confidenceTier = 'medium';
       } else {
         confidenceTier = 'low';
@@ -169,6 +172,7 @@ export class FastTextRerankerService {
     // Filter out stop words and short words
     const stopWords = new Set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'can', 'may', 'might']);
     
+    // Keep numbers (e.g., 220, 140) and key alphas
     return words
       .filter(word => word.length >= 2 && !stopWords.has(word))
       .slice(0, 10); // Limit to top 10 keywords for performance
@@ -229,6 +233,15 @@ export class FastTextRerankerService {
     const union = new Set([...ocrWords, ...titleWords]);
     
     return union.size > 0 ? intersection.size / union.size : 0;
+  }
+
+  /**
+   * Entity token check: looks for strong name tokens (first 3 keywords) in candidate text
+   */
+  private containsEntityToken(keywords: string[], candidateText: string): boolean {
+    if (!keywords || keywords.length === 0) return false;
+    const top = keywords.slice(0, 3);
+    return top.some(k => candidateText.includes(k));
   }
 
   /**
