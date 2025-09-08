@@ -1,7 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import sharp from 'sharp';
-import * as Tesseract from 'tesseract.js';
+import Groq from 'groq-sdk';
 
 export interface OcrResult {
   text: string;
@@ -20,41 +19,25 @@ export interface OcrResult {
 @Injectable()
 export class OcrService {
   private readonly logger = new Logger(OcrService.name);
-  private tesseractWorker: Tesseract.Worker | null = null;
+  private readonly groqClient: Groq | null;
 
   constructor(private readonly configService: ConfigService) {
-    this.initializeTesseract();
-  }
-
-  private async initializeTesseract() {
-    try {
-      this.tesseractWorker = await Tesseract.createWorker('eng', 1, {
-        logger: m => {
-          if (m.status === 'recognizing text') {
-            this.logger.debug(`[OCR] Progress: ${Math.round(m.progress * 100)}%`);
-          }
-        }
+    const groqApiKey = this.configService.get<string>('GROQ_API_KEY');
+    
+    if (!groqApiKey) {
+      this.logger.warn('[OCR] GROQ_API_KEY not configured. OCR service will be disabled.');
+      this.groqClient = null;
+    } else {
+      this.groqClient = new Groq({
+        apiKey: groqApiKey,
       });
-      
-      // 🎯 OPTIMIZED for Trading Cards: Better accuracy
-      await this.tesseractWorker.setParameters({
-        tessedit_pageseg_mode: Tesseract.PSM.SINGLE_BLOCK, // Single uniform block of text
-        tessedit_ocr_engine_mode: Tesseract.OEM.LSTM_ONLY, // Use LSTM neural network
-        tessedit_char_blacklist: '|@#$%^&*()_+=[]{}\\<>?/~`', // Remove symbols that cause noise
-        preserve_interword_spaces: '1',
-        user_defined_dpi: '300', // High DPI for better recognition
-        textord_heavy_nr: '1', // Better noise reduction
-      });
-      
-      this.logger.log('[OCR] Tesseract worker initialized successfully');
-    } catch (error) {
-      this.logger.error('[OCR] Failed to initialize Tesseract:', error.message);
+      this.logger.log('[OCR] Groq client initialized with Llama-4 Scout for OCR');
     }
   }
 
   /**
-   * Extract text from image using LOCAL Tesseract OCR
-   * 🎯 INSTANT, FREE, HIGH-QUALITY local processing
+   * Extract text from image using Groq Llama-4 Scout
+   * 🎯 VISION-ENABLED: AI can directly read text from images
    */
   async extractTextFromImage(imageData: {
     imageUrl?: string;
@@ -63,52 +46,73 @@ export class OcrService {
     const startTime = Date.now();
     
     try {
-      if (!this.tesseractWorker) {
-        throw new Error('Tesseract worker not initialized');
+      if (!this.groqClient) {
+        throw new Error('Groq client not initialized - GROQ_API_KEY missing');
       }
 
-      let imageBuffer: Buffer;
+      let imageBase64: string;
       
       if (imageData.imageBase64) {
-        imageBuffer = Buffer.from(imageData.imageBase64, 'base64');
+        imageBase64 = imageData.imageBase64;
       } else if (imageData.imageUrl) {
-        imageBuffer = await this.downloadImageAsBuffer(imageData.imageUrl);
+        imageBase64 = await this.downloadImageAsBase64(imageData.imageUrl);
       } else {
         throw new Error('Either imageUrl or imageBase64 must be provided');
       }
 
-      // 🎯 PREPROCESSING: Enhance image for better OCR
-      const enhancedImageBuffer = await this.preprocessImageForOcr(imageBuffer);
-
-      this.logger.log(`[OCR] Processing image locally with Tesseract`);
+      this.logger.log(`[OCR] Processing image with Groq Llama-4 Scout (vision model)`);
       
-      // 🎯 LOCAL OCR: No network calls, instant processing
-      const ocrResult = await this.tesseractWorker.recognize(enhancedImageBuffer);
+      // 🎯 LLAMA-4 SCOUT: Direct image-to-text with AI vision
+      const completion = await this.groqClient.chat.completions.create({
+        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        messages: [
+          {
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: `Please extract all visible text from this image. Focus on:
+- Product names, titles, brands
+- Numbers, prices, model numbers  
+- Any printed text or labels
+- Card names, set information (if trading cards)
+- Description text
+
+Return only the extracted text, preserving the original layout and order as much as possible. If no text is visible, return "NO_TEXT_FOUND".`
+              },
+              {
+                type: "image_url",
+                image_url: {
+                  url: `data:image/jpeg;base64,${imageBase64}`
+                }
+              }
+            ]
+          }
+        ],
+        max_tokens: 1000,
+        temperature: 0.1, // Low temperature for consistent text extraction
+      });
       
       const processingTime = Date.now() - startTime;
-
-      // Extract bounding boxes for detailed results
-      const boundingBoxes = ocrResult.data.words
-        .filter(word => word.confidence > 50) // Filter low-confidence words
-        .map(word => ({
-          text: word.text,
-          confidence: word.confidence / 100, // Convert to 0-1 scale
-          x: word.bbox.x0,
-          y: word.bbox.y0,
-          width: word.bbox.x1 - word.bbox.x0,
-          height: word.bbox.y1 - word.bbox.y0
-        }));
+      const extractedText = completion.choices[0]?.message?.content?.trim() || '';
+      
+      // Calculate confidence based on response quality
+      let confidence = 0.9; // Default high confidence for Llama-4
+      if (extractedText === 'NO_TEXT_FOUND' || extractedText.length === 0) {
+        confidence = 0.0;
+      } else if (extractedText.length < 10) {
+        confidence = 0.6; // Lower confidence for very short text
+      }
 
       const result: OcrResult = {
-        text: ocrResult.data.text.trim(),
-        confidence: ocrResult.data.confidence / 100, // Convert to 0-1 scale
-        boundingBoxes,
+        text: extractedText,
+        confidence,
         processingTimeMs: processingTime
       };
 
       this.logger.log(`[OCR] ✅ Extracted ${result.text.length} characters in ${processingTime}ms (confidence: ${result.confidence.toFixed(2)})`);
       
-      if (result.text.length > 0) {
+      if (result.text.length > 0 && result.text !== 'NO_TEXT_FOUND') {
         this.logger.log(`[OCR] Text: "${result.text.substring(0, 100)}${result.text.length > 100 ? '...' : ''}"`);
       }
 
@@ -116,7 +120,7 @@ export class OcrService {
       
     } catch (error) {
       const processingTime = Date.now() - startTime;
-      this.logger.error(`[OCR] Failed to extract text: ${error.message}`);
+      this.logger.error(`[OCR] Failed to extract text with Groq: ${error.message}`);
       
       // Return empty result instead of throwing
       return {
@@ -127,45 +131,6 @@ export class OcrService {
     }
   }
 
-  /**
-   * 🎯 AGGRESSIVE PREPROCESSING: Make text crystal clear for OCR
-   */
-  private async preprocessImageForOcr(imageBuffer: Buffer): Promise<Buffer> {
-    try {
-      // 🎯 MULTI-STAGE PREPROCESSING for trading cards
-      return await sharp(imageBuffer)
-        // Scale up for better text recognition (bigger = better for OCR)
-        .resize({ width: 2000, height: 2800, fit: 'inside', withoutEnlargement: true })
-        // Convert to grayscale first
-        .grayscale()
-        // AGGRESSIVE contrast enhancement
-        .linear(1.5, -(128 * 0.5)) // Increase contrast dramatically
-        // Normalize to full dynamic range
-        .normalize()
-        // Heavy sharpening for text clarity
-        .sharpen({ sigma: 2.0, x1: 2, y2: 0.5, y3: 4 })
-        // Convert to high-contrast black/white if needed
-        .threshold(128, { greyscale: false })
-        // Final format optimized for OCR
-        .png({ quality: 100, compressionLevel: 0, palette: false })
-        .toBuffer();
-    } catch (error) {
-      this.logger.warn(`[OCR] Aggressive preprocessing failed, trying basic: ${error.message}`);
-      
-      // Fallback to basic preprocessing
-      try {
-        return await sharp(imageBuffer)
-          .resize({ width: 1200, height: 1600, fit: 'inside', withoutEnlargement: true })
-          .grayscale()
-          .normalize()
-          .png()
-          .toBuffer();
-      } catch (fallbackError) {
-        this.logger.warn(`[OCR] Basic preprocessing also failed, using original: ${fallbackError.message}`);
-        return imageBuffer;
-      }
-    }
-  }
 
   /**
    * Extract specific information from card text
@@ -226,9 +191,9 @@ export class OcrService {
   }
 
   /**
-   * Download image and return as Buffer (for local processing)
+   * Download image and return as base64 (for Groq vision API)
    */
-  private async downloadImageAsBuffer(imageUrl: string): Promise<Buffer> {
+  private async downloadImageAsBase64(imageUrl: string): Promise<string> {
     try {
       const response = await fetch(imageUrl);
       if (!response.ok) {
@@ -236,7 +201,8 @@ export class OcrService {
       }
       
       const arrayBuffer = await response.arrayBuffer();
-      return Buffer.from(arrayBuffer);
+      const buffer = Buffer.from(arrayBuffer);
+      return buffer.toString('base64');
       
     } catch (error) {
       this.logger.error(`Failed to download image from ${imageUrl}: ${error.message}`);
@@ -245,12 +211,10 @@ export class OcrService {
   }
 
   /**
-   * Cleanup Tesseract worker on service destroy
+   * Cleanup resources on service destroy
    */
   async onModuleDestroy() {
-    if (this.tesseractWorker) {
-      await this.tesseractWorker.terminate();
-      this.logger.log('[OCR] Tesseract worker terminated');
-    }
+    // No resources to clean up for Groq client
+    this.logger.log('[OCR] OCR service terminated');
   }
 }
