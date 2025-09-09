@@ -74,6 +74,7 @@ export class OcrService {
                 text: `Please extract all visible text from this image. Focus on:
 - Product names, titles, brands
 - Numbers, prices, model numbers  
+- Any descriptors you can understand from this item
 - Any printed text or labels
 - Card names, set information (if trading cards)
 - Description text
