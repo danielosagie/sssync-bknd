@@ -70,7 +70,9 @@ export class EmbeddingService {
     private readonly aiUsageTracker: AiUsageTrackerService,
     private readonly ocrService: OcrService
   ) {
-    this.aiServerUrl = this.configService.get<string>('AI_SERVER_URL') || 'http://localhost:8000';
+    this.aiServerUrl = (this.configService.get<string>('AI_SERVER_URL') || 'http://localhost:8000')
+      .trim()
+      .replace(/\/+$/, '');
     
     // Verify Sharp is available
     try {
