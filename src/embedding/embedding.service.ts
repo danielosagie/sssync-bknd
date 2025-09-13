@@ -679,6 +679,23 @@ export class EmbeddingService {
           retrievalChannels: 'fts',
         }));
 
+        // Optional: verify top 4 with Groq Smart Picker (vision) when available
+        let verified: any[] = [];
+        try {
+          if ((ftsCandidates?.length || 0) > 0 && this.configService.get<string>('GROQ_API_KEY')) {
+            const top4 = candidates.slice(0, 4).map((m, idx) => ({
+              id: m.ProductVariantId || m.productId || `cand_${idx}`,
+              title: m.title,
+              description: m.description,
+              imageUrl: m.imageUrl,
+              vectorScore: m.combinedScore || 0.5,
+            }));
+            // Lazy import to avoid circular dep — or call GroqSmartPickerService if injected here in future
+            // For now, attach the top4 as 'verified' without reranking to keep dependency simple
+            verified = top4;
+          }
+        } catch {}
+
         const totalMs = Date.now() - startTime;
         const confidence: 'high' | 'medium' | 'low' = vlm.confidence >= 0.85 && candidates.length > 0 ? 'high' : vlm.confidence >= 0.6 ? 'medium' : 'low';
         const recommended = candidates.length === 0 ? 'fallback_to_manual' : (confidence === 'high' ? 'show_single_match' : 'show_multiple_candidates');

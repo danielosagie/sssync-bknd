@@ -54,3 +54,5 @@ CREATE POLICY "Users can update their own regenerate job statuses" ON regenerate
 CREATE POLICY "Users can delete their own regenerate job statuses" ON regenerate_job_statuses
     FOR DELETE USING (auth.uid() = user_id);
 
+
+

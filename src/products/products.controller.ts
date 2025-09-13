@@ -2137,7 +2137,7 @@ Return JSON format:
             }>;
             targetSites?: string[]; // For backward compatibility, will be ignored
             reranker?: 'llama4-groq' | 'jina-modal' | 'fast-text' | 'none'; // 🎯 NEW: Choose reranker system
-            mode?: 'vlm-first' | 'vector-first' | 'auto';
+            mode?: 'vlm-first' | 'vector-first' | 'auto' | 'ocr-vlm-search' | 'embed-search';
         },
         @Req() req: AuthenticatedRequest,
     ): Promise<{
@@ -2182,13 +2182,20 @@ Return JSON format:
                 processingTimeMs: number;
             }> = [];
 
+            // Normalize mode synonyms
+            const normalizedMode = scanInput.mode === 'ocr-vlm-search'
+                ? 'vlm-first'
+                : scanInput.mode === 'embed-search'
+                    ? 'vector-first'
+                    : (scanInput.mode as any);
+
             // Process each image against our database
             for (let i = 0; i < scanInput.images.length; i++) {
                 const image = scanInput.images[i];
                 
                 try {
                     // Route to VLM-first if requested
-                    if (scanInput.mode === 'vlm-first') {
+                    if (normalizedMode === 'vlm-first') {
                         const startVlm = Date.now();
                         const vlmResult = await this.embeddingService.performEnhancedQuickScan({
                             images: image.url ? [image.url] : undefined,
