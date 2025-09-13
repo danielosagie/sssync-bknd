@@ -609,6 +609,7 @@ export class EmbeddingService {
     businessTemplate?: string;
     threshold?: number;
     userId: string;
+    mode?: 'vlm-first' | 'vector-first' | 'auto';
   }, userJwtToken?: string): Promise<{
     matches: any[];
     confidence: 'high' | 'medium' | 'low';
@@ -620,6 +621,78 @@ export class EmbeddingService {
     
     try {
       this.logger.log(`[EnhancedQuickScan] Starting for user ${params.userId}`);
+
+      // Fast path: VLM-first agentic search (no embeddings)
+      if (params.mode === 'vlm-first' && params.images?.[0]) {
+        const stageStart = Date.now();
+        const vlm = await this.ocrService.analyzeImageAttributes({ imageUrl: params.images[0] });
+        const vlmMs = Date.now() - stageStart;
+        this.logger.log(`[VLM-First] VLM analysis took ${vlmMs}ms (conf=${vlm.confidence.toFixed(2)})`);
+
+        // Routing based on confidence
+        const route = vlm.confidence >= 0.8 ? 'text-only' : vlm.confidence >= 0.4 ? 'hybrid-lite' : 'image-fallback';
+        this.logger.log(`[VLM-First] Routing: ${route}`);
+
+        // Build query: prefer first paraphrase, fallback to compact OCR
+        const query = (vlm.paraphrases[0] || vlm.ocrText || 'product item').slice(0, 200);
+        const ftsStart = Date.now();
+        const supabase = this.supabaseService.getClient();
+
+        // FTS-only, fast
+        const { data: ftsCandidates, error: ftsErr } = await supabase
+          .from('ProductEmbeddings')
+          .select(`ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType, ProductVariants(Title, Description, Price) , SearchVector`)
+          .textSearch('SearchVector', query, { type: 'websearch', config: 'english' })
+          .limit(200);
+        const ftsMs = Date.now() - ftsStart;
+        if (ftsErr) this.logger.warn(`[VLM-First] FTS error: ${ftsErr.message}`);
+        this.logger.log(`[VLM-First] FTS returned ${ftsCandidates?.length || 0} rows in ${ftsMs}ms for query: "${query}"`);
+
+        // Cheap sort heuristic: prioritize title hits (trigram-like), then description length, then presence of price
+        const candidates = (ftsCandidates || []).map((row: any) => {
+          const title: string = row.ProductVariants?.Title || row.ProductText || '';
+          const desc: string = row.ProductVariants?.Description || '';
+          // simple score: keyword presence (paraphrase terms) + title length quality + has price
+          const terms = (vlm.paraphrases[0] || '').toLowerCase().split(/\s+/).filter(Boolean);
+          const titleLower = title.toLowerCase();
+          let termHits = 0;
+          for (const t of terms) if (t && titleLower.includes(t)) termHits++;
+          const quality = Math.min(1, Math.max(0, (title.length - 10) / 70));
+          const priceBonus = row.ProductVariants?.Price ? 0.05 : 0;
+          const heuristic = termHits * 0.2 + quality * 0.2 + priceBonus;
+          return { row, title, desc, heuristic };
+        })
+        .sort((a, b) => b.heuristic - a.heuristic)
+        .slice(0, 50)
+        .map(({ row, title, desc }) => ({
+          productId: row.ProductId || '',
+          ProductVariantId: row.ProductVariantId || null,
+          title: title || 'Unknown Product',
+          description: desc || `Scanned product (${row.SourceType})`,
+          imageUrl: row.ImageUrl,
+          businessTemplate: row.BusinessTemplate,
+          price: row.ProductVariants?.Price || 0,
+          productUrl: row.ProductId ? `https://sssync.app/products/${row.ProductId}` : row.ImageUrl || '#',
+          imageSimilarity: 0,
+          textSimilarity: 0.5, // indicative only
+          combinedScore: 0.5,
+          retrievalChannels: 'fts',
+        }));
+
+        const totalMs = Date.now() - startTime;
+        const confidence: 'high' | 'medium' | 'low' = vlm.confidence >= 0.85 && candidates.length > 0 ? 'high' : vlm.confidence >= 0.6 ? 'medium' : 'low';
+        const recommended = candidates.length === 0 ? 'fallback_to_manual' : (confidence === 'high' ? 'show_single_match' : 'show_multiple_candidates');
+
+        this.logger.log(`[VLM-First] Done. VLM: ${vlmMs}ms, FTS: ${ftsMs}ms, Total: ${totalMs}ms, Candidates: ${candidates.length}, Conf: ${confidence}`);
+
+        return {
+          matches: candidates,
+          confidence,
+          processingTimeMs: totalMs,
+          recommendedAction: recommended,
+          searchEmbedding: [], // not used in VLM-first
+        } as any;
+      }
 
       // Use unified vector search
       const searchResult = await this.performUnifiedVectorSearch({

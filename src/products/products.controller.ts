@@ -2137,6 +2137,7 @@ Return JSON format:
             }>;
             targetSites?: string[]; // For backward compatibility, will be ignored
             reranker?: 'llama4-groq' | 'jina-modal' | 'fast-text' | 'none'; // 🎯 NEW: Choose reranker system
+            mode?: 'vlm-first' | 'vector-first' | 'auto';
         },
         @Req() req: AuthenticatedRequest,
     ): Promise<{
@@ -2186,11 +2187,34 @@ Return JSON format:
                 const image = scanInput.images[i];
                 
                 try {
-                        const imageResult = await this.quickProductScan({
+                    // Route to VLM-first if requested
+                    if (scanInput.mode === 'vlm-first') {
+                        const startVlm = Date.now();
+                        const vlmResult = await this.embeddingService.performEnhancedQuickScan({
+                            images: image.url ? [image.url] : undefined,
+                            textQuery: undefined,
+                            businessTemplate: 'general',
+                            threshold: 0.0,
+                            userId: req.user.id,
+                            mode: 'vlm-first',
+                        }, req.headers['authorization'] as string | undefined);
+                        const vlmTime = Date.now() - startVlm;
+                        this.logger.log(`[QuickScan VLM-First] Image ${i} completed in ${vlmTime}ms with ${vlmResult.matches.length} matches (conf=${vlmResult.confidence})`);
+                        results.push({
+                            sourceIndex: i,
+                            sourceType: 'image',
+                            matches: vlmResult.matches,
+                            confidence: vlmResult.confidence,
+                            processingTimeMs: vlmResult.processingTimeMs,
+                        });
+                        continue;
+                    }
+
+                    const imageResult = await this.quickProductScan({
                         imageUrl: image.url,
                         imageBase64: image.base64,
                         businessTemplate: 'general', // Always general for recognition
-                            threshold: 0.7 // Filter out weak matches (<70%) so we only show solid candidates
+                        threshold: 0.7 // Filter out weak matches (<70%) so we only show solid candidates
                     }, req);
 
                     results.push({
@@ -4515,6 +4539,7 @@ Return JSON format:
     @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
     async submitRegenerateJob(
         @Body() regenerateRequest: {
+            generateJobId?: string; // source generate job id
             products: Array<{
                 productIndex: number;
                 productId: string;
@@ -4524,6 +4549,8 @@ Return JSON format:
                 targetFields?: string[]; // e.g., ['title', 'description', 'price']
                 sourceJobId?: string; // Reference to previous firecrawl/generate job
                 customPrompt?: string;
+                userQuery?: string;
+                conversationId?: string;
                 imageUrls?: string[];
             }>;
             options?: {
@@ -4563,6 +4590,7 @@ Return JSON format:
             type: 'regenerate-job' as const,
             jobId,
             userId,
+            generateJobId: regenerateRequest.generateJobId,
             products: regenerateRequest.products,
             options: regenerateRequest.options || {},
             metadata: {

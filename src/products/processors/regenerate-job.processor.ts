@@ -4,8 +4,8 @@ import { SupabaseService } from '../../common/supabase.service';
 import { ProductsService } from '../products.service';
 import { ActivityLogService } from '../../common/activity-log.service';
 import { AiGenerationService } from '../ai-generation/ai-generation.service';
-import { FirecrawlService } from '../firecrawl/firecrawl.service';
-import { AiUsageTrackerService } from '../ai-usage-tracker/ai-usage-tracker.service';
+import { FirecrawlService } from '../firecrawl.service';
+import { AiUsageTrackerService } from '../../common/ai-usage-tracker.service';
 import { 
   RegenerateJobData, 
   RegenerateJobStatus, 
@@ -75,6 +75,7 @@ export class RegenerateJobProcessor {
       // Process each product
       for (let i = 0; i < products.length; i++) {
         const product = products[i];
+        const effectiveSourceJobId = (product as any).sourceJobId || (job.data as any).generateJobId;
         
         try {
           // Update progress
@@ -86,7 +87,8 @@ export class RegenerateJobProcessor {
             product, 
             userId, 
             options,
-            jobId
+            jobId,
+            effectiveSourceJobId
           );
           
           results.push(result);
@@ -161,7 +163,8 @@ export class RegenerateJobProcessor {
     product: RegenerateJobData['products'][0],
     userId: string,
     options: RegenerateJobData['options'],
-    jobId: string
+    jobId: string,
+    effectiveSourceJobId?: string
   ): Promise<RegenerateJobResult> {
     const startTime = Date.now();
     
@@ -174,8 +177,8 @@ export class RegenerateJobProcessor {
 
       // Get source data if specified
       let sourceData = null;
-      if (product.sourceJobId && options?.useExistingScrapedData) {
-        sourceData = await this.getSourceJobData(product.sourceJobId, userId);
+      if ((product.sourceJobId || effectiveSourceJobId) && options?.useExistingScrapedData) {
+        sourceData = await this.getSourceJobData(product.sourceJobId || effectiveSourceJobId!, userId, { productId: product.productId, productIndex: product.productIndex });
       }
 
       // Determine what to regenerate
@@ -204,7 +207,7 @@ export class RegenerateJobProcessor {
         regenerateType: product.regenerateType,
         platforms: generatedPlatforms,
         source: sourceData ? 'hybrid' : 'ai_generated',
-        sourceUrls: sourceData?.urls || [],
+        sourceUrls: (sourceData && (sourceData as any).urls) ? (sourceData as any).urls : [],
         processingTimeMs: processingTime
       };
 
@@ -250,42 +253,59 @@ export class RegenerateJobProcessor {
   /**
    * Get source data from previous job
    */
-  private async getSourceJobData(sourceJobId: string, userId: string): Promise<any> {
+  private async getSourceJobData(sourceJobId: string, userId: string, product?: { productId?: string; productIndex?: number }): Promise<any> {
     const supabase = this.supabaseService.getClient();
-    
-    // Try to get from generate job results first
-    const { data: generateData } = await supabase
-      .from('generate_job_results')
-      .select('*')
-      .eq('job_id', sourceJobId)
-      .eq('user_id', userId)
-      .single();
+    try {
+      // 1) Pull from generate_jobs aggregated results
+      const { data: genJob } = await supabase
+        .from('generate_jobs')
+        .select('results,user_id')
+        .eq('job_id', sourceJobId)
+        .maybeSingle();
 
-    if (generateData) {
-      return {
-        type: 'generate',
-        data: generateData,
-        urls: generateData.sources?.map(s => s.url) || []
-      };
+      let urls: string[] = [];
+      if (genJob && Array.isArray(genJob.results)) {
+        // Try to pick the matching product result first
+        const match = genJob.results.find((r: any) =>
+          (product?.productId && r.productId === product.productId) ||
+          (typeof product?.productIndex === 'number' && r.productIndex === product.productIndex)
+        ) || genJob.results[0];
+        if (match && Array.isArray(match.sources)) {
+          urls = match.sources.map((s: any) => s?.url).filter((u: any) => typeof u === 'string');
+        }
+      }
+
+      // 2) Enrich with latest Firecrawl scrape blobs stored in AiGeneratedContent (if any)
+      const scrapedData: any[] = [];
+      if (product?.productId) {
+        const { data: scrapeRows } = await supabase
+          .from('AiGeneratedContent')
+          .select('GeneratedText,CreatedAt,ContentType,job_Id')
+          .eq('ProductId', product.productId)
+          .in('ContentType', ['scrape','search'])
+          .order('CreatedAt', { ascending: false })
+          .limit(20);
+        if (Array.isArray(scrapeRows)) {
+          for (const row of scrapeRows) {
+            try {
+              const payload = JSON.parse(row.GeneratedText || '{}');
+              if (Array.isArray(payload.scrapedData)) {
+                scrapedData.push(...payload.scrapedData);
+              }
+              if (Array.isArray(payload.urls)) {
+                urls.push(...payload.urls);
+              }
+            } catch {}
+          }
+        }
+      }
+
+      urls = Array.from(new Set(urls)).slice(0, 20);
+      return { type: 'generate', urls, scrapedData };
+    } catch (e) {
+      this.logger.warn(`getSourceJobData failed: ${e?.message || e}`);
+      return null;
     }
-
-    // Try to get from firecrawl results
-    const { data: firecrawlData } = await supabase
-      .from('firecrawl_scrapes')
-      .select('*')
-      .eq('job_id', sourceJobId)
-      .eq('user_id', userId)
-      .single();
-
-    if (firecrawlData) {
-      return {
-        type: 'firecrawl',
-        data: firecrawlData,
-        urls: firecrawlData.scraped_urls || []
-      };
-    }
-
-    return null;
   }
 
   /**
@@ -335,12 +355,30 @@ export class RegenerateJobProcessor {
         );
 
         // Generate content using AI service
-        const generatedContent = await this.aiGenerationService.generatePlatformSpecificContent(
-          context,
-          platform,
-          options?.businessTemplate,
-          product.customPrompt
-        );
+        // Use existing AI generation surface. If we have scraped/source data, use the scraped-data method; else fall back to image-based.
+        let generatedContent: any = {};
+        const requested = [{ platform, requestedFields: regenerateData.fields === 'all' ? undefined : regenerateData.fields }];
+        if (sourceData) {
+          const scrapedArray = Array.isArray((sourceData as any).scrapedData)
+            ? (sourceData as any).scrapedData
+            : ((sourceData as any).data?.scrapedDataArray || []);
+          const fromScrape = await this.aiGenerationService.generateProductDetailsFromScrapedData(
+            scrapedArray || [],
+            product.customPrompt || product.userQuery || 'Regenerate fields',
+            options?.businessTemplate,
+            { platformRequests: requested }
+          );
+          generatedContent = (fromScrape && (fromScrape as any)[platform]) ? (fromScrape as any)[platform] : {};
+        } else {
+          const fromImage = await this.aiGenerationService.generateProductDetails(
+            product.imageUrls || [],
+            (product.imageUrls || [])[0] || '',
+            [platform],
+            null,
+            null,
+          );
+          generatedContent = (fromImage && (fromImage as any)[platform]) ? (fromImage as any)[platform] : {};
+        }
 
         platforms[platform] = generatedContent;
 

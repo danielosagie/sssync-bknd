@@ -132,6 +132,103 @@ Return only the extracted text, preserving the original layout and order as much
     }
   }
 
+  /**
+   * Analyze image and return structured attributes + paraphrases using Groq VLM
+   * Returns: { ocrText, brand, model, year, color, type, flags[], confidence, paraphrases[] }
+   */
+  async analyzeImageAttributes(imageData: { imageUrl?: string; imageBase64?: string; }): Promise<{
+    ocrText: string;
+    brand: string;
+    model: string;
+    year: string;
+    color: string;
+    type: string;
+    flags: string[];
+    confidence: number;
+    paraphrases: string[];
+    processingTimeMs: number;
+  }> {
+    const start = Date.now();
+    try {
+      if (!this.groqClient) {
+        throw new Error('Groq client not initialized - GROQ_API_KEY missing');
+      }
+      let imageBase64: string;
+      if (imageData.imageBase64) {
+        imageBase64 = imageData.imageBase64;
+      } else if (imageData.imageUrl) {
+        imageBase64 = await this.downloadImageAsBase64(imageData.imageUrl);
+      } else {
+        throw new Error('Either imageUrl or imageBase64 must be provided');
+      }
+
+      const prompt = `You are an image-reading assistant. Return only JSON.\nFields: ocr_text (string), brand, model, year, color, type, flags (array), confidence (0-1), paraphrases (array of 3 short search strings).\nScrub OCR mistakes, prefer concise tokens. If unknown, return empty string for field and 0 confidence.`;
+
+      const completion = await this.groqClient.chat.completions.create({
+        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${imageBase64}` } },
+            ],
+          },
+        ],
+        max_tokens: 600,
+        temperature: 0.1,
+      });
+
+      const raw = completion.choices?.[0]?.message?.content?.trim() || '{}';
+      let parsed: any = {};
+      try {
+        // Try to isolate JSON block if the model added text
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        parsed = JSON.parse(jsonMatch ? jsonMatch[0] : raw);
+      } catch (e) {
+        this.logger.warn(`[VLM] Failed to parse JSON response, returning minimal fields. Raw: ${raw.substring(0, 200)}`);
+        parsed = {};
+      }
+
+      const ocrText: string = parsed.ocr_text || parsed.ocrText || '';
+      const paraphrases: string[] = Array.isArray(parsed.paraphrases) ? parsed.paraphrases.filter((s: any) => typeof s === 'string') : [];
+      const confidence: number = typeof parsed.confidence === 'number' ? Math.max(0, Math.min(1, parsed.confidence)) : (ocrText ? 0.7 : 0.0);
+
+      const result = {
+        ocrText,
+        brand: parsed.brand || '',
+        model: parsed.model || '',
+        year: parsed.year || '',
+        color: parsed.color || '',
+        type: parsed.type || '',
+        flags: Array.isArray(parsed.flags) ? parsed.flags.map((x: any) => String(x)) : [],
+        confidence,
+        paraphrases,
+        processingTimeMs: Date.now() - start,
+      };
+
+      this.logger.log(`[VLM] ✅ Attributes extracted in ${result.processingTimeMs}ms (conf: ${result.confidence.toFixed(2)}) paraphrases: ${result.paraphrases.slice(0, 3).join(' | ')}`);
+      if (result.ocrText) this.logger.log(`[VLM] OCR text (first 100): "${result.ocrText.substring(0, 100)}${result.ocrText.length > 100 ? '...' : ''}"`);
+
+      return result;
+    } catch (err) {
+      const processingTimeMs = Date.now() - start;
+      this.logger.error(`[VLM] Attribute extraction failed: ${err.message}`);
+      return {
+        ocrText: '',
+        brand: '',
+        model: '',
+        year: '',
+        color: '',
+        type: '',
+        flags: [],
+        confidence: 0,
+        paraphrases: [],
+        processingTimeMs,
+      };
+    }
+  }
+
 
   /**
    * Extract specific information from card text

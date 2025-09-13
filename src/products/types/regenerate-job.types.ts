@@ -2,19 +2,29 @@ export interface RegenerateJobData {
   type: 'regenerate-job';
   jobId: string;
   userId: string;
+  /** Optional: source generate job to pull Firecrawl/scraped context from */
+  generateJobId?: string;
   products: Array<{
     productIndex: number;
     productId: string;
     variantId?: string;
+    /** What to regenerate */
     regenerateType: 'entire_platform' | 'specific_fields';
     targetPlatform?: string; // e.g., 'shopify', 'amazon', 'ebay'
     targetFields?: string[]; // e.g., ['title', 'description', 'price', 'tags']
+    /** Link back to a previous generate job for scraped context */
     sourceJobId?: string; // Reference to previous firecrawl/generate job
+    /** Freeform instruction from user for style/changes */
     customPrompt?: string;
-    imageUrls?: string[]; // Product images for context
+    /** Optional inline user instruction for this product */
+    userQuery?: string;
+    /** Thread/conversation id to accumulate chat-style edits */
+    conversationId?: string;
+    /** Product images for context */
+    imageUrls?: string[];
   }>;
   options?: {
-    useExistingScrapedData?: boolean; // Use data from sourceJobId
+    useExistingScrapedData?: boolean; // Use data from sourceJobId / generateJobId
     enhanceWithGroq?: boolean;
     overwriteExisting?: boolean; // Overwrite existing generated content
     businessTemplate?: string;
@@ -31,6 +41,10 @@ export interface RegenerateJobResult {
   productId: string;
   variantId?: string;
   regenerateType: 'entire_platform' | 'specific_fields';
+  targetPlatform?: string;
+  targetFields?: string[];
+  userQuery?: string;
+  conversationId?: string;
   platforms: Record<string, {
     title?: string;
     description?: string;
@@ -91,6 +105,8 @@ export interface RegenerateProductInput {
   targetPlatform?: string;
   targetFields?: string[];
   sourceJobId?: string;
+  userQuery?: string;
+  conversationId?: string;
   customPrompt?: string;
   imageUrls?: string[];
 }
