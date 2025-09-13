@@ -67,3 +67,4 @@ export class WhatnotAdapter implements BaseAdapter {
 
 
 
+

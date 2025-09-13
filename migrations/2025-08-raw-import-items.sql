@@ -58,3 +58,4 @@ grant execute on function public.find_similar_variants(uuid, text, int) to authe
 
 
 
+

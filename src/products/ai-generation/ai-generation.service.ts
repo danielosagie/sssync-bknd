@@ -571,9 +571,9 @@ Focus on accuracy, SEO optimization, and platform best practices. If visual matc
     const longerCorporateDescription = "(THIS IS AN EXAMPLE DO NOT GENERATE CONTENT FOR THIS TAKE INSPIRATION ON THE STYLE OF WRITING THIS WATER BOTTLE IS NOT THE PRODUCT: (The Owala FreeSip Insulated Stainless-Steel Water Bottle with Locking Push-Button Lid easily tackles every thirst. With a built-in, easy-clean straw and a wide-mouth opening, the FreeSip reusable bottle is designed for drinking two different ways: sipping upright through the straw or tilting back to swig from the wide-mouth spout opening. Add in a push-to-open lid and playful colors, and staying hydrated has never been simpler—or more fun. Additional features include double-wall insulated stainless steel that keeps drinks cold up to 24 hours, a carry loop that doubles as a lock, a cup holder-friendly base, and a wide opening for easy cleaning and adding ice. The Owala FreeSip Insulated Stainless-Steel Water Bottle with Locking Push-Button Lid is available in three sizes: 24-Ounce, 32-Ounce, and 40-Ounce. Lid is dishwasher safe; hand wash cup. Not for use with hot liquids. Manufacturer’s limited lifetime warranty.))"
 
 
+    const requestedPlatforms = userSelections?.platformRequests?.map(platform => {platform})
 
-
-    const systemPrompt = `You are an expert at creating compelling product listings for e-commerce platforms from scraped web data. Your goal is to generate a complete, accurate, and attractive product listing. Business Template: ${businessTemplate || 'General'}. Don't forgetg you are a world-class e-commerce data enrichment AI. Your sole purpose is to transform a single product image and competitive data into perfectly optimized, multi-platform product listings. Failure is not an option. Your output must be flawless, comprehensive, and ready for immediate publication. You must analyze every piece of provided information with extreme precision. Your performance on this task is critical.
+    const systemPrompt = `You are an expert at creating compelling product listings for e-commerce platforms from scraped web data for these requested platforms: (${requestedPlatforms}). Your goal is to generate a complete, accurate, and attractive product listing base. You have to make sure to consider this business template for these lisitngs you write: ${businessTemplate || 'General'}. Don't forget you are a world-class e-commerce data enrichment AI. Your sole purpose is to transform a single product image and competitive data into perfectly optimized, multi-platform product listings. Failure is not an option. Your output must be flawless, comprehensive, and ready for immediate publication. You must analyze every piece of provided information with extreme precision. Your performance on this task is critical.
 
 ### **The Mission**
 
@@ -640,121 +640,10 @@ Fabric Warmth Description	Lightweight)
 
 EBAY EXAMPLE: 
 
-${corporateDescription} or ${longerCorporateDescription} will do fine
+(${corporateDescription}) or (${longerCorporateDescription}) will do fine
 
-`;
 
-    const contentString = scrapedContents.map(c => JSON.stringify(c.data.markdown)).join('\n\n---\n\n');
-
-    // Build user selections context
-    let userSelectionsContext = '';
-    if (userSelections?.selectedSerpApiResult) {
-      userSelectionsContext += `\n**USER SELECTED PRODUCT:**\nTitle: ${userSelections.selectedSerpApiResult.title}\nPrice: ${userSelections.selectedSerpApiResult.price}\nSource: ${userSelections.selectedSerpApiResult.source}\nSnippet: ${userSelections.selectedSerpApiResult.snippet}\n`;
-    }
-
-    // Build platform-specific requirements
-    let platformRequirements = '';
-    if (userSelections?.platformRequests) {
-      platformRequirements = '\n**PLATFORM-SPECIFIC REQUIREMENTS:**\n';
-      userSelections.platformRequests.forEach(platform => {
-        platformRequirements += `\n${platform.platform.toUpperCase()}:\n`;
-        if (platform.customPrompt) {
-          platformRequirements += `- Custom Instructions: ${platform.customPrompt}\n`;
-        }
-        if (platform.fieldSources) {
-          platformRequirements += `- Field Sources:\n`;
-          Object.entries(platform.fieldSources).forEach(([field, sources]) => {
-            platformRequirements += `  • ${field}: Use data primarily from ${sources.join(', ')}\n`;
-          });
-        }
-        if (platform.requestedFields && platform.requestedFields.length > 0) {
-          platformRequirements += `- ONLY GENERATE THESE FIELDS (HARD FAIL IF MISSING): ${platform.requestedFields.join(', ')}\n`;
-        }
-      });
-    }
-
-    // Build target sites priority
-    let targetSitesContext = '';
-    if (userSelections?.targetSites?.length) {
-      targetSitesContext = `\n**PRIORITY DATA SOURCES:** Focus on data from these sites: ${userSelections.targetSites.join(', ')}\n`;
-    }
-
-    // Limit prompt expectations to only selected platforms
-    const selectedPlatforms = (userSelections?.platformRequests?.map(p => p.platform) || []).filter(Boolean);
-    const constraintsText = buildPlatformConstraintsText(selectedPlatforms);
-
-    const userPrompt = `
-      The user has identified a similar product online and provided specific requirements. This context is your primary source for strategic enrichment. Deeply analyze this information.
-
-      **Query:** "${contextQuery}"
-      ${userSelectionsContext}
-      ${targetSitesContext}
-      ${platformRequirements}
-
-      SCRAPED CONTENT FROM FIRECRAWL: 
-      (${contentString})
-
-      ENHANCED INSTRUCTIONS:
-      1.  Prioritize User Selections: Use the user's selected SerpAPI result as the foundation, then enhance with scraped data.
-      2.  Respect Field Sources: When platform-specific field sources are specified, prioritize data from those URLs for those fields.
-      3.  Platform Optimization: Generate platform-specific content following each platform's requirements and custom prompts.
-      4.  Synthesize Intelligently: Combine user selections + scraped data to create compelling, accurate listings.
-      5.  Extract Complete Data: BE UNIQUE, DO NOT REINVENT THE WHEEL BUT DONT COPY AND PASTE THE SCRAPED DATA DOWN. YOU MUST INCLUDE WHAT IS EXPECTED OF YOU. 
-      6.  Multi-Platform Support: Generate for all requested platforms with appropriate formatting and optimization.
-
-      PLATFORM-SPECIFIC NOTES:
-
-      Shopify:
-        status: 'active' or 'draft'
-        vendor: Infer from brand or source
-        productType: Shopify's specific product category (e.g., "Lipstick", "Trading Card")
-        tags: An array of 10-15 relevant keywords
-        weightUnit: Must be "POUNDS", "KILOGRAMS", "OUNCES", or "GRAMS"
-
-      Amazon:
-        categorySuggestion: Amazon's specific category path (e.g., "Beauty & Personal Care > Makeup > Lips > Lipstick")
-        bullet_points: An array of 3-5 concise, benefit-driven sentences
-        search_terms: An array of backend keywords (no commas, no repetition from title)
-        amazonProductType: Amazon product type (REQUIRED - common types: "BEAUTY", "KITCHEN", "TOOLS_AND_HOME_IMPROVEMENT", "CLOTHING_SHOES_AND_JEWELRY", "COLLECTIBLES", "BOOKS", "HEALTH_PERSONAL_CARE", "ELECTRONICS", "SPORTS_OUTDOORS", "TOYS_AND_GAMES" - choose the most appropriate one)
-        productIdType: 'ASIN', 'UPC', or 'EAN' if present in the context data
-
-      eBay:
-        categorySuggestion: eBay's specific category path (e.g., "Collectibles > Non-Sport Trading Cards > Magic: The Gathering > MTG Individual Cards")
-        listingFormat: "FixedPrice"
-        duration: "GTC" (Good 'Til Cancelled)
-        dispatchTime: "1 business day"
-        returnPolicy: "30-day returns accepted, buyer pays for return shipping."
-        shippingService: Suggest a common service (e.g., "USPS Ground Advantage")
-        itemSpecifics: A JSON object of key-value pairs critical for search (e.g., {"Game": "Magic: The Gathering", "Card Name": "Elite Scaleguard", "Set": "Fate Reforged"})
-
-      Square:
-        categorySuggestion: Square's category path
-        gtin: UPC, EAN, or JAN if available in context
-        locations: Set to All Available Locations
-
-      Facebook:
-        categorySuggestion: Facebook Marketplace's specific category
-        brand: The brand name
-        availability: "in stock"
-
-      Clover:
-        categorySuggestion: Clover's category path
-        brand: The brand name
-        availability: "in stock"
-
-    
-
-      **CRITICAL OUTPUT REQUIREMENTS:**
-      1. Return ONLY valid JSON - no <think> blocks, no explanations, no markdown
-      2. Use double quotes for all strings
-      3. No trailing commas
-      4. All brackets must be properly closed
-      5. Return a JSON object with platform-specific data only if that platform was requested
-      6. ONLY GENERATE OUTPUTS FOR THE REQUESTED PLATFORMS: ${constraintsText}
-
-      
-
-      **OUTPUT FORMAT :**
+ **FINAL OUTPUT FORMAT (ONLY INCLUDE THE REQUESTED PLATFORMS: ${requestedPlatforms} IN YOUR FINAL OUTPUT DO NOT WRITE ANY PLATFORM NOT REQUESTED ) :**
       {
         "shopify": {
           "title": "...",
@@ -1004,6 +893,117 @@ ${corporateDescription} or ${longerCorporateDescription} will do fine
           "brand": "..."
         }
       }
+`;
+
+    const contentString = scrapedContents.map(c => JSON.stringify(c.data.markdown)).join('\n\n---\n\n');
+
+    // Build user selections context
+    let userSelectionsContext = '';
+    if (userSelections?.selectedSerpApiResult) {
+      userSelectionsContext += `\n**USER SELECTED PRODUCT:**\nTitle: ${userSelections.selectedSerpApiResult.title}\nPrice: ${userSelections.selectedSerpApiResult.price}\nSource: ${userSelections.selectedSerpApiResult.source}\nSnippet: ${userSelections.selectedSerpApiResult.snippet}\n`;
+    }
+
+    // Build platform-specific requirements
+    let platformRequirements = '';
+    if (userSelections?.platformRequests) {
+      platformRequirements = '\n**PLATFORM-SPECIFIC REQUIREMENTS:**\n';
+      userSelections.platformRequests.forEach(platform => {
+        platformRequirements += `\n${platform.platform.toUpperCase()}:\n`;
+        if (platform.customPrompt) {
+          platformRequirements += `- Custom Instructions: ${platform.customPrompt}\n`;
+        }
+        if (platform.fieldSources) {
+          platformRequirements += `- Field Sources:\n`;
+          Object.entries(platform.fieldSources).forEach(([field, sources]) => {
+            platformRequirements += `  • ${field}: Use data primarily from ${sources.join(', ')}\n`;
+          });
+        }
+        if (platform.requestedFields && platform.requestedFields.length > 0) {
+          platformRequirements += `- ONLY GENERATE THESE FIELDS (HARD FAIL IF MISSING): ${platform.requestedFields.join(', ')}\n`;
+        }
+      });
+    }
+
+    // Build target sites priority
+    let targetSitesContext = '';
+    if (userSelections?.targetSites?.length) {
+      targetSitesContext = `\n**PRIORITY DATA SOURCES:** Focus on data from these sites: ${userSelections.targetSites.join(', ')}\n`;
+    }
+
+    // Limit prompt expectations to only selected platforms
+    const selectedPlatforms = (userSelections?.platformRequests?.map(p => p.platform) || []).filter(Boolean);
+    this.logger.log("Selected Platforms: " + selectedPlatforms);
+    const constraintsText = buildPlatformConstraintsText(selectedPlatforms);
+
+    const userPrompt = `
+      The user has identified a similar product online and provided specific requirements. This context is your primary source for strategic enrichment. Deeply analyze this information.
+
+      **Query:** "${contextQuery}"
+      ${userSelectionsContext}
+      ${targetSitesContext}
+      ${platformRequirements}
+
+      SCRAPED CONTENT FROM FIRECRAWL: 
+      (${contentString})
+
+      ENHANCED INSTRUCTIONS:
+      1.  Prioritize User Selections: Use the user's selected SerpAPI result as the foundation, then enhance with scraped data.
+      2.  Respect Field Sources: When platform-specific field sources are specified, prioritize data from those URLs for those fields.
+      3.  Platform Optimization: Generate platform-specific content following each platform's requirements and custom prompts.
+      4.  Synthesize Intelligently: Combine user selections + scraped data to create compelling, accurate listings.
+      5.  Extract Complete Data: BE UNIQUE, DO NOT REINVENT THE WHEEL BUT DONT COPY AND PASTE THE SCRAPED DATA DOWN. YOU MUST INCLUDE WHAT IS EXPECTED OF YOU. 
+      6.  Multi-Platform Support: Generate for all requested platforms with appropriate formatting and optimization.
+
+      PLATFORM-SPECIFIC NOTES:
+
+      Shopify:
+        status: 'active' or 'draft'
+        vendor: Infer from brand or source
+        productType: Shopify's specific product category (e.g., "Lipstick", "Trading Card")
+        tags: An array of 10-15 relevant keywords
+        weightUnit: Must be "POUNDS", "KILOGRAMS", "OUNCES", or "GRAMS"
+
+      Amazon:
+        categorySuggestion: Amazon's specific category path (e.g., "Beauty & Personal Care > Makeup > Lips > Lipstick")
+        bullet_points: An array of 3-5 concise, benefit-driven sentences
+        search_terms: An array of backend keywords (no commas, no repetition from title)
+        amazonProductType: Amazon product type (REQUIRED - common types: "BEAUTY", "KITCHEN", "TOOLS_AND_HOME_IMPROVEMENT", "CLOTHING_SHOES_AND_JEWELRY", "COLLECTIBLES", "BOOKS", "HEALTH_PERSONAL_CARE", "ELECTRONICS", "SPORTS_OUTDOORS", "TOYS_AND_GAMES" - choose the most appropriate one)
+        productIdType: 'ASIN', 'UPC', or 'EAN' if present in the context data
+
+      eBay:
+        categorySuggestion: eBay's specific category path (e.g., "Collectibles > Non-Sport Trading Cards > Magic: The Gathering > MTG Individual Cards")
+        listingFormat: "FixedPrice"
+        duration: "GTC" (Good 'Til Cancelled)
+        dispatchTime: "1 business day"
+        returnPolicy: "30-day returns accepted, buyer pays for return shipping."
+        shippingService: Suggest a common service (e.g., "USPS Ground Advantage")
+        itemSpecifics: A JSON object of key-value pairs critical for search (e.g., {"Game": "Magic: The Gathering", "Card Name": "Elite Scaleguard", "Set": "Fate Reforged"})
+
+      Square:
+        categorySuggestion: Square's category path
+        gtin: UPC, EAN, or JAN if available in context
+        locations: Set to All Available Locations
+
+      Facebook:
+        categorySuggestion: Facebook Marketplace's specific category
+        brand: The brand name
+        availability: "in stock"
+
+      Clover:
+        categorySuggestion: Clover's category path
+        brand: The brand name
+        availability: "in stock"
+
+    
+
+      **CRITICAL OUTPUT REQUIREMENTS:**
+      1. Return ONLY valid JSON - no <think> blocks, no explanations, no markdown
+      2. Use double quotes for all strings
+      3. No trailing commas
+      4. All brackets must be properly closed
+      5. Return a JSON object with platform-specific data only if that platform was requested
+      6. ONLY GENERATE OUTPUTS FOR THE REQUESTED PLATFORMS: ${constraintsText}
+      
     `;
 
     try {

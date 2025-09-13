@@ -12,6 +12,8 @@ import { MatchJobProcessor } from './products/processors/match-job.processor';
 import { MatchJobData } from './products/types/match-job.types';
 import { GenerateJobProcessor } from './products/processors/generate-job.processor';
 import { GenerateJobData } from './products/types/generate-job.types';
+import { RegenerateJobProcessor } from './products/processors/regenerate-job.processor';
+import { RegenerateJobData } from './products/types/regenerate-job.types';
 
 const BULLMQ_HIGH_QUEUE_NAME = 'bullmq-high-queue';
 
@@ -34,6 +36,8 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
     private readonly matchJobProcessor: MatchJobProcessor,
     @Inject(forwardRef(() => GenerateJobProcessor))
     private readonly generateJobProcessor: GenerateJobProcessor,
+    @Inject(forwardRef(() => RegenerateJobProcessor))
+    private readonly regenerateJobProcessor: RegenerateJobProcessor,
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
@@ -101,6 +105,14 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
             await this.generateJobProcessor.process(job as unknown as Job<GenerateJobData>);
           } catch (error) {
             this.logger.error(`[BullMQWorker] Error processing 'generate-job' job ${job.id}: ${error.message}`, error.stack);
+            throw error;
+          }
+        } else if ((job.data as any).type === 'regenerate-job') { // NEW: Handle regenerate jobs
+          try {
+            this.logger.log(`[BullMQWorker] Delegating 'regenerate-job' job ${job.id} to RegenerateJobProcessor.`);
+            await this.regenerateJobProcessor.process(job as unknown as Job<RegenerateJobData>);
+          } catch (error) {
+            this.logger.error(`[BullMQWorker] Error processing 'regenerate-job' job ${job.id}: ${error.message}`, error.stack);
             throw error;
           }
         } else {

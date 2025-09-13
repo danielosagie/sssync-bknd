@@ -28,6 +28,8 @@ import { ConflictException } from '@nestjs/common';
 import { ActivityLogService } from '../common/activity-log.service';
 import { AiUsageTrackerService } from '../common/ai-usage-tracker.service';
 import { AiGenerationService } from './ai-generation/ai-generation.service';
+import { RegenerateJobProcessor } from './processors/regenerate-job.processor';
+import { RegenerateJobStatus, RegenerateJobResult } from './types/regenerate-job.types';
 import { GroqSmartPickerService } from '../embedding/groq-smart-picker.service';
 import { FastTextRerankerService } from '../embedding/fast-text-reranker.service';
 // Add the orchestrator import
@@ -103,6 +105,7 @@ export class ProductsController {
         private readonly productAnalysisProcessor: ProductAnalysisProcessor,
         private readonly matchJobProcessor: MatchJobProcessor,
         private readonly generateJobProcessor: GenerateJobProcessor,
+        private readonly regenerateJobProcessor: RegenerateJobProcessor,
     ) {}
 
     // Helper method for retry logic
@@ -4162,7 +4165,16 @@ Return JSON format:
 
         if (error) throw new InternalServerErrorException(`Database error: ${error.message}`);
 
-        const versions: Array<{ id: string; jobId: string; createdAt: string; platforms: any; sources: Array<{ url: string; usedForFields?: string[] }> }> = [];
+        const versions: Array<{ 
+            id: string; 
+            jobId: string; 
+            createdAt: string; 
+            platforms: any; 
+            sources: Array<{ 
+                url: string; 
+                usedForFields?: string[] 
+            }> 
+        }> = [];
 
         for (const row of (data || [])) {
             const results = Array.isArray(row.results) ? row.results : [];
@@ -4485,6 +4497,276 @@ Return JSON format:
         const union = new Set([...words1, ...words2]);
         
         return intersection.size / union.size;
+    }
+
+    // ===================================================================
+    // REGENERATE/FILL-IN ENDPOINTS
+    // ===================================================================
+
+    /**
+     * Submit a regenerate job for products
+     * Allows regenerating entire platforms or specific fields using existing scraped data
+     */
+    @Post('regenerate/submit')
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 3, ttl: 60000 }}) // 3 regenerate jobs per minute
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
+    async submitRegenerateJob(
+        @Body() regenerateRequest: {
+            products: Array<{
+                productIndex: number;
+                productId: string;
+                variantId?: string;
+                regenerateType: 'entire_platform' | 'specific_fields';
+                targetPlatform?: string; // e.g., 'shopify', 'amazon', 'ebay'
+                targetFields?: string[]; // e.g., ['title', 'description', 'price']
+                sourceJobId?: string; // Reference to previous firecrawl/generate job
+                customPrompt?: string;
+                imageUrls?: string[];
+            }>;
+            options?: {
+                useExistingScrapedData?: boolean;
+                enhanceWithGroq?: boolean;
+                overwriteExisting?: boolean;
+                businessTemplate?: string;
+            };
+        },
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        jobId: string;
+        status: 'queued';
+        estimatedTimeMinutes: number;
+        totalProducts: number;
+        message: string;
+    }> {
+        const userId = req.user.id;
+        const jobId = `regenerate_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        this.logger.log(`[RegenerateJob] Submitting regenerate job ${jobId} for ${regenerateRequest.products.length} products`);
+
+        // Validate products exist and belong to user
+        for (const product of regenerateRequest.products) {
+            try {
+                await this.productsService.getProduct(product.productId, userId);
+            } catch (error) {
+                throw new BadRequestException(`Product ${product.productId} not found or access denied`);
+            }
+        }
+
+        // Estimate processing time (2-3 minutes per product)
+        const estimatedTimeMinutes = Math.max(5, regenerateRequest.products.length * 2);
+
+        // Create job data
+        const jobData = {
+            type: 'regenerate-job' as const,
+            jobId,
+            userId,
+            products: regenerateRequest.products,
+            options: regenerateRequest.options || {},
+            metadata: {
+                totalProducts: regenerateRequest.products.length,
+                estimatedTimeMinutes,
+                createdAt: new Date().toISOString()
+            }
+        };
+
+        // Enqueue the job
+        await QueueManager.enqueueJob(jobData);
+
+        // Log activity
+        await this.activityLogService.logActivity({
+            UserId: userId,
+            EntityType: 'REGENERATE_JOB',
+            EntityId: jobId,
+            EventType: 'JOB_SUBMITTED',
+            Status: 'Success',
+            Message: `Regenerate job submitted for ${regenerateRequest.products.length} products`,
+            Details: {
+                jobId,
+                totalProducts: regenerateRequest.products.length,
+                regenerateTypes: [...new Set(regenerateRequest.products.map(p => p.regenerateType))],
+                platforms: [...new Set(regenerateRequest.products.map(p => p.targetPlatform).filter(Boolean))]
+            }
+        });
+
+        return {
+            jobId,
+            status: 'queued',
+            estimatedTimeMinutes,
+            totalProducts: regenerateRequest.products.length,
+            message: `Regenerate job queued successfully. Estimated completion: ${estimatedTimeMinutes} minutes.`
+        };
+    }
+
+    /**
+     * Get regenerate job status
+     */
+    @Get('regenerate/status/:jobId')
+    @UseGuards(SupabaseAuthGuard)
+    async getRegenerateJobStatus(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<RegenerateJobStatus> {
+        const userId = req.user.id;
+        
+        const status = await this.regenerateJobProcessor.getJobStatus(jobId, userId);
+        if (!status) {
+            throw new NotFoundException(`Regenerate job ${jobId} not found`);
+        }
+
+        return status;
+    }
+
+    /**
+     * Get regenerate job results
+     */
+    @Get('regenerate/results/:jobId')
+    @UseGuards(SupabaseAuthGuard)
+    async getRegenerateJobResults(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        jobId: string;
+        status: string;
+        results: RegenerateJobResult[];
+        summary?: any;
+        completedAt?: string;
+    }> {
+        const userId = req.user.id;
+        
+        const status = await this.regenerateJobProcessor.getJobStatus(jobId, userId);
+        if (!status) {
+            throw new NotFoundException(`Regenerate job ${jobId} not found`);
+        }
+
+        return {
+            jobId: status.jobId,
+            status: status.status,
+            results: status.results,
+            summary: status.summary,
+            completedAt: status.completedAt
+        };
+    }
+
+    /**
+     * Cancel a regenerate job
+     */
+    @Post('regenerate/cancel/:jobId')
+    @UseGuards(SupabaseAuthGuard)
+    async cancelRegenerateJob(
+        @Param('jobId') jobId: string,
+        @Req() req: AuthenticatedRequest,
+    ): Promise<{
+        jobId: string;
+        status: string;
+        message: string;
+    }> {
+        const userId = req.user.id;
+        
+        const cancelled = await this.regenerateJobProcessor.cancelJob(jobId, userId);
+        if (!cancelled) {
+            throw new BadRequestException(`Cannot cancel job ${jobId}. Job may not exist, be completed, or you may not have permission.`);
+        }
+
+        // Log activity
+        await this.activityLogService.logActivity({
+            UserId: userId,
+            EntityType: 'REGENERATE_JOB',
+            EntityId: jobId,
+            EventType: 'JOB_CANCELLED',
+            Status: 'Success',
+            Message: `Regenerate job ${jobId} cancelled by user`,
+            Details: { jobId }
+        });
+
+        return {
+            jobId,
+            status: 'cancelled',
+            message: `Regenerate job ${jobId} has been cancelled successfully.`
+        };
+    }
+
+    /**
+     * Get user's regenerate jobs with pagination
+     */
+    @Get('regenerate/jobs')
+    @UseGuards(SupabaseAuthGuard)
+    async getUserRegenerateJobs(
+        @Req() req: AuthenticatedRequest,
+        @Query('status') status?: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled',
+        @Query('limit') limit?: string,
+        @Query('offset') offset?: string,
+    ): Promise<{
+        jobs?: Array<{
+            jobId: string;
+            status: string;
+            currentStage: string;
+            totalProducts: number;
+            completedProducts: number;
+            failedProducts: number;
+            stagePercentage: number;
+            createdAt: string;
+            completedAt?: string;
+            estimatedCompletionAt?: string;
+        }>;
+        pagination: {
+            total: number;
+            limit: number;
+            offset: number;
+        };
+    }> {
+        const userId = req.user.id;
+        const limitNum = parseInt(limit || '10', 10);
+        const offsetNum = parseInt(offset || '0', 10);
+
+        const supabase = this.supabaseService.getClient();
+        
+        let query = supabase
+            .from('regenerate_job_statuses')
+            .select('*')
+            .eq('user_id', userId)
+            .order('created_at', { ascending: false });
+
+        if (status) {
+            query = query.eq('status', status);
+        }
+
+        const { data: jobs, error } = await query
+            .range(offsetNum, offsetNum + limitNum - 1);
+
+        if (error) {
+            throw new InternalServerErrorException(`Failed to fetch regenerate jobs: ${error.message}`);
+        }
+
+        // Get total count
+        const { count } = await supabase
+            .from('regenerate_job_statuses')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', userId);
+
+        const formattedJobs = jobs?.map(job => ({
+            jobId: job.job_id,
+            status: job.status,
+            currentStage: job.current_stage,
+            totalProducts: job.progress?.totalProducts || 0,
+            completedProducts: job.progress?.completedProducts || 0,
+            failedProducts: job.progress?.failedProducts || 0,
+            stagePercentage: job.progress?.stagePercentage || 0,
+            createdAt: job.created_at,
+            completedAt: job.completed_at,
+            estimatedCompletionAt: job.estimated_completion_at
+        })) || [];
+
+        return {
+            jobs: formattedJobs,
+            pagination: {
+                total: count || 0,
+                limit: limitNum,
+                offset: offsetNum
+            }
+        };
     }
 
     
