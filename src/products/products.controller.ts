@@ -4699,7 +4699,6 @@ Return JSON format:
     @Post('regenerate/cancel/:jobId')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 3, ttl: 60000 }}) // 3 regenerate jobs per minute
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
     async cancelRegenerateJob(
@@ -4741,7 +4740,6 @@ Return JSON format:
     @Get('regenerate/jobs')
     @Feature('aiScans')
     @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
-    @Throttle({ default: { limit: 3, ttl: 60000 }}) // 3 regenerate jobs per minute
     @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
     @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
     async getUserRegenerateJobs(

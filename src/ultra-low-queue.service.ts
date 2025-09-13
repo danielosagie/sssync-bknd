@@ -9,6 +9,8 @@ import { MatchJobProcessor } from './products/processors/match-job.processor';
 import { MatchJobData } from './products/types/match-job.types';
 import { GenerateJobProcessor } from './products/processors/generate-job.processor';
 import { GenerateJobData } from './products/types/generate-job.types';
+import { RegenerateJobProcessor } from './products/processors/regenerate-job.processor';
+import { RegenerateJobData } from './products/types/regenerate-job.types';
 
 const QUEUE_KEY = 'ultra-low-queue';
 
@@ -25,6 +27,8 @@ export class UltraLowQueueService implements SimpleQueue {
     private readonly matchJobProcessor: MatchJobProcessor, // NEW: Match job processor
     @Inject(forwardRef(() => GenerateJobProcessor))
     private readonly generateJobProcessor: GenerateJobProcessor, // NEW: Generate job processor
+    @Inject(forwardRef(() => RegenerateJobProcessor))
+    private readonly regenerateJobProcessor: RegenerateJobProcessor, // NEW: Regenerate job processor
   ) {
     const redisUrl = this.configService.get<string>('REDIS_URL');
     if (!redisUrl) {
@@ -114,6 +118,17 @@ export class UltraLowQueueService implements SimpleQueue {
           return job.data;
         } catch (error) {
           this.logger.error(`[UltraLowQueue] Error processing 'generate-job' job ${job.id || 'N/A'}: ${error.message}`, error.stack);
+          return null;
+        }
+      } else if ((job.data as any).type === 'regenerate-job') {
+        this.logger.log(`[UltraLowQueue] Delegating to RegenerateJobProcessor for job ID: ${job.id || 'N/A'}`);
+        this.logger.log(`[UltraLowQueue] Regenerate job data: ${JSON.stringify(job.data, null, 2)}`);
+        try {
+          await this.regenerateJobProcessor.process(mockBullMqJob as unknown as import('bullmq').Job<RegenerateJobData>);
+          this.logger.log(`[UltraLowQueue] RegenerateJobProcessor.process() completed successfully`);
+          return job.data;
+        } catch (error) {
+          this.logger.error(`[UltraLowQueue] Error processing 'regenerate-job' job ${job.id || 'N/A'}: ${error.message}`, error.stack);
           return null;
         }
       } else {
