@@ -4639,7 +4639,11 @@ Return JSON format:
      * Get regenerate job status
      */
     @Get('regenerate/status/:jobId')
-    @UseGuards(SupabaseAuthGuard)
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 3, ttl: 60000 }}) // 3 regenerate jobs per minute
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
     async getRegenerateJobStatus(
         @Param('jobId') jobId: string,
         @Req() req: AuthenticatedRequest,
@@ -4658,7 +4662,11 @@ Return JSON format:
      * Get regenerate job results
      */
     @Get('regenerate/results/:jobId')
-    @UseGuards(SupabaseAuthGuard)
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 3, ttl: 60000 }}) // 3 regenerate jobs per minute
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
     async getRegenerateJobResults(
         @Param('jobId') jobId: string,
         @Req() req: AuthenticatedRequest,
@@ -4689,7 +4697,11 @@ Return JSON format:
      * Cancel a regenerate job
      */
     @Post('regenerate/cancel/:jobId')
-    @UseGuards(SupabaseAuthGuard)
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 3, ttl: 60000 }}) // 3 regenerate jobs per minute
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
     async cancelRegenerateJob(
         @Param('jobId') jobId: string,
         @Req() req: AuthenticatedRequest,
@@ -4727,7 +4739,11 @@ Return JSON format:
      * Get user's regenerate jobs with pagination
      */
     @Get('regenerate/jobs')
-    @UseGuards(SupabaseAuthGuard)
+    @Feature('aiScans')
+    @UseGuards(SupabaseAuthGuard, FeatureUsageGuard)
+    @Throttle({ default: { limit: 3, ttl: 60000 }}) // 3 regenerate jobs per minute
+    @UsePipes(new ValidationPipe({ whitelist: true, forbidNonWhitelisted: true }))
+    @HttpCode(HttpStatus.ACCEPTED) // 202 Accepted for async operations
     async getUserRegenerateJobs(
         @Req() req: AuthenticatedRequest,
         @Query('status') status?: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled',
