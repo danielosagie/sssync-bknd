@@ -354,8 +354,50 @@ export class RegenerateJobProcessor {
           product.customPrompt
         );
 
-        // Generate content using AI service
-        // Use existing AI generation surface. If we have scraped/source data, use the scraped-data method; else fall back to image-based.
+        // Detect special flow: variant suggestions
+        const wantsVariantSuggestions = Array.isArray(regenerateData.fields) && regenerateData.fields.includes('variants')
+          || /suggest\s*variants/i.test(product.customPrompt || '')
+          || /suggest\s*variants/i.test(product.userQuery || '');
+
+        if (wantsVariantSuggestions) {
+          const prompt = `You are helping a seller set up product variants. Based on the current product details and images, suggest likely variant option axes and candidate values. Focus on practical ecommerce options like Size, Color, Style, Material where applicable. Return STRICT JSON only in this format:
+{
+  "optionsSuggestions": [
+    { "name": "Size", "values": ["S","M","L"] },
+    { "name": "Color", "values": ["Black","Blue"] }
+  ],
+  "variantExamples": [
+    { "optionValues": { "Size": "M", "Color": "Black" } },
+    { "optionValues": { "Size": "L", "Color": "Blue" } }
+  ]
+}`;
+
+          const scrapedArray = Array.isArray((sourceData as any)?.scrapedData)
+            ? (sourceData as any).scrapedData
+            : [];
+          const raw = await this.aiGenerationService.generateProductDetailsFromScrapedData(
+            scrapedArray,
+            prompt,
+            options?.businessTemplate || 'general',
+            {}
+          );
+          let parsed: any = {};
+          try {
+            // raw could be string or object; normalize
+            const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+            const jsonMatch = text.match(/\{[\s\S]*\}$/);
+            parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : (typeof raw === 'object' ? raw : {});
+          } catch {}
+          const canonical = {
+            optionsSuggestions: parsed?.optionsSuggestions || parsed?.optionSuggestions || parsed?.options || [],
+            variantExamples: parsed?.variantExamples || parsed?.variants || []
+          };
+          // Store under canonical bucket so frontend can consume cross-platform
+          platforms['canonical'] = { ...(platforms['canonical'] || {}), ...canonical };
+          continue;
+        }
+
+        // Standard content regeneration
         let generatedContent: any = {};
         const requested = [{ platform, requestedFields: regenerateData.fields === 'all' ? undefined : regenerateData.fields }];
         if (sourceData) {
@@ -442,7 +484,8 @@ export class RegenerateJobProcessor {
    * Persist job status to database
    */
   private async persistJobStatus(jobStatus: RegenerateJobStatus): Promise<void> {
-    const supabase = this.supabaseService.getClient();
+    // Use service client for background jobs to bypass RLS
+    const supabase = this.supabaseService.getServiceClient();
     
     const { error } = await supabase
       .from('regenerate_job_statuses')
@@ -462,7 +505,7 @@ export class RegenerateJobProcessor {
       });
 
     if (error) {
-      this.logger.error(`Failed to persist job status: ${error.message}`);
+      this.logger.error(`Failed to persist job status: ${error.message || JSON.stringify(error)}`);
     }
   }
 

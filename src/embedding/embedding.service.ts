@@ -633,27 +633,47 @@ export class EmbeddingService {
         const route = vlm.confidence >= 0.8 ? 'text-only' : vlm.confidence >= 0.4 ? 'hybrid-lite' : 'image-fallback';
         this.logger.log(`[VLM-First] Routing: ${route}`);
 
-        // Build query: prefer first paraphrase, fallback to compact OCR
-        const query = (vlm.paraphrases[0] || vlm.ocrText || 'product item').slice(0, 200);
-        const ftsStart = Date.now();
+        // Build candidate queries in widening order
+        const queries: string[] = [];
+        const p0 = (vlm.paraphrases?.[0] || '').trim();
+        const p1 = (vlm.paraphrases?.[1] || '').trim();
+        const p2 = (vlm.paraphrases?.[2] || '').trim();
+        if (p0) queries.push(p0);
+        if (p1) queries.push(p1);
+        if (p2) queries.push(p2);
+        if (vlm.ocrText) queries.push(vlm.ocrText.slice(0, 200));
+        queries.push('product item accessory'); // broad safety net
+
         const supabase = this.supabaseService.getClient();
+        let usedQuery = '';
+        let ftsCandidatesAll: any[] = [];
+        let totalFtsMs = 0;
 
-        // FTS-only, fast
-        const { data: ftsCandidates, error: ftsErr } = await supabase
-          .from('ProductEmbeddings')
-          .select(`ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType, ProductVariants(Title, Description, Price) , SearchVector`)
-          .textSearch('SearchVector', query, { type: 'websearch', config: 'english' })
-          .limit(200);
-        const ftsMs = Date.now() - ftsStart;
-        if (ftsErr) this.logger.warn(`[VLM-First] FTS error: ${ftsErr.message}`);
-        this.logger.log(`[VLM-First] FTS returned ${ftsCandidates?.length || 0} rows in ${ftsMs}ms for query: "${query}"`);
+        for (const q of queries) {
+          const qTrim = q.slice(0, 200);
+          const t0 = Date.now();
+          const { data, error } = await supabase
+            .from('ProductEmbeddings')
+            .select(`ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType, ProductVariants(Title, Description, Price), SearchVector`)
+            .textSearch('SearchVector', qTrim, { type: 'websearch', config: 'english' })
+            .limit(200);
+          const ms = Date.now() - t0;
+          totalFtsMs += ms;
+          if (error) this.logger.warn(`[VLM-First] FTS error for "${qTrim}": ${error.message}`);
+          const count = data?.length || 0;
+          this.logger.log(`[VLM-First] FTS(${count > 0 ? 'hit' : 'miss'}) ${count} rows in ${ms}ms for query: "${qTrim}"`);
+          if (count > 0) {
+            usedQuery = qTrim;
+            ftsCandidatesAll = data || [];
+            break;
+          }
+        }
 
-        // Cheap sort heuristic: prioritize title hits (trigram-like), then description length, then presence of price
-        const candidates = (ftsCandidates || []).map((row: any) => {
+        // Cheap sort heuristic: prioritize title hits (from usedQuery terms), then description length, then presence of price
+        const terms = usedQuery.toLowerCase().split(/\s+/).filter(Boolean);
+        const candidates = (ftsCandidatesAll || []).map((row: any) => {
           const title: string = row.ProductVariants?.Title || row.ProductText || '';
           const desc: string = row.ProductVariants?.Description || '';
-          // simple score: keyword presence (paraphrase terms) + title length quality + has price
-          const terms = (vlm.paraphrases[0] || '').toLowerCase().split(/\s+/).filter(Boolean);
           const titleLower = title.toLowerCase();
           let termHits = 0;
           for (const t of terms) if (t && titleLower.includes(t)) termHits++;
@@ -682,7 +702,7 @@ export class EmbeddingService {
         // Optional: verify top 4 with Groq Smart Picker (vision) when available
         let verified: any[] = [];
         try {
-          if ((ftsCandidates?.length || 0) > 0 && this.configService.get<string>('GROQ_API_KEY')) {
+          if ((ftsCandidatesAll?.length || 0) > 0 && this.configService.get<string>('GROQ_API_KEY')) {
             const top4 = candidates.slice(0, 4).map((m, idx) => ({
               id: m.ProductVariantId || m.productId || `cand_${idx}`,
               title: m.title,
@@ -700,7 +720,7 @@ export class EmbeddingService {
         const confidence: 'high' | 'medium' | 'low' = vlm.confidence >= 0.85 && candidates.length > 0 ? 'high' : vlm.confidence >= 0.6 ? 'medium' : 'low';
         const recommended = candidates.length === 0 ? 'fallback_to_manual' : (confidence === 'high' ? 'show_single_match' : 'show_multiple_candidates');
 
-        this.logger.log(`[VLM-First] Done. VLM: ${vlmMs}ms, FTS: ${ftsMs}ms, Total: ${totalMs}ms, Candidates: ${candidates.length}, Conf: ${confidence}`);
+        this.logger.log(`[VLM-First] Done. VLM: ${vlmMs}ms, FTS: ${totalFtsMs}ms, Total: ${totalMs}ms, Candidates: ${candidates.length}, Conf: ${confidence}`);
 
         return {
           matches: candidates,

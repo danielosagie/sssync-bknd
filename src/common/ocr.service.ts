@@ -162,7 +162,7 @@ Return only the extracted text, preserving the original layout and order as much
         throw new Error('Either imageUrl or imageBase64 must be provided');
       }
 
-      const prompt = `You are an image-reading assistant. Return only JSON.\nFields: ocr_text (string), brand, model, year, color, type, flags (array), confidence (0-1), paraphrases (array of 3 short search strings).\nScrub OCR mistakes, prefer concise tokens. If unknown, return empty string for field and 0 confidence.`;
+      const prompt = `You are an ecommerce visual analyst. Return ONLY compact JSON.\n\nRequired fields:\n- ocr_text (string)\n- brand (string)\n- model (string)\n- year (string)\n- color (string)\n- type (string)  // high-level object category like \'water bottle\', \'wireless earbuds\', \'camera\'\n- flags (array of strings)\n- confidence (number 0..1)\n- paraphrases (array of EXACTLY 3 short lowercase search queries)\n\nParaphrases policy (always produce 3 even if unsure):\n1) specific_best_guess: 2-6 words. If confidence >= 0.8 include brand + product type + key attribute (e.g., \'apple airpods case\'). If brand is uncertain, omit brand and keep generic. No SKUs, no punctuation.\n2) expanded_synonyms: 5-9 words combining likely synonyms and attributes, space-separated tokens (e.g., \'wireless earbuds charging case white bluetooth\', \'insulated water bottle stainless steel grey\'). Avoid brand locking here.\n3) generic_category: 2-4 words for broad class + visible color/material (e.g., \'grey water bottle\', \'white wireless earbuds\'). ALWAYS include this even if you know the brand.\n\nIf OCR is missing/weak, infer from visuals (shape, color, materials, ports). Prefer class-level terms when confidence < 0.8 to avoid over-specific filters.\n\nExample (no text, plain grey bottle with stickers):\n{\n  \'ocr_text\': \'\',\n  \'brand\': \'\',\n  \'model\': \'\',\n  \'year\': \'\',\n  \'color\': \'grey\',\n  \'type\': \'water bottle\',\n  \'flags\': [],\n  \'confidence\': 0.6,\n  \'paraphrases\': [\n    \'stainless steel water bottle\',\n    \'water bottle thermos tumbler insulated grey\',\n    \'grey water bottle\'\n  ]\n}\n\nOutput ONLY the JSON.`;
 
       const completion = await this.groqClient.chat.completions.create({
         model: 'meta-llama/llama-4-scout-17b-16e-instruct',
@@ -176,7 +176,7 @@ Return only the extracted text, preserving the original layout and order as much
           },
         ],
         max_tokens: 600,
-        temperature: 0.1,
+        temperature: 0.2,
       });
 
       const raw = completion.choices?.[0]?.message?.content?.trim() || '{}';
