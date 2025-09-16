@@ -62,9 +62,9 @@ export class OcrService {
 
       this.logger.log(`[OCR] Processing image with Groq Llama-4 Scout (vision model)`);
       
-      // 🎯 LLAMA-4 SCOUT: Direct image-to-text with AI vision
+      // Llama4: Direct image-to-text with AI vision
       const completion = await this.groqClient.chat.completions.create({
-        model: "meta-llama/llama-4-scout-17b-16e-instruct",
+        model: "meta-llama/llama-4-maverick-17b-128e-instruct",
         messages: [
           {
             role: "user",
