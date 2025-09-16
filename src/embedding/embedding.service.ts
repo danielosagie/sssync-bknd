@@ -633,16 +633,54 @@ export class EmbeddingService {
         const route = vlm.confidence >= 0.8 ? 'text-only' : vlm.confidence >= 0.4 ? 'hybrid-lite' : 'image-fallback';
         this.logger.log(`[VLM-First] Routing: ${route}`);
 
-        // Build candidate queries in widening order
+        // Build candidate queries in widening order - completely domain-agnostic approach
         const queries: string[] = [];
         const p0 = (vlm.paraphrases?.[0] || '').trim();
         const p1 = (vlm.paraphrases?.[1] || '').trim();
         const p2 = (vlm.paraphrases?.[2] || '').trim();
+        
+        // Original VLM queries (specific to broad)
         if (p0) queries.push(p0);
         if (p1) queries.push(p1);
         if (p2) queries.push(p2);
         if (vlm.ocrText) queries.push(vlm.ocrText.slice(0, 200));
-        queries.push('product item accessory'); // broad safety net
+        
+        // Auto-generate broader queries by extracting key terms and building variations
+        const allTerms = [p0, p1, p2, vlm.ocrText || '', vlm.type || '', vlm.color || '']
+          .join(' ')
+          .toLowerCase()
+          .split(/\s+/)
+          .filter(t => t.length > 2 && !/^(the|and|or|with|for|from|item|product)$/.test(t));
+        
+        const uniqueTerms = [...new Set(allTerms)].slice(0, 6); // Top 6 meaningful terms
+        
+        // Generate broader combinations
+        if (uniqueTerms.length >= 2) {
+          // Two-term combinations (category + attribute)
+          for (let i = 0; i < Math.min(3, uniqueTerms.length - 1); i++) {
+            for (let j = i + 1; j < Math.min(i + 3, uniqueTerms.length); j++) {
+              queries.push(`${uniqueTerms[i]} ${uniqueTerms[j]}`);
+            }
+          }
+          
+          // Single high-value terms (most descriptive)
+          uniqueTerms.slice(0, 3).forEach(term => {
+            if (term.length > 3) queries.push(term);
+          });
+        }
+        
+        // Type-based expansion (use VLM type field)
+        if (vlm.type) {
+          queries.push(vlm.type.toLowerCase());
+        }
+        
+        // Color-based expansion if color is specified
+        if (vlm.color && vlm.type) {
+          queries.push(`${vlm.color.toLowerCase()} ${vlm.type.toLowerCase()}`);
+        }
+        
+        // Final safety net
+        queries.push('product item accessory');
 
         const supabase = this.supabaseService.getClient();
         let usedQuery = '';
@@ -656,10 +694,9 @@ export class EmbeddingService {
             .from('ProductEmbeddings')
             .select(`ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType, ProductVariants(Title, Description, Price), SearchVector`)
             .textSearch('SearchVector', qTrim, { type: 'websearch', config: 'english' })
-            .textSearch('ProductText', qTrim, {type: 'websearch', config: 'english'})
             .limit(200);
           const ms = Date.now() - t0;
-          this.logger.log("Returned Results: " + data);
+          this.logger.log(`[VLM-First] RawSearch count=${data?.length || 0}`);
           totalFtsMs += ms;
           if (error) this.logger.warn(`[VLM-First] FTS error for "${qTrim}": ${error.message}`);
           const count = data?.length || 0;
@@ -668,6 +705,40 @@ export class EmbeddingService {
             usedQuery = qTrim;
             ftsCandidatesAll = data || [];
             break;
+          }
+        }
+
+        // Fallback: basic ILIKE search on ProductText if FTS found nothing
+        if (ftsCandidatesAll.length === 0) {
+          const ilikeTokens = (p0 || vlm.ocrText || '').toLowerCase().split(/\s+/).filter(Boolean).slice(0, 3);
+          if (ilikeTokens.length > 0) {
+            const pattern1 = `%${ilikeTokens.join('%')}%`;
+            const t1 = Date.now();
+            const { data: like1, error: likeErr1 } = await supabase
+              .from('ProductEmbeddings')
+              .select(`ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType, ProductVariants(Title, Description, Price)`) 
+              .ilike('ProductText', pattern1)
+              .limit(100);
+            const ms1 = Date.now() - t1;
+            this.logger.log(`[VLM-First] ILIKE1(${like1?.length || 0}) in ${ms1}ms pattern: "${pattern1}"`);
+            if (!likeErr1 && like1 && like1.length > 0) {
+              ftsCandidatesAll = like1;
+              usedQuery = ilikeTokens.join(' ');
+            } else if (ilikeTokens.length >= 2) {
+              const pattern2 = `%${[...ilikeTokens].reverse().join('%')}%`;
+              const t2 = Date.now();
+              const { data: like2 } = await supabase
+                .from('ProductEmbeddings')
+                .select(`ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType, ProductVariants(Title, Description, Price)`) 
+                .ilike('ProductText', pattern2)
+                .limit(100);
+              const ms2 = Date.now() - t2;
+              this.logger.log(`[VLM-First] ILIKE2(${like2?.length || 0}) in ${ms2}ms pattern: "${pattern2}"`);
+              if (like2 && like2.length > 0) {
+                ftsCandidatesAll = like2;
+                usedQuery = ilikeTokens.reverse().join(' ');
+              }
+            }
           }
         }
 
