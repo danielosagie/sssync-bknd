@@ -162,68 +162,119 @@ Return only the extracted text, preserving the original layout and order as much
         throw new Error('Either imageUrl or imageBase64 must be provided');
       }
 
+      const prompt1 = `You are an ecommerce visual analyst. Return ONLY compact JSON.\n\nSTRICT FOCUS: Describe the MAIN object centered/in focus. Ignore background/secondary items.\n\nFIELDS (always include all):\n- ocr_text (string) → raw text detected; "" if none\n- brand (string) → only if certain; else ""\n- model (string) → only if certain; else ""\n- year (string) → only if explicitly visible; else ""\n- color (string) → single dominant color (e.g. "black", "silver", "grey", "green")\n- type (string) → high-level category, 2–3 words max (e.g. "water bottle", "wireless earbuds", "dslr camera", "zipper pull", "keychain", "bag charm", "toy")\n- flags (array of strings) → optional issues like ["blurry"], ["cropped"], ["multiple items"]\n- confidence (number 0..1)\n- paraphrases (array of EXACTLY 3 short lowercase queries)\n\nPARAPHRASES POLICY (always output 3):\n1) specific_best_guess (2–6 words)\n   - If confidence ≥ 0.8: brand + type + key attribute (e.g., "apple airpods case").\n   - If confidence < 0.8 or brand uncertain: drop brand; keep specific but generic (e.g., "wireless earbuds case").\n   - No SKUs, punctuation, or filler words.\n2) expanded_synonyms (5–9 words)\n   - Combine synonyms, function, and visible descriptors.\n   - Avoid brand-locking.\n   - Examples: "wireless earbuds charging case bluetooth white", "water bottle thermos flask insulated grey steel", "zipper pull keychain toy bag charm".\n3) generic_category (2–4 words)\n   - Broad class + visible color/material.\n   - Always include, even if brand is certain.\n   - Examples: "grey water bottle", "white earbuds", "character zipper pull".\n\nADDITIONAL RULES:\n- If OCR is weak/empty, infer from shape/materials.\n- Prefer class-level terms when uncertain.\n- Always include the dominant visible color.\n- Only fill brand/model/year when strongly supported by text/logos.\n- If the object is a small character attached to a zipper/bag, include toy-related terms in paraphrases (e.g., "toy", "figurine", "zipper pull", "keychain", "bag charm").\n\nEXAMPLE A (plain grey bottle, no OCR):\n{\n  "ocr_text": "",\n  "brand": "",\n  "model": "",\n  "year": "",\n  "color": "grey",\n  "type": "water bottle",\n  "flags": [],\n  "confidence": 0.6,\n  "paraphrases": [\n    "stainless steel water bottle",\n    "water bottle thermos tumbler insulated grey",\n    "grey water bottle"\n  ]\n}\n\nEXAMPLE B (small character toy on zipper):\n{\n  "ocr_text": "",\n  "brand": "",\n  "model": "",\n  "year": "",\n  "color": "green",\n  "type": "zipper pull",\n  "flags": ["toy", "figurine"],\n  "confidence": 0.5,\n  "paraphrases": [\n    "character zipper pull toy",\n    "zipper pull keychain toy bag charm",\n    "toy zipper pull"\n  ]\n}\n\nOutput ONLY the JSON.`;
       const prompt = `
+      You are an ecommerce visual analyst. Return ONLY compact JSON.
 
-You are an ecommerce visual analyst. Your job is to return ONLY compact JSON that captures what is visible in the image. Do not add explanations or extra text
+STRICT FOCUS:
+
+Always describe the MAIN object that is centered and in focus.
+
+Ignore background, secondary objects, or clutter.
+
+If multiple items are present, select the single most prominent.
 
 FIELDS (always include all):
 
-* ocr\_text (string) → raw text detected in the image; if none, ""
-* brand (string) → inferred from OCR or clear logos; "" if unclear
-* model (string) → inferred from OCR or design cues; "" if unclear
-* year (string) → production/release year if explicitly visible; "" otherwise
-* color (string) → single plain descriptive color (e.g. "black", "silver", "red", "navy blue")
-* type (string) → high-level product category (2–3 words max, e.g. "water bottle", "wireless earbuds", "dslr camera")
-* flags (array of strings) → optional issues/conditions, use \[] if none. Examples: \["blurry"], \["cropped"], \["multiple items"], \["occluded"], \["handwritten text"].
-* confidence (number, 0..1) → overall certainty of classification and fields
-* paraphrases (array of EXACTLY 3 strings) → short lowercase search queries, built by strict rules below
+ocr_text (string) → if text is visible, output it raw.
 
-PARAPHRASES POLICY (must always output 3):
+If NO text is visible, instead output a short neutral description of the object (e.g. "grey bottle", "green character toy"). Never leave as "".
 
-1. specific\_best\_guess (2–6 words)
+brand (string) → only if clearly certain from text/logo; else ""
 
-   * If confidence >= 0.8: include brand + product type + key visual attribute. Example: "apple airpods case", "nike running shoes black".
-   * If confidence < 0.8 or brand is uncertain: drop the brand, use generic but specific guess. Example: "wireless earbuds case", "stainless steel tumbler".
-   * Never use SKUs, punctuation, or filler words.
-2. expanded\_synonyms (5–9 words)
+model (string) → only if clearly certain; else ""
 
-   * Combine synonyms, functional attributes, and visible descriptors.
-   * Do not brand-lock unless the brand is guaranteed.
-   * Example: "wireless earbuds charging case bluetooth white", "water bottle thermos flask insulated grey steel".
-3. generic\_category (2–4 words)
+year (string) → only if explicitly visible; else ""
 
-   * Broad category + visible color/material.
-   * Must always be included, even if brand is certain.
-   * Example: "grey water bottle", "white earbuds", "black backpack".
+color (string) → single dominant visible color (e.g. "black", "silver", "grey", "green")
 
-ADDITIONAL RULES:
+type (string) → high-level category, 2–3 words max (e.g. "water bottle", "wireless earbuds", "zipper pull", "keychain", "bag charm", "toy")
 
-* If OCR is weak or empty, infer from shape, materials, ports, and logos.
-* Prefer general class-level descriptions when uncertain.
-* Always describe the **dominant visible color**.
-* Only fill brand/model/year when strongly supported by text or distinctive features.
-* Confidence < 0.7 means high uncertainty → default to safe, generic guesses.
-* Confidence ≥ 0.9 means highly confident → include brand/model details if available.
+flags (array of strings) → optional issues like ["blurry"], ["cropped"], ["multiple items"]; [] if none
 
-EXAMPLE (plain grey bottle with stickers, no OCR text):
+confidence (number 0..1) → overall certainty of classification
+
+paraphrases (array of EXACTLY 3 lowercase queries)
+
+PARAPHRASES POLICY (always output 3):
+
+specific_best_guess (2–6 words)
+
+If confidence ≥ 0.8 and brand/model certain → include brand + type + key attribute (e.g. "apple airpods case").
+
+If confidence < 0.8 or brand uncertain → use generic but specific description (e.g. "green character toy", "wireless earbuds case").
+
+Never include SKUs, punctuation, or filler.
+
+expanded_synonyms (5–9 words)
+
+Combine synonyms, functions, and visible descriptors.
+
+Avoid brand-locking unless absolutely certain.
+
+Echo relevant terms from product text metadata if present and consistent with the object (e.g. if metadata contains "toy", include "toy" here).
+
+Examples: "zipper pull keychain toy bag charm", "wireless earbuds charging case bluetooth white", "water bottle thermos flask insulated grey steel".
+
+generic_category (2–4 words)
+
+Broad class + visible color/material.
+
+Always include, even if brand is certain.
+
+Examples: "green toy", "grey water bottle", "black backpack".
+
+INFERENCE RULES:
+
+If OCR returns no text, describe the object instead of leaving it empty.
+
+If product text metadata is available, incorporate useful tokens (like "toy", "figurine", "bag charm") into paraphrases if they match what is visually present.
+
+Use visual cues (shape, material, logo placement) if OCR is weak.
+
+Confidence < 0.7 → safer generic phrasing. Confidence ≥ 0.9 → include brand/model if supported.
+
+Always include the dominant visible color.
+
+Only fill brand/model/year if strongly supported by OCR or distinctive features.
+
+EXAMPLE A (plain grey bottle, no text):
 {
-ocr\_text: "",
-brand: "",
-model: "",
-year: "",
-color: "grey",
-type": water bottle",
-flags: \[],
-confidence: 0.6,
-paraphrases: \[
+"ocr_text": "grey bottle",
+"brand": "",
+"model": "",
+"year": "",
+"color": "grey",
+"type": "water bottle",
+"flags": [],
+"confidence": 0.6,
+"paraphrases": [
 "stainless steel water bottle",
 "water bottle thermos tumbler insulated grey",
 "grey water bottle"
 ]
 }
 
-Output ONLY the JSON.`;
-      const prompt1 = `You are an ecommerce visual analyst. Return ONLY compact JSON.\n\nRequired fields:\n- ocr_text (string)\n- brand (string)\n- model (string)\n- year (string)\n- color (string)\n- type (string)  // high-level object category like \'water bottle\', \'wireless earbuds\', \'camera\'\n- flags (array of strings)\n- confidence (number 0..1)\n- paraphrases (array of EXACTLY 3 short lowercase search queries)\n\nParaphrases policy (always produce 3 even if unsure):\n1) specific_best_guess: 2-6 words. If confidence >= 0.8 include brand + product type + key attribute (e.g., \'apple airpods case\'). If brand is uncertain, omit brand and keep generic. No SKUs, no punctuation.\n2) expanded_synonyms: 5-9 words combining likely synonyms and attributes, space-separated tokens (e.g., \'wireless earbuds charging case white bluetooth\', \'insulated water bottle stainless steel grey\'). Avoid brand locking here.\n3) generic_category: 2-4 words for broad class + visible color/material (e.g., \'grey water bottle\', \'white wireless earbuds\'). ALWAYS include this even if you know the brand.\n\nIf OCR is missing/weak, infer from visuals (shape, color, materials, ports). Prefer class-level terms when confidence < 0.8 to avoid over-specific filters.\n\nExample (no text, plain grey bottle with stickers):\n{\n  \'ocr_text\': \'\',\n  \'brand\': \'\',\n  \'model\': \'\',\n  \'year\': \'\',\n  \'color\': \'grey\',\n  \'type\': \'water bottle\',\n  \'flags\': [],\n  \'confidence\': 0.6,\n  \'paraphrases\': [\n    \'stainless steel water bottle\',\n    \'water bottle thermos tumbler insulated grey\',\n    \'grey water bottle\'\n  ]\n}\n\nOutput ONLY the JSON.`;
+EXAMPLE B (small green character figurine on zipper, product text also said "toy"):
+{
+"ocr_text": "green character toy",
+"brand": "",
+"model": "",
+"year": "",
+"color": "green",
+"type": "zipper pull",
+"flags": ["toy", "figurine"],
+"confidence": 0.5,
+"paraphrases": [
+"character zipper pull toy",
+"zipper pull keychain toy bag charm",
+"green toy"
+]
+}
+
+Output ONLY the JSON.
+      
+      `
 
       const completion = await this.groqClient.chat.completions.create({
         model: 'meta-llama/llama-4-scout-17b-16e-instruct',

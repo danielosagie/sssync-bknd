@@ -656,8 +656,10 @@ export class EmbeddingService {
             .from('ProductEmbeddings')
             .select(`ProductId, ProductVariantId, ImageUrl, BusinessTemplate, ProductText, SourceType, ProductVariants(Title, Description, Price), SearchVector`)
             .textSearch('SearchVector', qTrim, { type: 'websearch', config: 'english' })
+            .textSearch('ProductText', qTrim, {type: 'websearch', config: 'english'})
             .limit(200);
           const ms = Date.now() - t0;
+          this.logger.log("Returned Results: " + data);
           totalFtsMs += ms;
           if (error) this.logger.warn(`[VLM-First] FTS error for "${qTrim}": ${error.message}`);
           const count = data?.length || 0;
@@ -669,14 +671,19 @@ export class EmbeddingService {
           }
         }
 
-        // Cheap sort heuristic: prioritize title hits (from usedQuery terms), then description length, then presence of price
+        // Cheap sort heuristic: count term hits in Title and ProductText; add quality + price bonus
         const terms = usedQuery.toLowerCase().split(/\s+/).filter(Boolean);
         const candidates = (ftsCandidatesAll || []).map((row: any) => {
           const title: string = row.ProductVariants?.Title || row.ProductText || '';
           const desc: string = row.ProductVariants?.Description || '';
           const titleLower = title.toLowerCase();
+          const textLower = (row.ProductText || '').toLowerCase();
           let termHits = 0;
-          for (const t of terms) if (t && titleLower.includes(t)) termHits++;
+          for (const t of terms) {
+            if (!t) continue;
+            if (titleLower.includes(t)) termHits += 1;
+            if (textLower.includes(t)) termHits += 0.5; // smaller weight for body text matches
+          }
           const quality = Math.min(1, Math.max(0, (title.length - 10) / 70));
           const priceBonus = row.ProductVariants?.Price ? 0.05 : 0;
           const heuristic = termHits * 0.2 + quality * 0.2 + priceBonus;
