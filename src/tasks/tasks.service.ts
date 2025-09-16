@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import { ConfigService } from '@nestjs/config';
 import { PlatformConnectionsService } from '../platform-connections/platform-connections.service';
 import { InitialSyncService } from '../sync-engine/initial-sync.service'; // For queueReconciliationJob
 import { QueueManagerService } from '../queue-manager.service';
@@ -10,6 +11,7 @@ export class TasksService {
     private readonly logger = new Logger(TasksService.name);
 
     constructor(
+        private readonly configService: ConfigService,
         private readonly platformConnectionsService: PlatformConnectionsService,
         private readonly initialSyncService: InitialSyncService,
         private readonly queueManagerService: QueueManagerService,
@@ -50,6 +52,11 @@ export class TasksService {
     @Cron('*/10 * * * * *', { name: 'processQueuedJobs' })
     async processQueuedJobs() {
         try {
+            const enabled = this.configService.get<string>('QUEUE_POLL_ENABLED');
+            if (enabled && enabled.toLowerCase() === 'false') {
+                this.logger.debug('[CRON - processQueuedJobs] Disabled via QUEUE_POLL_ENABLED=false');
+                return;
+            }
             // Process all jobs in the queue
             await this.queueManagerService.processAllJobs();
         } catch (error) {

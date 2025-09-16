@@ -15,7 +15,6 @@ import { UserThrottlerGuard } from './common/guards/user-throttler.guard';
 // import { SupabaseService } from './common/supabase.service'; // Provided in CommonModule
 // import { EncryptionService } from './common/encryption.service'; // Provided in CommonModule
 import { RequestLoggerMiddleware } from './common/middleware/request-logger.middleware';
-import { QueueModule } from './queue.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { TasksModule } from './tasks/tasks.module';
 import { PlatformAdaptersModule } from './platform-adapters/platform-adapters.module';
@@ -43,7 +42,6 @@ import { BackfillModule } from './sync-engine/backfill.module';
     UsersModule,
     // PlatformsModule, // Remove this line
     ProductsModule,
-    QueueModule,
     TasksModule,
     PlatformAdaptersModule,
     BillingModule,

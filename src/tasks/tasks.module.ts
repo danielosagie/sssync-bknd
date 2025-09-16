@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { ScheduleModule } from '@nestjs/schedule';
 import { TasksService } from './tasks.service';
 import { PlatformConnectionsModule } from '../platform-connections/platform-connections.module';
 import { SyncEngineModule } from '../sync-engine/sync-engine.module';
@@ -10,7 +9,6 @@ import { EmbeddingModule } from '../embedding/embedding.module';
 
 @Module({
   imports: [
-    ScheduleModule.forRoot(),
     PlatformConnectionsModule,
     SyncEngineModule,
     CommonModule,

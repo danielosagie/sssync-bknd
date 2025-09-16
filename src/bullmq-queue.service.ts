@@ -20,9 +20,11 @@ const BULLMQ_HIGH_QUEUE_NAME = 'bullmq-high-queue';
 @Injectable()
 export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(BullMQQueueService.name);
-  private connection: IORedis;
-  private queue: Queue;
+  private connection: IORedis | null = null;
+  private queue: Queue | null = null;
   private worker: Worker | null = null;
+  private isWorkerActive = false;
+  private readonly redisUrl: string | undefined;
 
   constructor(
     private readonly configService: ConfigService,
@@ -39,13 +41,18 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
     @Inject(forwardRef(() => RegenerateJobProcessor))
     private readonly regenerateJobProcessor: RegenerateJobProcessor,
   ) {
-    const redisUrl = this.configService.get<string>('REDIS_URL');
-    if (!redisUrl) {
-      this.logger.error('REDIS_URL is not defined. BullMQQueueService cannot start.');
+    this.redisUrl = this.configService.get<string>('REDIS_URL');
+    if (!this.redisUrl) {
+      this.logger.error('REDIS_URL is not defined. BullMQQueueService will remain disabled until configured.');
+    }
+  }
+
+  private async ensureConnection(): Promise<void> {
+    if (this.connection && this.queue) return;
+    if (!this.redisUrl) {
       throw new Error('REDIS_URL is not defined for BullMQQueueService.');
     }
-    // BullMQ recommends specific options for IORedis
-    this.connection = new IORedis(redisUrl, {
+    this.connection = new IORedis(this.redisUrl, {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
     });
@@ -60,6 +67,9 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
   }
 
   private initializeWorker(): void {
+    if (!this.connection) {
+      throw new Error('IORedis connection not initialized before starting worker');
+    }
     if (!this.initialScanProcessor || !this.initialSyncProcessor || !this.productAnalysisProcessor || !this.matchJobProcessor || !this.generateJobProcessor) {
         this.logger.error('Required processors not available. Worker cannot be initialized.');
         return; 
@@ -121,7 +131,7 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
         }
       },
       {
-        connection: this.connection,
+        connection: this.connection!,
       }
     );
 
@@ -136,26 +146,53 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
   }
 
   async onModuleInit() {
-    this.logger.log('BullMQQueueService initializing worker...');
-    this.initializeWorker(); // Initialize worker now that dependencies should be resolved
+    this.logger.log('BullMQQueueService initialized. Worker will start lazily on demand.');
   }
 
   async onModuleDestroy() {
     this.logger.log('Closing BullMQQueueService resources...');
     if (this.worker) {
       await this.worker.close();
+      this.worker = null;
       this.logger.log('BullMQ Worker closed.');
     }
-    await this.queue.close();
-    this.logger.log('BullMQ Queue closed.');
-    await this.connection.quit();
-    this.logger.log('IORedis connection closed for BullMQQueueService.');
+    if (this.queue) {
+      await this.queue.close();
+      this.queue = null;
+      this.logger.log('BullMQ Queue closed.');
+    }
+    if (this.connection) {
+      await this.connection.quit();
+      this.connection = null;
+      this.logger.log('IORedis connection closed for BullMQQueueService.');
+    }
+  }
+
+  async startWorker(): Promise<void> {
+    if (this.isWorkerActive) return;
+    await this.ensureConnection();
+    this.initializeWorker();
+    this.isWorkerActive = !!this.worker;
+    if (this.isWorkerActive) {
+      this.logger.log('BullMQ worker started.');
+    }
+  }
+
+  async stopWorker(): Promise<void> {
+    if (!this.isWorkerActive) return;
+    if (this.worker) {
+      await this.worker.close();
+      this.worker = null;
+    }
+    this.isWorkerActive = false;
+    this.logger.log('BullMQ worker stopped.');
   }
 
   async enqueueJob(jobData: JobData): Promise<void> {
     // Use a unique job ID to prevent duplicates if needed, or let BullMQ generate one.
     const jobId = jobData.type ? `${jobData.type}-${(jobData as any).connectionId || (jobData as any).jobId}-${Date.now()}` : undefined;
-    await this.queue.add(jobData.type || 'default-job', jobData, { jobId });
+    await this.ensureConnection();
+    await this.queue!.add(jobData.type || 'default-job', jobData, { jobId });
     this.logger.debug(`[BullMQQueue] Enqueued job type ${jobData.type} with ID ${jobId}: ${JSON.stringify(jobData)}`);
   }
 
@@ -163,7 +200,8 @@ export class BullMQQueueService implements SimpleQueue, OnModuleInit, OnModuleDe
   // This could be used for an on-demand scenario if the worker wasn't started.
   async processNextJob(): Promise<any> {
     this.logger.warn('[BullMQQueue] processNextJob called. Typically, the BullMQ Worker handles job processing.');
-    const jobs = await this.queue.getWaiting(0, 0); 
+    await this.ensureConnection();
+    const jobs = await this.queue!.getWaiting(0, 0); 
     if (jobs.length > 0) {
       const jobToProcess = jobs[0];
       this.logger.log(`[BullMQQueue] Manually attempting to process job ${jobToProcess.id}`);

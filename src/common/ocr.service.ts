@@ -173,6 +173,12 @@ Always describe the MAIN object that is centered and in focus.
 Ignore background, secondary objects, or clutter.
 
 If multiple items are present, select the single most prominent.
+Consider novelty and unusual items.
+Be prepared for unexpected or uncommon products.
+Use contextual information to make educated guesses.
+Prioritize generic descriptions when uncertain.
+Indicate uncertainty with lower confidence scores.
+
 
 FIELDS (always include all):
 
@@ -255,7 +261,7 @@ EXAMPLE A (plain grey bottle, no text):
 ]
 }
 
-EXAMPLE B (small green character figurine on zipper, product text also said "toy"):
+EXAMPLE B (small green character figurine toy on zipper, product text also said "toy"):
 {
 "ocr_text": "green character toy",
 "brand": "",

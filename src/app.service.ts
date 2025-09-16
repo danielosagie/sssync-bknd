@@ -9,6 +9,12 @@ export class AppService implements OnModuleInit {
   constructor(private configService: ConfigService) {}
 
   async onModuleInit() {
+    const enableRedisTest = this.configService.get<string>('ENABLE_REDIS_TEST');
+    if (!enableRedisTest || enableRedisTest.toLowerCase() !== 'true') {
+      this.logger.log('[AppService] Module Initialized. Redis test disabled.');
+      return;
+    }
+
     this.logger.log('[AppService] Module Initialized. Testing Redis connection...');
     const redisUrl = this.configService.get<string>('REDIS_URL');
     this.logger.log(`[AppService Redis Test] URL from ConfigService: ${redisUrl}`);
@@ -24,14 +30,13 @@ export class AppService implements OnModuleInit {
 
     try {
       const options: RedisOptions = {
-        tls: redisUrl.startsWith('rediss://') ? {} : undefined, // Add TLS options for Upstash
+        tls: redisUrl.startsWith('rediss://') ? {} : undefined,
         maxRetriesPerRequest: 3,
         connectTimeout: 10000,
         showFriendlyErrorStack: true,
-        lazyConnect: false, // Try connecting immediately
+        lazyConnect: false,
         retryStrategy(times) {
-           const delay = Math.min(times * 100, 2000); // Exponential backoff
-           this.logger.warn(`[AppService Redis Test] Retrying connection (attempt ${times}), delay ${delay}ms`);
+           const delay = Math.min(times * 100, 2000);
            return delay;
         },
       };
@@ -45,19 +50,6 @@ export class AppService implements OnModuleInit {
       client.on('close', () => this.logger.log('[AppService Redis Test] Direct client connection closed.'));
       client.on('reconnecting', (delay) => this.logger.log(`[AppService Redis Test] Direct client reconnecting in ${delay}ms...`));
       client.on('end', () => this.logger.log('[AppService Redis Test] Direct client connection ended.'));
-
-      // Optional: Ping test after a short delay to ensure connection stability
-      // setTimeout(async () => {
-      //   try {
-      //      const pong = await client.ping();
-      //      this.logger.log(`[AppService Redis Test] Ping successful: ${pong}`);
-      //      await client.quit(); // Close connection after test
-      //   } catch(pingErr) {
-      //      this.logger.error(`[AppService Redis Test] Ping failed: ${pingErr.message}`);
-      //      await client.quit();
-      //   }
-      // }, 5000);
-
     } catch (e) {
       this.logger.error(`[AppService Redis Test] Error during direct client instantiation: ${e.message}`, e.stack);
     }

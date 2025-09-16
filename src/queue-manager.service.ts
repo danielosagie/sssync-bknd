@@ -70,12 +70,14 @@ export class QueueManagerService {
 
     if (
       !this.highThroughputMode &&
-      recentRequestsInWindow.length >= HIGH_TRAFFIC_THRESHOLD_REQUESTS_PER_SECOND * HIGH_TRAFFIC_DURATION_SECONDS && // Enough total requests
-      requestsPerSecondInWindow >= HIGH_TRAFFIC_THRESHOLD_REQUESTS_PER_SECOND // Sustained rate
+      recentRequestsInWindow.length >= HIGH_TRAFFIC_THRESHOLD_REQUESTS_PER_SECOND * HIGH_TRAFFIC_DURATION_SECONDS &&
+      requestsPerSecondInWindow >= HIGH_TRAFFIC_THRESHOLD_REQUESTS_PER_SECOND
     ) {
       this.logger.log(`High traffic detected (${requestsPerSecondInWindow.toFixed(2)} req/s over ${windowDurationSeconds.toFixed(2)}s). Switching to BullMQQueueService.`);
       this.currentQueue = this.bullMQQueueService;
       this.highThroughputMode = true;
+      // Start BullMQ worker lazily
+      this.bullMQQueueService.startWorker().catch(err => this.logger.error('Failed to start BullMQ worker:', err));
     } 
     // Scaling down is handled by checkAndScaleDown()
   }
@@ -87,6 +89,8 @@ export class QueueManagerService {
       this.currentQueue = this.ultraLowQueueService;
       this.highThroughputMode = false;
       this.requestTimestamps = []; // Reset request timestamps after scaling down
+      // Stop BullMQ worker to reduce Redis chatter
+      this.bullMQQueueService.stopWorker().catch(err => this.logger.error('Failed to stop BullMQ worker:', err));
     }
   }
 
